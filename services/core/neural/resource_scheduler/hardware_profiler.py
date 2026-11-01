@@ -8,6 +8,10 @@ from neural.logger import get_logger
 
 logger = get_logger("ancos.resource_scheduler.profiler")
 
+# Current deployment operates one GUI workstation at a time. Hardware profiles
+# remain useful for per-container resource sizing, but do not increase this cap.
+MAX_ACTIVE_DESKTOPS = 1
+
 
 @dataclass
 class HardwareProfile:
@@ -134,7 +138,7 @@ class HardwareProfiler:
         )
 
     def get_max_desktops(self) -> int:
-        return self.active_profile.max_active_desktops
+        return min(self.active_profile.max_active_desktops, MAX_ACTIVE_DESKTOPS)
 
     def get_headroom_gb(self) -> float:
         return self.active_profile.safe_ram_headroom_gb

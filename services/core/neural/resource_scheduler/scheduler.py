@@ -19,7 +19,7 @@ class DesktopResourceScheduler:
     Desktop Resource Scheduler & Capacity Governor.
     Enforces the fundamental architectural invariant:
     - Many Persistent AI Employees.
-    - Exactly FOUR (4) Maximum Active GUI Desktop Sessions on the initial 16 GB baseline.
+    - Exactly ONE Maximum Active GUI Desktop Session in the current deployment.
     - Standby employees retain permanent identity, memory, and state WITHOUT consuming running containers.
     - Dynamic admission control, priority queueing, durable checkpointing, and safe preemption.
     - Upgradeable to 64 GB profiles without organizational rewrites.
@@ -62,7 +62,7 @@ class DesktopResourceScheduler:
         """
         Requests an active GUI desktop slot for an employee.
         If a slot is available and host is healthy -> Allocates slot & container.
-        If capacity limit reached (e.g. 4 slots) -> Puts employee into STANDBY queue without running container!
+        If the single desktop slot is occupied -> Puts employee into STANDBY queue without running a container.
         """
         # 0. Reconcile any expired session leases first to free up slots
         await self.reconcile_expired_leases()

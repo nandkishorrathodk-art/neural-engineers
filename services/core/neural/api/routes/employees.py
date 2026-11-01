@@ -17,7 +17,7 @@ from neural.api.schemas.responses import (
     VncCredentialResponse,
     WorkstationResponse,
 )
-from neural.containers.manager import ContainerManager
+from neural.containers.manager import ContainerManager, DockerBrokerRequestError
 from neural.db.repositories import (
     ApprovalRepository,
     AuditRepository,
@@ -180,12 +180,15 @@ async def provision_employee_workstation(
     if employee.model_config_data and "container_template" in employee.model_config_data:
         role_image = employee.model_config_data["container_template"]
 
-    spec = await container_mgr.provision_employee_desktop(
-        employee_id=employee.employee_id,
-        role_image=role_image,
-        container_repo=container_repo,
-        employee_repo=employee_repo
-    )
+    try:
+        spec = await container_mgr.provision_employee_desktop(
+            employee_id=employee.employee_id,
+            role_image=role_image,
+            container_repo=container_repo,
+            employee_repo=employee_repo
+        )
+    except DockerBrokerRequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     await audit_repo.log(
         actor=actor,

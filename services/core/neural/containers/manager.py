@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -41,6 +42,7 @@ class ContainerManager:
         self._allocated_ports: dict[str, tuple[int, int]] = {}
         # Track in-memory active containers
         self._containers: dict[str, dict[str, Any]] = {}
+        self._provision_lock = asyncio.Lock()
         from neural.containers.broker import RestrictedDockerBroker
         self.broker = RestrictedDockerBroker(workspace_base=self.settings.EMPLOYEE_WORKSPACE_BASE)
         try:
@@ -184,6 +186,25 @@ class ContainerManager:
         container_repo: Optional[Any] = None,
         employee_repo: Optional[Any] = None
     ) -> dict[str, Any]:
+        async with self._provision_lock:
+            return await self._provision_employee_desktop_locked(
+                employee_id=employee_id,
+                role_image=role_image,
+                cpu_limit=cpu_limit,
+                mem_limit=mem_limit,
+                container_repo=container_repo,
+                employee_repo=employee_repo,
+            )
+
+    async def _provision_employee_desktop_locked(
+        self,
+        employee_id: str,
+        role_image: str = "employee-base",
+        cpu_limit: Optional[float] = None,
+        mem_limit: Optional[str] = None,
+        container_repo: Optional[Any] = None,
+        employee_repo: Optional[Any] = None
+    ) -> dict[str, Any]:
         """
         Provisions isolated desktop container for an employee with:
         - Image built from or referencing docker/Dockerfile.employee-base
@@ -198,7 +219,38 @@ class ContainerManager:
             image=role_image
         )
 
+        active_statuses = {
+            ContainerStatus.PROVISIONING.value,
+            ContainerStatus.RUNNING.value,
+            ContainerStatus.STOPPED.value,
+        }
+        for existing in self._containers.values():
+            if (
+                existing.get("employee_id") != employee_id
+                and existing.get("status") in active_statuses
+            ):
+                raise DockerBrokerRequestError(
+                    "Only one ANCOS workstation is available; terminate the existing workstation first.",
+                    status_code=409,
+                )
+        if container_repo:
+            for existing in await container_repo.list_all():
+                status = existing.status.value if hasattr(existing.status, "value") else str(existing.status)
+                if existing.docker_id != f"ancos-desktop-{employee_id.lower()}" and status in active_statuses:
+                    raise DockerBrokerRequestError(
+                        "Only one ANCOS workstation is available; terminate the existing workstation first.",
+                        status_code=409,
+                    )
+
         docker_id = f"ancos-desktop-{employee_id.lower()}"
+        client = self._get_client()
+        if client is not None:
+            for existing in client.containers.list(all=True):
+                if existing.name.startswith("ancos-desktop-") and existing.name != docker_id:
+                    raise DockerBrokerRequestError(
+                        "Only one ANCOS workstation is available; terminate the existing workstation first.",
+                        status_code=409,
+                    )
         effective_cpu = cpu_limit or self.settings.DEFAULT_CONTAINER_CPU_LIMIT
         effective_mem = mem_limit or self.settings.DEFAULT_CONTAINER_MEM_LIMIT
         if role_image.startswith("ancos/"):

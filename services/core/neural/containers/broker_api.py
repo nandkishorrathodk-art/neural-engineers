@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import secrets
 import re
+import secrets
 import shutil
 import string
-import threading
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,8 +18,9 @@ from pydantic import BaseModel, Field
 from neural.config import get_settings
 
 try:
-    import docker
     from docker.errors import APIError, ImageNotFound, NotFound
+
+    import docker
 except ImportError:  # pragma: no cover - packaging error surfaced as runtime unavailable
     docker = None  # type: ignore[assignment]
     APIError = Exception  # type: ignore[assignment,misc]
@@ -31,6 +32,7 @@ settings = get_settings()
 app = FastAPI(title="ANCOS Restricted Docker Broker", docs_url=None, redoc_url=None, openapi_url=None)
 _docker_client: Any = None
 _port_lock = threading.Lock()
+_provision_lock = threading.Lock()
 
 EMPLOYEE_ID_PATTERN = r"^ANC-EMP-[0-9A-Za-z_-]{1,48}$"
 ALLOWED_IMAGES = {
@@ -202,10 +204,28 @@ def health() -> dict[str, str]:
 
 @app.post("/v1/containers")
 def provision_container(payload: ProvisionRequest) -> dict[str, Any]:
+    # Serialize admission and creation so two concurrent requests cannot both
+    # pass the single-workstation capacity check.
+    with _provision_lock:
+        return _provision_single_container(payload)
+
+
+def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
     if payload.image not in ALLOWED_IMAGES:
         raise HTTPException(status_code=400, detail="Requested employee image is not allowlisted.")
 
     client = docker_client()
+    existing_workstations = client.containers.list(
+        all=True,
+        filters={"label": "ancos.managed=true"},
+    )
+    if existing_workstations:
+        names = sorted(container.name for container in existing_workstations)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only one ANCOS workstation is available; terminate the existing workstation first ({names[0]}).",
+        )
+
     name = employee_container_id(payload.employee_id)
     try:
         existing = client.containers.get(name)
