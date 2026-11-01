@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from neural.api.deps import get_db_session, require_owner_identity
+from neural.api.deps import get_db_session, require_approver_identity, require_owner_identity
 from neural.db.repositories import ApprovalRepository, AuditRepository, TaskRepository
 from neural.security.approval_gates import HumanApprovalGate
 from neural.security.kill_switch import get_kill_switch
@@ -151,7 +151,7 @@ async def decide_approval_request(
     approval_id: str,
     body: ApprovalDecisionPayload,
     session: AsyncSession = Depends(get_db_session),
-    actor: str = Depends(require_owner_identity),
+    actor: str = Depends(require_approver_identity),
 ) -> dict[str, Any]:
     """Decides a human approval request ('approved' or 'rejected')."""
     approval_repo = ApprovalRepository(session)

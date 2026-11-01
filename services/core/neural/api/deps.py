@@ -87,7 +87,7 @@ async def require_owner_identity(authorization: str | None = Header(default=None
     expected = settings.OWNER_API_TOKEN
     if not expected or len(expected) < 32:
         raise HTTPException(status_code=503, detail="Owner API credentials are not configured.")
-    service_tokens = [settings.WORKER_API_TOKEN, settings.VERIFIER_API_TOKEN]
+    service_tokens = [settings.WORKER_API_TOKEN, settings.VERIFIER_API_TOKEN, settings.APPROVER_API_TOKEN]
     service_tokens.extend(settings.WORKER_API_TOKENS.values())
     if any(token and secrets.compare_digest(expected, token) for token in service_tokens):
         raise HTTPException(status_code=503, detail="Owner and service credentials must be different.")
@@ -95,6 +95,23 @@ async def require_owner_identity(authorization: str | None = Header(default=None
     if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Valid owner bearer token required.")
     return "human-owner"
+
+
+async def require_approver_identity(authorization: str | None = Header(default=None)) -> str:
+    settings = get_settings()
+    if settings.APP_ENV != "production":
+        return "local-approver"
+    expected = settings.APPROVER_API_TOKEN
+    if not expected or len(expected) < 32:
+        raise HTTPException(status_code=503, detail="Independent approver credentials are not configured.")
+    other_tokens = [settings.OWNER_API_TOKEN, settings.WORKER_API_TOKEN, settings.VERIFIER_API_TOKEN]
+    other_tokens.extend(settings.WORKER_API_TOKENS.values())
+    if any(token and secrets.compare_digest(expected, token) for token in other_tokens):
+        raise HTTPException(status_code=503, detail="Approver credentials must differ from all other service credentials.")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Valid approver bearer token required.")
+    return "independent-approver"
 
 
 async def require_verifier_token(authorization: str | None = Header(default=None)) -> str:

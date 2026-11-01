@@ -106,6 +106,11 @@ def create_app() -> FastAPI:
             and not request.url.path.startswith(
                 ("/internal/worker/", "/internal/verifier/", "/internal/resources/leases/")
             )
+            and not (
+                request.method == "POST"
+                and request.url.path.startswith("/security/approvals/")
+                and request.url.path.endswith("/decide")
+            )
         ):
             configured_token = settings.OWNER_API_TOKEN
             if not configured_token or len(configured_token) < 32:

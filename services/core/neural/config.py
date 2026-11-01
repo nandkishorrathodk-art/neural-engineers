@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: Optional[str] = None
     OWNER_API_TOKEN: Optional[str] = None
+    APPROVER_API_TOKEN: Optional[str] = None
     WORKER_API_TOKEN: Optional[str] = None
     WORKER_API_TOKENS: dict[str, str] = {}
     VERIFIER_API_TOKEN: Optional[str] = None

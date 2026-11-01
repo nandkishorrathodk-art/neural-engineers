@@ -1366,6 +1366,9 @@ class ApprovalRepository:
             if not approval or approval.status != ApprovalStatus.PENDING:
                 await self.session.rollback()
                 return None
+            if decided_by == approval.requested_by:
+                await self.session.rollback()
+                raise ValueError("The approval requester cannot approve or reject their own request.")
             normalized = decision.lower()
             if normalized not in {"approved", "rejected"}:
                 raise ValueError("Approval decision must be approved or rejected.")
