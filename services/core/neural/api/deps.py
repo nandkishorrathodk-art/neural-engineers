@@ -1,4 +1,6 @@
-from fastapi import Depends
+import secrets
+
+from fastapi import Depends, Header, HTTPException
 from neural.config import get_settings
 from neural.db.engine import AsyncSessionLocal, get_db_session
 from neural.db.repositories import (
@@ -31,6 +33,17 @@ async def get_project_repo(session: AsyncSession = Depends(get_db_session)) -> P
 
 async def get_task_repo(session: AsyncSession = Depends(get_db_session)) -> TaskRepository:
     return TaskRepository(session)
+
+
+async def require_worker_token(authorization: str | None = Header(default=None)) -> str:
+    settings = get_settings()
+    expected = settings.WORKER_API_TOKEN
+    if not expected or len(expected) < 32:
+        raise HTTPException(status_code=503, detail="Worker API credentials are not configured.")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Valid worker bearer token required.")
+    return "worker-service"
 
 
 async def get_employee_repo(session: AsyncSession = Depends(get_db_session)) -> EmployeeRepository:

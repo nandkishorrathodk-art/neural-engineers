@@ -8,10 +8,14 @@ from neural.api.schemas.requests import (
     UpdateTaskStatusRequest,
 )
 from neural.api.schemas.responses import ExecuteDagResponse, TaskDAGResponse, TaskResponse
-from neural.constants import EmployeeStatus, TaskStatus
 from neural.config import get_settings
+from neural.constants import EmployeeStatus, TaskStatus
 from neural.db.repositories import EmployeeRepository, ProjectRepository, TaskRepository
-from neural.exceptions import InvalidTaskStateTransitionError, TaskDependencyError, UnverifiedTaskError
+from neural.exceptions import (
+    InvalidTaskStateTransitionError,
+    TaskDependencyError,
+    UnverifiedTaskError,
+)
 from neural.tasks.scheduler import TaskScheduler
 from neural.tasks.state_machine import TaskStateMachine
 
@@ -104,10 +108,30 @@ async def assign_task(
         )
 
     already_assigned = task.assigned_to == employee.id
+    if task.assigned_to and not already_assigned:
+        previous_assignee = await employee_repo.get_by_employee_id(task.assigned_to)
+        if previous_assignee and previous_assignee.status != EmployeeStatus.IDLE:
+            raise HTTPException(
+                status_code=409,
+                detail="Task's current assignee is still reserved; release or expire its worker lease before reassignment.",
+            )
     if employee.status != EmployeeStatus.IDLE and not (already_assigned and employee.status == EmployeeStatus.WORKING):
         raise HTTPException(
             status_code=409,
             detail=f"Employee '{request.employee_id}' is not available for another task.",
+        )
+
+    if already_assigned and task.status == TaskStatus.ASSIGNED and employee.status == EmployeeStatus.WORKING:
+        return TaskResponse(
+            id=task.id,
+            task_id=task.task_id,
+            project_id=task.project_id,
+            title=task.title,
+            status=task.status,
+            assigned_to=task.assigned_to,
+            priority=task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+            started_at=task.started_at,
+            completed_at=task.completed_at,
         )
 
     await task_repo.assign_task(task.task_id, employee.id)

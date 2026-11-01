@@ -94,6 +94,23 @@ class UpdateTaskStatusRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class WorkerClaimRequest(BaseModel):
+    worker_id: str = Field(..., min_length=1, max_length=128)
+
+
+class WorkerLeaseRequest(BaseModel):
+    worker_id: str = Field(..., min_length=1, max_length=128)
+    fencing_token: int = Field(..., ge=1)
+
+
+class WorkerSubmitRequest(WorkerLeaseRequest):
+    execution_receipt: dict[str, Any] = Field(..., min_length=1)
+
+
+class WorkerFailureRequest(WorkerLeaseRequest):
+    error_message: str = Field(..., min_length=1, max_length=4000)
+
+
 class ExecuteDagRequest(BaseModel):
     max_concurrency: Optional[int] = Field(5, description="Max parallel workers")
 

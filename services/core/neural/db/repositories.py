@@ -49,6 +49,7 @@ from neural.db.models import (
     Proposal,
     SkillCertification,
     Task,
+    TaskAttempt,
     TaskDependency,
     TaskResult,
     ToolRecord,
@@ -114,6 +115,274 @@ class TaskRepository:
         await self.session.refresh(task)
         return task
 
+    async def _get_task_for_worker(self, task_id: str) -> Optional[Task]:
+        stmt = (
+            select(Task)
+            .where((Task.task_id == task_id) | (Task.id == task_id))
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def claim_next_task(self, worker_id: str, lease_seconds: int = 60) -> Optional[dict[str, Any]]:
+        """Atomically lease one assigned task and issue its monotonic fencing token."""
+        now = utc_now()
+        candidates = (
+            await self.session.execute(
+                select(Task)
+                .where(
+                    Task.assigned_to.is_not(None),
+                    Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
+                )
+                .order_by(Task.priority.asc(), Task.task_id.asc())
+                .limit(64)
+                .with_for_update(skip_locked=True)
+            )
+        ).scalars().all()
+
+        for task in candidates:
+            dependency_statuses = (
+                await self.session.execute(
+                    select(Task.status)
+                    .join(TaskDependency, TaskDependency.depends_on_task_id == Task.id)
+                    .where(TaskDependency.task_id == task.id)
+                )
+            ).scalars().all()
+            if any(status != TaskStatus.COMPLETED for status in dependency_statuses):
+                continue
+
+            attempts = (
+                await self.session.execute(
+                    select(TaskAttempt)
+                    .where(TaskAttempt.task_id == task.id)
+                    .order_by(TaskAttempt.attempt_number.desc())
+                )
+            ).scalars().all()
+            latest_attempt = attempts[0] if attempts else None
+            if latest_attempt and latest_attempt.status == "submitted":
+                # A submitted attempt waits for independent verification.
+                continue
+            if latest_attempt and latest_attempt.status == "waiting" and latest_attempt.lease_expires_at > now:
+                continue
+            employee = await self.session.scalar(
+                select(Employee).options(selectinload(Employee.container)).where(
+                    Employee.id == task.assigned_to,
+                    Employee.status == EmployeeStatus.WORKING,
+                )
+            )
+            if not employee or not employee.container or employee.container.status != ContainerStatus.RUNNING:
+                continue
+            if latest_attempt and latest_attempt.status in {"leased", "running"}:
+                if latest_attempt.fencing_token == task.fencing_token and latest_attempt.lease_expires_at > now:
+                    continue
+                latest_attempt.status = "expired"
+                latest_attempt.finished_at = now
+                latest_attempt.error_message = "Worker lease expired or was revoked by a newer fencing token."
+
+            new_fencing_token = task.fencing_token + 1
+            attempt_number = (latest_attempt.attempt_number + 1) if latest_attempt else 1
+            lease_expires_at = now + timedelta(seconds=lease_seconds)
+            async with get_session_lock(self.session):
+                claimed = await self.session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task.id,
+                        Task.fencing_token == task.fencing_token,
+                        Task.status == task.status,
+                    )
+                    .values(fencing_token=new_fencing_token)
+                )
+                if claimed.rowcount != 1:
+                    await self.session.rollback()
+                    continue
+                attempt = TaskAttempt(
+                    task_id=task.id,
+                    attempt_number=attempt_number,
+                    worker_id=worker_id,
+                    fencing_token=new_fencing_token,
+                    status="leased",
+                    claimed_at=now,
+                    lease_expires_at=lease_expires_at,
+                )
+                self.session.add(attempt)
+                await self.session.commit()
+
+            return {
+                "task_id": task.task_id,
+                "project_id": task.project_id,
+                "employee_id": employee.employee_id,
+                "workstation_container_id": employee.container.docker_id,
+                "title": task.title,
+                "objective": task.objective,
+                "scope": task.scope,
+                "acceptance_criteria": task.acceptance_criteria,
+                "attempt_id": attempt.id,
+                "attempt_number": attempt_number,
+                "fencing_token": new_fencing_token,
+                "lease_expires_at": lease_expires_at.isoformat(),
+                "status": task.status.value,
+            }
+        return None
+
+    async def start_task_attempt(self, task_id: str, worker_id: str, fencing_token: int) -> bool:
+        now = utc_now()
+        task = await self._get_task_for_worker(task_id)
+        if not task or task.fencing_token != fencing_token:
+            return False
+        async with get_session_lock(self.session):
+            attempt_update = await self.session.execute(
+                update(TaskAttempt)
+                .where(
+                    TaskAttempt.task_id == task.id,
+                    TaskAttempt.worker_id == worker_id,
+                    TaskAttempt.fencing_token == fencing_token,
+                    TaskAttempt.status == "leased",
+                    TaskAttempt.lease_expires_at > now,
+                )
+                .values(status="running", started_at=now, heartbeat_at=now)
+            )
+            if attempt_update.rowcount != 1:
+                await self.session.rollback()
+                return False
+            task_update = await self.session.execute(
+                update(Task)
+                .where(
+                    Task.id == task.id,
+                    Task.fencing_token == fencing_token,
+                    Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
+                )
+                .values(status=TaskStatus.RUNNING, started_at=now)
+            )
+            if task_update.rowcount != 1:
+                await self.session.rollback()
+                return False
+            await self.session.commit()
+        return True
+
+    async def release_task_claim(
+        self,
+        task_id: str,
+        worker_id: str,
+        fencing_token: int,
+        reason: str,
+    ) -> bool:
+        now = utc_now()
+        task = await self._get_task_for_worker(task_id)
+        if not task or task.fencing_token != fencing_token:
+            return False
+        async with get_session_lock(self.session):
+            result = await self.session.execute(
+                update(TaskAttempt)
+                .where(
+                    TaskAttempt.task_id == task.id,
+                    TaskAttempt.worker_id == worker_id,
+                    TaskAttempt.fencing_token == fencing_token,
+                    TaskAttempt.status == "leased",
+                )
+                .values(
+                    status="waiting",
+                    finished_at=now,
+                    lease_expires_at=now + timedelta(seconds=60),
+                    error_message=reason[:4000],
+                )
+            )
+            await self.session.commit()
+        return result.rowcount == 1
+
+    async def heartbeat_task_attempt(self, task_id: str, worker_id: str, fencing_token: int, lease_seconds: int = 60) -> Optional[str]:
+        now = utc_now()
+        task = await self._get_task_for_worker(task_id)
+        if not task or task.fencing_token != fencing_token or task.status != TaskStatus.RUNNING:
+            return None
+        new_expiry = now + timedelta(seconds=lease_seconds)
+        async with get_session_lock(self.session):
+            result = await self.session.execute(
+                update(TaskAttempt)
+                .where(
+                    TaskAttempt.task_id == task.id,
+                    TaskAttempt.worker_id == worker_id,
+                    TaskAttempt.fencing_token == fencing_token,
+                    TaskAttempt.status == "running",
+                    TaskAttempt.lease_expires_at > now,
+                )
+                .values(heartbeat_at=now, lease_expires_at=new_expiry)
+            )
+            await self.session.commit()
+        return new_expiry.isoformat() if result.rowcount == 1 else None
+
+    async def submit_task_attempt(
+        self,
+        task_id: str,
+        worker_id: str,
+        fencing_token: int,
+        execution_receipt: dict[str, Any],
+    ) -> bool:
+        now = utc_now()
+        task = await self._get_task_for_worker(task_id)
+        if not task or task.fencing_token != fencing_token or task.status != TaskStatus.RUNNING:
+            return False
+        async with get_session_lock(self.session):
+            result = await self.session.execute(
+                update(TaskAttempt)
+                .where(
+                    TaskAttempt.task_id == task.id,
+                    TaskAttempt.worker_id == worker_id,
+                    TaskAttempt.fencing_token == fencing_token,
+                    TaskAttempt.status == "running",
+                    TaskAttempt.lease_expires_at > now,
+                )
+                .values(
+                    status="submitted",
+                    execution_receipt=execution_receipt,
+                    finished_at=now,
+                    lease_expires_at=now,
+                )
+            )
+            await self.session.commit()
+        return result.rowcount == 1
+
+    async def fail_task_attempt(self, task_id: str, worker_id: str, fencing_token: int, error_message: str) -> bool:
+        now = utc_now()
+        task = await self._get_task_for_worker(task_id)
+        if not task or task.fencing_token != fencing_token or task.status != TaskStatus.RUNNING:
+            return False
+        async with get_session_lock(self.session):
+            attempt_update = await self.session.execute(
+                update(TaskAttempt)
+                .where(
+                    TaskAttempt.task_id == task.id,
+                    TaskAttempt.worker_id == worker_id,
+                    TaskAttempt.fencing_token == fencing_token,
+                    TaskAttempt.status == "running",
+                    TaskAttempt.lease_expires_at > now,
+                )
+                .values(
+                    status="failed",
+                    error_message=error_message[:4000],
+                    finished_at=now,
+                    lease_expires_at=now,
+                )
+            )
+            if attempt_update.rowcount != 1:
+                await self.session.rollback()
+                return False
+            task_update = await self.session.execute(
+                update(Task)
+                .where(Task.id == task.id, Task.fencing_token == fencing_token)
+                .where(Task.status == TaskStatus.RUNNING)
+                .values(
+                    status=TaskStatus.FAILED,
+                    completed_at=now,
+                    fencing_token=Task.fencing_token + 1,
+                )
+            )
+            if task_update.rowcount != 1:
+                await self.session.rollback()
+                return False
+            await self.session.commit()
+        return True
+
     async def get_by_task_id(self, task_id: str) -> Optional[Task]:
         stmt = (
             select(Task)
@@ -154,6 +423,8 @@ class TaskRepository:
                 )
 
         values: dict[str, Any] = {"status": status}
+        if status != TaskStatus.RUNNING:
+            values["fencing_token"] = Task.fencing_token + 1
         if status == TaskStatus.RUNNING:
             values["started_at"] = utc_now()
         elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
@@ -191,7 +462,8 @@ class TaskRepository:
                 .values(
                     status=TaskStatus.COMPLETED,
                     completed_at=utc_now(),
-                    verification_result=verification_receipt
+                    verification_result=verification_receipt,
+                    fencing_token=Task.fencing_token + 1,
                 )
             )
             await self.session.execute(stmt)
@@ -229,7 +501,11 @@ class TaskRepository:
             stmt = (
                 update(Task)
                 .where((Task.task_id == task_id) | (Task.id == task_id))
-                .values(assigned_to=emp_id, status=TaskStatus.ASSIGNED)
+                .values(
+                    assigned_to=emp_id,
+                    status=TaskStatus.ASSIGNED,
+                    fencing_token=Task.fencing_token + 1,
+                )
             )
             await self.session.execute(stmt)
             await self.session.commit()

@@ -25,6 +25,7 @@ from neural.api.routes import (
     skills,
     tasks,
     toolsmith,
+    worker,
 )
 from neural.config import get_settings
 from neural.db.engine import init_db
@@ -96,10 +97,12 @@ def create_app() -> FastAPI:
     async def require_owner_token(request, call_next):
         # Development remains convenient for the loopback-only local dashboard.
         # Deployed production APIs require an independently provisioned owner token.
-        if settings.APP_ENV == "production" and request.method != "OPTIONS" and request.url.path not in {
-            "/health/live",
-            "/health/ready",
-        }:
+        if (
+            settings.APP_ENV == "production"
+            and request.method != "OPTIONS"
+            and request.url.path not in {"/health/live", "/health/ready"}
+            and not request.url.path.startswith("/internal/worker/")
+        ):
             configured_token = settings.OWNER_API_TOKEN
             if not configured_token or len(configured_token) < 32:
                 return JSONResponse(
@@ -126,6 +129,7 @@ def create_app() -> FastAPI:
     app.include_router(employees.router)
     app.include_router(meetings.router)
     app.include_router(tasks.router)
+    app.include_router(worker.router)
     app.include_router(llm.router)
     app.include_router(comms.router)
     app.include_router(governance.router)

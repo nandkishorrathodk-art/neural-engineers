@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import (
     Enum as SQLEnum,
@@ -195,6 +196,7 @@ class Task(Base):
     resource_budget: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     verification_result: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    fencing_token: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
     deadline: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -210,6 +212,31 @@ class Task(Base):
     )
     results: Mapped[list["TaskResult"]] = relationship("TaskResult", back_populates="task")
     artifacts: Mapped[list["Artifact"]] = relationship("Artifact", back_populates="task")
+
+
+class TaskAttempt(Base):
+    __tablename__ = "task_attempts"
+    __table_args__ = (
+        UniqueConstraint("task_id", "attempt_number", name="uq_task_attempt_number"),
+        UniqueConstraint("task_id", "fencing_token", name="uq_task_attempt_fencing_token"),
+        Index("ix_task_attempt_lease", "status", "lease_expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    task_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="leased", index=True, nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    execution_receipt: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class TaskDependency(Base):
