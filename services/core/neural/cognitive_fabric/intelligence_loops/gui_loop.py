@@ -73,8 +73,6 @@ class ControlledGUIExecutionLoop:
                 guard.record_step(
                     step_name="observe_reason_act",
                     state=state_sig,
-                    tokens_used=180,
-                    cost_usd=0.002,
                     notes=f"Action: {action_type}",
                 )
 

@@ -71,8 +71,6 @@ class ControlledMemoryLoop:
                 guard.record_step(
                     step_name="extract_verify_store",
                     state=state_sig,
-                    tokens_used=80,
-                    cost_usd=0.001,
                     notes=f"Consolidated: {result.get('consolidated_records_count')}, Contradictions: {len(result.get('contradictions_detected', []))}",
                 )
 

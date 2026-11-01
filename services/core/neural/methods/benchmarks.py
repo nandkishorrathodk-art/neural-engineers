@@ -1,13 +1,7 @@
 from __future__ import annotations
 
-import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
-
-from neural.logger import get_logger
-
-logger = get_logger("ancos.methods.benchmarks")
 
 
 @dataclass
@@ -81,6 +75,10 @@ class MethodBenchmarkScorecard:
         }
 
 
+class BenchmarkUnavailableError(RuntimeError):
+    """Raised until benchmark scenarios are executed by a real method runner."""
+
+
 def get_default_method_benchmark_scenarios() -> list[BenchmarkScenario]:
     return [
         BenchmarkScenario(
@@ -124,8 +122,8 @@ def get_default_method_benchmark_scenarios() -> list[BenchmarkScenario]:
 
 class MethodBenchmarkHarness:
     """
-    Empirical benchmark harness for comparing problem-solving methods.
-    Measures execution latency, token efficiency, reproduction rate, and accuracy.
+    Benchmark contract for comparing problem-solving methods.
+    It fails closed until an executor-backed scenario runner is configured.
     """
 
     def __init__(self, scenarios: list[BenchmarkScenario] | None = None) -> None:
@@ -139,137 +137,6 @@ class MethodBenchmarkHarness:
         baseline_metrics: dict[str, Any] | None = None,
         baseline_method_id: str | None = None,
     ) -> MethodBenchmarkScorecard:
-        benchmark_id = f"BMK-{uuid.uuid4().hex[:8].upper()}"
-        logger.info("Executing empirical method benchmark", benchmark_id=benchmark_id, method_id=method_id)
-
-        # Baselines
-        base_acc = baseline_metrics.get("accuracy", 0.70) if baseline_metrics else 0.70
-        base_lat = baseline_metrics.get("avg_latency_ms", 320.0) if baseline_metrics else 320.0
-        base_tok_eff = baseline_metrics.get("token_efficiency", 0.75) if baseline_metrics else 0.75
-
-        total_scenarios = len(self.scenarios)
-        if total_scenarios == 0:
-            return MethodBenchmarkScorecard(
-                benchmark_id=benchmark_id,
-                method_id=method_id,
-                baseline_method_id=baseline_method_id,
-                total_scenarios=0,
-                passed_scenarios=0,
-                accuracy=0.0,
-                avg_latency_ms=0.0,
-                token_efficiency=0.0,
-                reproduction_rate=0.0,
-                composite_score=0.0,
-                baseline_accuracy=base_acc,
-                baseline_latency_ms=base_lat,
-                baseline_token_efficiency=base_tok_eff,
-                relative_improvement_pct=0.0,
-                recommendation="reject",
-                scenario_results=[],
-            )
-
-        step_count = len(steps)
-        scenario_results: list[ScenarioResult] = []
-
-        total_latency = 0.0
-        total_tokens = 0
-        passed_count = 0
-        reproduced_count = 0
-
-        # Evaluate each scenario against method steps & strategy characteristics
-        for scenario in self.scenarios:
-            t0 = time.perf_counter()
-
-            # Dynamic latency and token simulation grounded in method structure
-            # Steps with clear pre/post conditions and verification improve accuracy & stability
-            has_pre_conditions = any(isinstance(s, dict) and bool(s.get("pre_conditions")) for s in steps)
-            has_post_conditions = any(isinstance(s, dict) and bool(s.get("post_conditions")) for s in steps)
-            has_verification = "verification" in strategy_type.lower() or "spec" in strategy_type.lower()
-
-            base_latency_for_scenario = 60.0 * scenario.complexity_weight * (1.0 + step_count * 0.1)
-            time_spent_ms = round((time.perf_counter() - t0) * 1000 + base_latency_for_scenario, 2)
-            token_estimate = int(250 * scenario.complexity_weight * max(1, step_count // 2))
-
-            # Quality calculation: methods with verification & condition checks have high accuracy
-            quality_score = 0.75
-            if has_pre_conditions:
-                quality_score += 0.10
-            if has_post_conditions:
-                quality_score += 0.10
-            if has_verification:
-                quality_score += 0.05
-
-            scenario_passed = quality_score >= 0.80 or scenario.difficulty == "low"
-            # High stability/reproducibility if steps are well-defined
-            reproduced = has_post_conditions or step_count >= 3
-
-            if scenario_passed:
-                passed_count += 1
-            if reproduced:
-                reproduced_count += 1
-
-            total_latency += time_spent_ms
-            total_tokens += token_estimate
-
-            scenario_results.append(
-                ScenarioResult(
-                    scenario_id=scenario.scenario_id,
-                    passed=scenario_passed,
-                    latency_ms=time_spent_ms,
-                    token_count=token_estimate,
-                    output_summary=f"Processed via {strategy_type} with {step_count} steps",
-                    reproduced=reproduced,
-                )
-            )
-
-        total_scenarios = len(self.scenarios)
-        accuracy = round(passed_count / total_scenarios, 3)
-        avg_latency = round(total_latency / total_scenarios, 2)
-        reproduction_rate = round(reproduced_count / total_scenarios, 3)
-
-        # Token efficiency: inverse normalized tokens per scenario (higher is better)
-        avg_tokens = total_tokens / total_scenarios
-        token_efficiency = round(min(1.0, 500.0 / max(avg_tokens, 100.0)), 3)
-
-        # Composite score
-        # 0.40 * accuracy + 0.25 * latency_factor + 0.20 * token_efficiency + 0.15 * reproduction_rate
-        latency_factor = min(1.0, base_lat / max(avg_latency, 1.0))
-        composite_score = round(
-            (0.40 * accuracy) + (0.25 * latency_factor) + (0.20 * token_efficiency) + (0.15 * reproduction_rate),
-            3,
+        raise BenchmarkUnavailableError(
+            "No method execution adapter is configured. Structural heuristics cannot produce benchmark scores or promotion recommendations."
         )
-
-        base_composite = round(
-            (0.40 * base_acc) + (0.25 * 1.0) + (0.20 * base_tok_eff) + (0.15 * 0.85),
-            3,
-        )
-
-        rel_improvement = round(((composite_score - base_composite) / max(base_composite, 0.01)) * 100, 2)
-
-        # Recommendation
-        if (accuracy >= base_acc and accuracy >= 0.75 and reproduction_rate >= 0.85 and rel_improvement >= -2.0) or accuracy > base_acc:
-            recommendation = "promote"
-        elif accuracy < 0.50:
-            recommendation = "reject"
-        else:
-            recommendation = "iterate"
-
-        return MethodBenchmarkScorecard(
-            benchmark_id=benchmark_id,
-            method_id=method_id,
-            baseline_method_id=baseline_method_id,
-            total_scenarios=total_scenarios,
-            passed_scenarios=passed_count,
-            accuracy=accuracy,
-            avg_latency_ms=avg_latency,
-            token_efficiency=token_efficiency,
-            reproduction_rate=reproduction_rate,
-            composite_score=composite_score,
-            baseline_accuracy=base_acc,
-            baseline_latency_ms=base_lat,
-            baseline_token_efficiency=base_tok_eff,
-            relative_improvement_pct=rel_improvement,
-            recommendation=recommendation,
-            scenario_results=[r.to_dict() for r in scenario_results],
-        )
-

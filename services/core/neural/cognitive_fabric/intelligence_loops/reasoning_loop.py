@@ -58,8 +58,6 @@ class ControlledReasoningLoop:
                 guard.record_step(
                     step_name="evaluate_and_correct",
                     state={"plan": current_plan, "critiques": critiques},
-                    tokens_used=150,
-                    cost_usd=0.002,
                 )
 
                 if is_valid:

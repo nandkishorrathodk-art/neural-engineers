@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Callable, Optional
 
 from neural.cognitive_fabric.intelligence_loops.cycle_guard import (
@@ -39,7 +40,6 @@ class ControlledEvolutionLoop:
         observed_limitations: list[str],
         proposal_generator_fn: Optional[Callable[[list[str]], dict[str, Any]]] = None,
         experiment_runner_fn: Optional[Callable[[dict[str, Any]], float]] = None,
-        approver_id: str = "Boardroom",
     ) -> dict[str, Any]:
         guard = ControlledLoopGuard(
             loop_name=f"EvolutionLoop-{domain}",
@@ -48,8 +48,8 @@ class ControlledEvolutionLoop:
         )
 
         status = "in_progress"
-        promoted_proposal = None
-        benchmark_score = 0.0
+        proposal_for_review = None
+        benchmark_score: Optional[float] = None
 
         try:
             while status == "in_progress":
@@ -64,11 +64,26 @@ class ControlledEvolutionLoop:
                         "changes": [f"Optimized handling for: {lim}" for lim in observed_limitations],
                     }
 
-                # Step 2: Experiment & Benchmark
-                if experiment_runner_fn:
-                    benchmark_score = experiment_runner_fn(proposal)
-                else:
-                    benchmark_score = 0.92  # Default verified score
+                # Step 2: Experiment & Benchmark. Without a real runner this is
+                # an unevaluated candidate and cannot cross the promotion gate.
+                if not experiment_runner_fn:
+                    status = "not_evaluated"
+                    guard.record_step(
+                        step_name="proposal_not_evaluated",
+                        state={"proposal_id": proposal.get("proposal_id"), "benchmark_score": None},
+                        notes="No experiment runner is configured; candidate was not promoted.",
+                    )
+                    break
+
+                benchmark_score = float(experiment_runner_fn(proposal))
+                if not math.isfinite(benchmark_score) or not 0.0 <= benchmark_score <= 1.0:
+                    status = "invalid_benchmark_result"
+                    guard.record_step(
+                        step_name="invalid_benchmark_result",
+                        state={"proposal_id": proposal.get("proposal_id"), "benchmark_score": str(benchmark_score)},
+                        notes="Experiment runner returned a score outside the valid [0, 1] range.",
+                    )
+                    break
 
                 # Record loop state with CycleGuard
                 state_sig = {
@@ -78,22 +93,13 @@ class ControlledEvolutionLoop:
                 guard.record_step(
                     step_name="propose_and_experiment",
                     state=state_sig,
-                    tokens_used=200,
-                    cost_usd=0.003,
                     notes=f"Benchmark score: {benchmark_score}",
                 )
 
-                # Step 3: Approve and Promote if score >= threshold
+                # Step 3: Require an explicit human approver before promotion.
                 if benchmark_score >= self.promotion_threshold:
-                    promoted_proposal = proposal
-                    # Store as organizational memory policy/strategy
-                    await self.memory_store.store_organizational(
-                        policy_name=f"Evolution-{domain}-{proposal.get('proposal_id')}",
-                        statement=f"Promoted evolution proposal: {proposal.get('title')}. Benchmark score: {benchmark_score}",
-                        enforcement_level="active",
-                        approved_by=approver_id,
-                    )
-                    status = "promoted"
+                    status = "awaiting_human_approval"
+                    proposal_for_review = proposal
                     break
                 else:
                     status = "rejected_below_threshold"
@@ -109,7 +115,8 @@ class ControlledEvolutionLoop:
             "iterations": guard.iteration,
             "benchmark_score": benchmark_score,
             "is_promoted": status == "promoted",
-            "promoted_proposal": promoted_proposal,
+            "promoted_proposal": None,
+            "proposal_for_review": proposal_for_review,
             "audit_report": guard.get_audit_report(),
         }
 

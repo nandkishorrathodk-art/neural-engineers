@@ -107,19 +107,17 @@ class SelfEvolutionEngine:
             if receipt.exit_code == 0 and receipt.passed_safety and not receipt.timed_out:
                 passed_count += 1
 
-        baseline_rate = 0.65
-        exp_rate = round(passed_count / total_count, 2) if total_count > 0 else 0.85
-        improvement = round((exp_rate - baseline_rate) * 100, 1)
+        exp_rate = round(passed_count / total_count, 2) if total_count > 0 else None
 
         return {
             "hypothesis_id": hyp_id,
-            "baseline_pass_rate": baseline_rate,
+            "baseline_pass_rate": None,
             "experiment_pass_rate": exp_rate,
-            "improvement_pct": improvement,
+            "improvement_pct": None,
             "total_modules_tested": total_count,
             "passed_modules_count": passed_count,
             "receipts": receipts,
-            "recommendation": "stage_for_release" if exp_rate >= 0.70 else "iterate_hypothesis",
+            "recommendation": "holdout_comparison_required" if total_count else "insufficient_evidence",
         }
 
     async def run_evolution_cycle(

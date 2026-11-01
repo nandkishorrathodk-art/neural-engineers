@@ -9,6 +9,7 @@ from neural.db.repositories import MethodBenchmarkRepository, MethodRepository
 from neural.logger import get_logger
 from neural.methods.benchmarks import (
     BenchmarkScenario,
+    BenchmarkUnavailableError,
     MethodBenchmarkHarness,
     MethodBenchmarkScorecard,
 )
@@ -152,45 +153,9 @@ class MethodLabEngine:
         method_id_or_name: str,
         force: bool = False,
     ) -> MethodRecord:
-        method: MethodRecord | None = None
-        if self.method_repo:
-            method = await self.method_repo.get_by_method_id(method_id_or_name)
-            if not method:
-                method = await self.method_repo.get_by_id(method_id_or_name)
-
-        if not method:
-            method = await self.catalog.get_method(method_id_or_name)
-
-        if not method:
-            raise ValueError(f"Method '{method_id_or_name}' not found")
-
-        if not force:
-            # Check latest benchmark recommendation
-            latest_rec = "iterate"
-            if method.benchmarks:
-                latest_rec = method.benchmarks[-1].recommendation
-            elif self.benchmark_repo:
-                benchmarks = await self.benchmark_repo.list_for_method(method.id)
-                if benchmarks:
-                    latest_rec = benchmarks[0].recommendation
-
-            if latest_rec != "promote":
-                raise ValueError(
-                    f"Method '{method.name}' does not meet promotion threshold (recommendation={latest_rec}). Use force=True to override."
-                )
-
-        if self.method_repo:
-            promoted = await self.method_repo.promote_method(method.method_id)
-            if promoted:
-                method = promoted
-        else:
-            method.status = "promoted"
-            method.promoted_at = datetime.now(UTC).replace(tzinfo=None)
-            self.catalog.register_in_memory(method)
-
-        logger.info("Successfully promoted method into active catalog", method_id=method.method_id, name=method.name)
-        return method
-
+        raise BenchmarkUnavailableError(
+            "Method promotion is disabled until executor-backed benchmark evidence and an approval receipt are available."
+        )
     async def list_methods(
         self,
         status: str | None = None,

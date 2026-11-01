@@ -9,6 +9,7 @@ from neural.constants import MemoryCategory, TaskStatus
 from neural.db.repositories import EmployeeRepository, EvolutionRepository, TaskRepository
 from neural.logger import get_logger
 from neural.memory.store import OrganizationalMemoryStore
+from neural.methods.benchmarks import BenchmarkUnavailableError
 from neural.methods.lab import MethodLabEngine
 from neural.tools.engine import ToolsmithEngine
 
@@ -199,20 +200,16 @@ class PromptOptimizer:
 
         optimized_prompt = current_prompt.strip() + "\n\n" + "\n".join(additions)
 
-        # Calculate estimated improvement based on rule specificity
-        baseline_quality = 0.68
-        optimized_quality = 0.92
-        improvement_pct = round(((optimized_quality - baseline_quality) / baseline_quality) * 100, 1)
-
         return {
             "target_role": target_role,
             "pattern_type": failure_pattern.pattern_type,
+            "candidate_status": "not_evaluated",
             "baseline_prompt_length": len(current_prompt),
             "optimized_prompt_length": len(optimized_prompt),
             "rules_injected": additions,
-            "baseline_quality_score": baseline_quality,
-            "optimized_quality_score": optimized_quality,
-            "improvement_pct": improvement_pct,
+            "baseline_quality_score": None,
+            "optimized_quality_score": None,
+            "improvement_pct": None,
             "optimized_prompt": optimized_prompt,
         }
 
@@ -250,7 +247,7 @@ class RecursiveSelfImprovementEngine:
     async def run_self_improvement_cycle(
         self,
         trigger_reason: str = "scheduled_periodic",
-        auto_apply: bool = True,
+        auto_apply: bool = False,
         sample_failures: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         cycle_id = f"SELF-EVO-{uuid.uuid4().hex[:8].upper()}"
@@ -326,19 +323,30 @@ print("ALL_SANITIZER_TESTS_PASSED")
                     author_id="MethodLabRecursiveAI",
                 )
                 # Benchmark method
-                bmk_rec, scorecard = await self.method_lab.benchmark_method(method_rec.method_id)
-                # Promote if recommended
-                if scorecard.recommendation == "promote" or auto_apply:
-                    promoted_m = await self.method_lab.promote_method(method_rec.method_id, force=auto_apply)
+                try:
+                    _, scorecard = await self.method_lab.benchmark_method(method_rec.method_id)
+                except BenchmarkUnavailableError as err:
                     methods_synthesized.append({
-                        "method_id": promoted_m.method_id,
-                        "name": promoted_m.name,
-                        "status": promoted_m.status,
-                        "composite_score": scorecard.composite_score,
-                        "accuracy": scorecard.accuracy,
-                        "relative_improvement_pct": scorecard.relative_improvement_pct,
+                        "method_id": method_rec.method_id,
+                        "name": method_rec.name,
+                        "status": "not_evaluated",
+                        "evaluation_reason": str(err),
                     })
-                    actions_taken.append(f"Synthesized, benchmarked, and promoted method: {m_name}")
+                    actions_taken.append(f"Staged unevaluated method candidate: {m_name}")
+                else:
+                    # Benchmarking can nominate a candidate, but this loop has
+                    # no approval receipt and therefore cannot activate it.
+                    if scorecard.recommendation == "promote":
+                        methods_synthesized.append({
+                            "method_id": method_rec.method_id,
+                            "name": method_rec.name,
+                            "status": "awaiting_human_approval",
+                            "composite_score": scorecard.composite_score,
+                            "accuracy": scorecard.accuracy,
+                            "relative_improvement_pct": scorecard.relative_improvement_pct,
+                            "auto_apply_blocked": auto_apply,
+                        })
+                        actions_taken.append(f"Synthesized and benchmarked method candidate for human review: {m_name}")
 
             # Prompt optimization remediation
             if pat.remediation_type == "prompt" or pat.pattern_type == "ASYNC_SESSION_MISMANAGEMENT":
@@ -349,7 +357,9 @@ print("ALL_SANITIZER_TESTS_PASSED")
                     target_role="Senior Backend Engineer",
                 )
                 prompts_optimized.append(opt_res)
-                actions_taken.append(f"Optimized prompt for Senior Backend Engineer regarding {pat.pattern_type}")
+                actions_taken.append(
+                    f"Generated unevaluated prompt candidate for Senior Backend Engineer regarding {pat.pattern_type}"
+                )
 
             # 3. Store in 4-Tier Memory
             mem_entry = await self.memory_store.store_entry(

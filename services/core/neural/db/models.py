@@ -634,6 +634,9 @@ class MethodBenchmarkRecord(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     benchmark_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    evaluation_status: Mapped[str] = mapped_column(
+        String(32), default="not_evaluated", server_default=text("'not_evaluated'"), nullable=False
+    )
     method_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("method_records.id", ondelete="CASCADE"), index=True, nullable=False
     )

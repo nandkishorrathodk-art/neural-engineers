@@ -420,6 +420,7 @@ class MethodBenchmarkResponse(BaseModel):
     id: str
     benchmark_id: str
     method_id: str
+    evaluation_status: str = "not_evaluated"
     total_scenarios: int
     passed_scenarios: int
     accuracy: float

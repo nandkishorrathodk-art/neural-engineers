@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from typing import Any, Optional
 
@@ -43,6 +44,8 @@ class ControlledLoopGuard:
         self.start_time = time.time()
         self.consumed_tokens = 0
         self.consumed_cost_usd = 0.0
+        self._measured_token_steps = 0
+        self._measured_cost_steps = 0
         self._state_hashes: list[str] = []
         self._audit_trail: list[dict[str, Any]] = []
 
@@ -54,14 +57,22 @@ class ControlledLoopGuard:
         self,
         step_name: str,
         state: Any,
-        tokens_used: int = 0,
-        cost_usd: float = 0.0,
+        tokens_used: Optional[int] = None,
+        cost_usd: Optional[float] = None,
         notes: Optional[str] = None,
     ) -> None:
+        if tokens_used is not None and tokens_used < 0:
+            raise ValueError("tokens_used cannot be negative")
+        if cost_usd is not None and (not math.isfinite(cost_usd) or cost_usd < 0):
+            raise ValueError("cost_usd must be a finite non-negative value")
         self.iteration += 1
         elapsed = time.time() - self.start_time
-        self.consumed_tokens += tokens_used
-        self.consumed_cost_usd += cost_usd
+        if tokens_used is not None:
+            self.consumed_tokens += tokens_used
+            self._measured_token_steps += 1
+        if cost_usd is not None:
+            self.consumed_cost_usd += cost_usd
+            self._measured_cost_steps += 1
 
         state_hash = self.compute_state_hash(state)
 
@@ -105,8 +116,20 @@ class ControlledLoopGuard:
             "loop_name": self.loop_name,
             "total_iterations": self.iteration,
             "elapsed_seconds": round(time.time() - self.start_time, 3),
-            "consumed_tokens": self.consumed_tokens,
-            "consumed_cost_usd": round(self.consumed_cost_usd, 4),
+            "consumed_tokens": (
+                self.consumed_tokens
+                if self.iteration > 0 and self._measured_token_steps == self.iteration
+                else None
+            ),
+            "consumed_cost_usd": (
+                round(self.consumed_cost_usd, 4)
+                if self.iteration > 0 and self._measured_cost_steps == self.iteration
+                else None
+            ),
+            "token_measurement_coverage": f"{self._measured_token_steps}/{self.iteration}",
+            "cost_measurement_coverage": f"{self._measured_cost_steps}/{self.iteration}",
+            "token_budget_enforced": self.iteration > 0 and self._measured_token_steps == self.iteration,
+            "cost_budget_enforced": self.iteration > 0 and self._measured_cost_steps == self.iteration,
             "steps": self._audit_trail,
             "audit_trail": self._audit_trail,
         }

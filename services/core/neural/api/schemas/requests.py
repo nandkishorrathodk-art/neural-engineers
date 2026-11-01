@@ -284,7 +284,7 @@ class PromoteMethodRequest(BaseModel):
 
 class TriggerSelfImprovementRequest(BaseModel):
     trigger_reason: str = Field(default="manual_api_trigger", description="Trigger context")
-    auto_apply: bool = Field(default=True, description="Whether to auto-apply and promote verified additions")
+    auto_apply: bool = Field(default=False, description="Legacy flag; promotion remains behind human approval")
     sample_failures: Optional[list[dict[str, Any]]] = Field(default=None, description="Optional failure logs to analyze")
 
 

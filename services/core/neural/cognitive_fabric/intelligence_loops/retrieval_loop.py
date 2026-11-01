@@ -77,8 +77,6 @@ class ControlledRetrievalLoop:
                 guard.record_step(
                     step_name="search_and_inspect",
                     state={"query": current_query, "evidence": evidence_signature, "sufficiency": final_sufficiency},
-                    tokens_used=120,
-                    cost_usd=0.001,
                     notes=f"Sufficiency: {final_sufficiency}, Gaps: {len(gaps)}",
                 )
 

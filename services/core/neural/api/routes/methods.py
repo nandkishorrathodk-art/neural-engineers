@@ -16,6 +16,7 @@ from neural.api.schemas.responses import (
 )
 from neural.db.models import MethodBenchmarkRecord, MethodRecord
 from neural.db.repositories import MethodBenchmarkRepository, MethodRepository
+from neural.methods.benchmarks import BenchmarkUnavailableError
 from neural.methods.lab import MethodLabEngine
 
 router = APIRouter(prefix="/methods", tags=["Method Lab & Methodology Catalog"])
@@ -49,6 +50,7 @@ def serialize_benchmark(b: MethodBenchmarkRecord) -> MethodBenchmarkResponse:
         id=b.id,
         benchmark_id=b.benchmark_id,
         method_id=b.method_id,
+        evaluation_status=b.evaluation_status,
         total_scenarios=b.total_scenarios,
         passed_scenarios=b.passed_scenarios,
         accuracy=b.accuracy,
@@ -96,14 +98,15 @@ async def benchmark_method(
     bmk_repo: MethodBenchmarkRepository = Depends(get_method_benchmark_repo),
 ):
     """
-    Runs empirical benchmark harness measuring execution latency, token efficiency,
-    reproduction rate, and accuracy against baselines.
+    Runs the method benchmark only when an executor-backed runner is configured.
     """
     try:
         record, scorecard = await engine.benchmark_method(
             method_id_or_name=method_id_or_name,
             baseline_method_id=req.baseline_method_id,
         )
+    except BenchmarkUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -115,6 +118,7 @@ async def benchmark_method(
         id=scorecard.benchmark_id,
         benchmark_id=scorecard.benchmark_id,
         method_id=scorecard.method_id,
+        evaluation_status="not_evaluated",
         total_scenarios=scorecard.total_scenarios,
         passed_scenarios=scorecard.passed_scenarios,
         accuracy=scorecard.accuracy,
@@ -144,6 +148,8 @@ async def promote_method(
     try:
         method = await engine.promote_method(method_id_or_name=method_id_or_name, force=req.force)
         return serialize_method(method)
+    except BenchmarkUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
