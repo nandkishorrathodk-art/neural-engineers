@@ -406,6 +406,8 @@ class Approval(Base):
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     requested_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    consumed_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
 
 class MemoryEntry(Base):

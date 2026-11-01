@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from neural.api.deps import get_db_session
+from neural.api.deps import get_db_session, require_owner_identity
 from neural.db.repositories import ApprovalRepository, AuditRepository, TaskRepository
 from neural.security.approval_gates import HumanApprovalGate
 from neural.security.kill_switch import get_kill_switch
@@ -15,19 +15,22 @@ router = APIRouter(prefix="/security", tags=["Zero-Trust Security & Control Room
 
 class EmergencyStopRequest(BaseModel):
     reason: str = Field(default="Operator triggered emergency stop via Control Room")
-    actor: str = Field(default="human_operator")
 
 
 class ResumeRequest(BaseModel):
-    actor: str = Field(default="human_operator")
     recovery_strategy: str = Field(default="checkpoint")
-    auth_token: Optional[str] = None
 
 
 class ApprovalDecisionPayload(BaseModel):
-    decision: str = Field(description="Must be 'approved' or 'rejected'")
-    decided_by: str = Field(default="human_operator")
+    decision: str = Field(pattern="^(approved|rejected)$")
     notes: Optional[str] = None
+
+
+class ApprovalRequestPayload(BaseModel):
+    action_type: str = Field(pattern="^(PROVISION_WORKSTATION|ROTATE_VNC_PASSWORD|TERMINATE_WORKSTATION)$")
+    employee_id: str = Field(min_length=1, max_length=128)
+    docker_id: Optional[str] = Field(default=None, max_length=128)
+    justification: str = Field(min_length=8, max_length=2000)
 
 
 @router.get("/status")
@@ -51,6 +54,7 @@ async def get_security_status() -> dict[str, Any]:
 async def trigger_emergency_stop(
     body: EmergencyStopRequest,
     session: AsyncSession = Depends(get_db_session),
+    actor: str = Depends(require_owner_identity),
 ) -> dict[str, Any]:
     """
     Activates the Global Emergency Kill Switch.
@@ -61,7 +65,7 @@ async def trigger_emergency_stop(
     audit_repo = AuditRepository(session)
     receipt = await kill_switch.emergency_halt(
         reason=body.reason,
-        actor=body.actor,
+        actor=actor,
         audit_repo=audit_repo,
     )
     return receipt
@@ -71,6 +75,7 @@ async def trigger_emergency_stop(
 async def resume_system(
     body: ResumeRequest,
     session: AsyncSession = Depends(get_db_session),
+    actor: str = Depends(require_owner_identity),
 ) -> dict[str, Any]:
     """
     Resumes system operations from an emergency halt.
@@ -80,9 +85,9 @@ async def resume_system(
     task_repo = TaskRepository(session)
     audit_repo = AuditRepository(session)
     receipt = await kill_switch.resume(
-        actor=body.actor,
+        actor=actor,
         recovery_strategy=body.recovery_strategy,
-        auth_token=body.auth_token,
+        auth_token=None,
         task_repo=task_repo,
         audit_repo=audit_repo,
     )
@@ -92,6 +97,7 @@ async def resume_system(
 @router.get("/approvals")
 async def list_pending_approvals(
     session: AsyncSession = Depends(get_db_session),
+    _: str = Depends(require_owner_identity),
 ) -> list[dict[str, Any]]:
     """Returns all pending human sovereignty approval requests for destructive operations."""
     approval_repo = ApprovalRepository(session)
@@ -111,11 +117,41 @@ async def list_pending_approvals(
     ]
 
 
+@router.post("/approvals")
+async def request_workstation_approval(
+    body: ApprovalRequestPayload,
+    session: AsyncSession = Depends(get_db_session),
+    actor: str = Depends(require_owner_identity),
+) -> dict[str, Any]:
+    needs_container = body.action_type in {"ROTATE_VNC_PASSWORD", "TERMINATE_WORKSTATION"}
+    if needs_container != bool(body.docker_id):
+        raise HTTPException(
+            status_code=422,
+            detail="This action requires docker_id for scope, while provisioning approvals must omit it.",
+        )
+    approval_repo = ApprovalRepository(session)
+    audit_repo = AuditRepository(session)
+    details = {"employee_id": body.employee_id}
+    if body.docker_id:
+        details["docker_id"] = body.docker_id
+    approval = await HumanApprovalGate.request_approval(
+        action_type=body.action_type,
+        requested_by=actor,
+        description=f"{body.action_type} for employee {body.employee_id}",
+        justification=body.justification,
+        details=details,
+        approval_repo=approval_repo,
+        audit_repo=audit_repo,
+    )
+    return {"id": approval.id, "action_type": approval.action_type, "status": approval.status.value, "details": approval.details}
+
+
 @router.post("/approvals/{approval_id}/decide")
 async def decide_approval_request(
     approval_id: str,
     body: ApprovalDecisionPayload,
     session: AsyncSession = Depends(get_db_session),
+    actor: str = Depends(require_owner_identity),
 ) -> dict[str, Any]:
     """Decides a human approval request ('approved' or 'rejected')."""
     approval_repo = ApprovalRepository(session)
@@ -124,7 +160,7 @@ async def decide_approval_request(
     app = await HumanApprovalGate.decide(
         approval_id=approval_id,
         decision=body.decision,
-        decided_by=body.decided_by,
+        decided_by=actor,
         approval_repo=approval_repo,
         audit_repo=audit_repo,
     )

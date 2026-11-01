@@ -1359,15 +1359,48 @@ class ApprovalRepository:
         return result.scalars().all()
 
     async def decide(self, approval_id: str, decision: str, decided_by: str) -> Optional[Approval]:
-        approval = await self.get_by_id(approval_id)
-        if not approval:
-            return None
-        approval.status = ApprovalStatus.APPROVED if decision.lower() == "approved" else ApprovalStatus.REJECTED
-        approval.decided_by = decided_by
-        approval.decided_at = utc_now()
-        await self.session.commit()
-        await self.session.refresh(approval)
-        return approval
+        async with get_session_lock(self.session):
+            approval = await self.session.scalar(
+                select(Approval).where(Approval.id == approval_id).with_for_update()
+            )
+            if not approval or approval.status != ApprovalStatus.PENDING:
+                await self.session.rollback()
+                return None
+            normalized = decision.lower()
+            if normalized not in {"approved", "rejected"}:
+                raise ValueError("Approval decision must be approved or rejected.")
+            approval.status = ApprovalStatus.APPROVED if normalized == "approved" else ApprovalStatus.REJECTED
+            approval.decided_by = decided_by
+            approval.decided_at = utc_now()
+            await self.session.commit()
+            await self.session.refresh(approval)
+            return approval
+
+    async def consume_once(
+        self,
+        approval_id: str,
+        action_type: str,
+        expected_details: dict[str, Any],
+        consumed_by: str,
+    ) -> Optional[Approval]:
+        async with get_session_lock(self.session):
+            approval = await self.session.scalar(
+                select(Approval).where(Approval.id == approval_id).with_for_update()
+            )
+            if (
+                not approval
+                or approval.status != ApprovalStatus.APPROVED
+                or approval.consumed_at is not None
+                or approval.action_type != action_type
+                or any(approval.details.get(key) != value for key, value in expected_details.items())
+            ):
+                await self.session.rollback()
+                return None
+            approval.consumed_at = utc_now()
+            approval.consumed_by = consumed_by
+            await self.session.commit()
+            await self.session.refresh(approval)
+            return approval
 
 
 

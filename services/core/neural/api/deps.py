@@ -80,6 +80,23 @@ async def require_worker_token(authorization: str | None = Header(default=None))
     raise HTTPException(status_code=401, detail="Valid worker bearer token required.")
 
 
+async def require_owner_identity(authorization: str | None = Header(default=None)) -> str:
+    settings = get_settings()
+    if settings.APP_ENV != "production":
+        return "local-owner"
+    expected = settings.OWNER_API_TOKEN
+    if not expected or len(expected) < 32:
+        raise HTTPException(status_code=503, detail="Owner API credentials are not configured.")
+    service_tokens = [settings.WORKER_API_TOKEN, settings.VERIFIER_API_TOKEN]
+    service_tokens.extend(settings.WORKER_API_TOKENS.values())
+    if any(token and secrets.compare_digest(expected, token) for token in service_tokens):
+        raise HTTPException(status_code=503, detail="Owner and service credentials must be different.")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Valid owner bearer token required.")
+    return "human-owner"
+
+
 async def require_verifier_token(authorization: str | None = Header(default=None)) -> str:
     settings = get_settings()
     expected = settings.VERIFIER_API_TOKEN

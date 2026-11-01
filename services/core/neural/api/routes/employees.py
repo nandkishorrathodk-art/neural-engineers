@@ -1,12 +1,14 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from neural.api.deps import (
+    get_approval_repo,
     get_audit_repo,
     get_container_manager,
     get_container_repo,
     get_employee_repo,
     get_task_repo,
+    require_owner_identity,
 )
 from neural.api.schemas.requests import CreateEmployeeRequest
 from neural.api.schemas.responses import (
@@ -17,6 +19,7 @@ from neural.api.schemas.responses import (
 )
 from neural.containers.manager import ContainerManager
 from neural.db.repositories import (
+    ApprovalRepository,
     AuditRepository,
     ContainerRepository,
     EmployeeRepository,
@@ -152,14 +155,26 @@ async def get_employee_workstation(
 @router.post("/{employee_id}/workstation/provision", response_model=WorkstationResponse)
 async def provision_employee_workstation(
     employee_id: str,
+    approval_id: str = Query(..., min_length=1),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     container_repo: ContainerRepository = Depends(get_container_repo),
     audit_repo: AuditRepository = Depends(get_audit_repo),
-    container_mgr: ContainerManager = Depends(get_container_manager)
+    approval_repo: ApprovalRepository = Depends(get_approval_repo),
+    container_mgr: ContainerManager = Depends(get_container_manager),
+    actor: str = Depends(require_owner_identity),
 ):
     employee = await employee_repo.get_by_employee_id(employee_id)
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
+
+    approval = await approval_repo.consume_once(
+        approval_id,
+        "PROVISION_WORKSTATION",
+        {"employee_id": employee.employee_id},
+        actor,
+    )
+    if not approval:
+        raise HTTPException(status_code=409, detail="A current, approved, unused workstation-provision approval is required.")
 
     role_image = "employee-base"
     if employee.model_config_data and "container_template" in employee.model_config_data:
@@ -173,11 +188,15 @@ async def provision_employee_workstation(
     )
 
     await audit_repo.log(
-        actor="BossAI",
+        actor=actor,
         action="PROVISION_WORKSTATION",
         resource_type="Container",
         resource_id=spec["docker_id"],
-        details={"employee_id": employee.employee_id, "vnc_port": spec["vnc_port"]}
+        details={
+            "employee_id": employee.employee_id,
+            "vnc_port": spec["vnc_port"],
+            "approval_id": approval.id,
+        },
     )
 
     return WorkstationResponse(
@@ -199,9 +218,13 @@ async def provision_employee_workstation(
 @router.post("/{employee_id}/workstation/vnc-password", response_model=VncCredentialResponse)
 async def rotate_employee_vnc_password(
     employee_id: str,
+    approval_id: str = Query(..., min_length=1),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     container_repo: ContainerRepository = Depends(get_container_repo),
+    audit_repo: AuditRepository = Depends(get_audit_repo),
+    approval_repo: ApprovalRepository = Depends(get_approval_repo),
     container_mgr: ContainerManager = Depends(get_container_manager),
+    actor: str = Depends(require_owner_identity),
 ):
     employee = await employee_repo.get_by_employee_id(employee_id)
     if not employee:
@@ -217,7 +240,23 @@ async def rotate_employee_vnc_password(
     if workstation.get("status") != "running":
         raise HTTPException(status_code=409, detail="Workstation must be running before rotating its VNC password")
 
+    approval = await approval_repo.consume_once(
+        approval_id,
+        "ROTATE_VNC_PASSWORD",
+        {"employee_id": employee.employee_id, "docker_id": workstation["docker_id"]},
+        actor,
+    )
+    if not approval:
+        raise HTTPException(status_code=409, detail="A current, approved, unused password-rotation approval is required.")
+
     password = await container_mgr.rotate_vnc_password(workstation["docker_id"])
+    await audit_repo.log(
+        actor=actor,
+        action="ROTATE_VNC_PASSWORD",
+        resource_type="Container",
+        resource_id=workstation["docker_id"],
+        details={"employee_id": employee.employee_id, "approval_id": approval.id},
+    )
     return VncCredentialResponse(
         employee_id=employee.employee_id,
         docker_id=workstation["docker_id"],
@@ -228,10 +267,13 @@ async def rotate_employee_vnc_password(
 @router.post("/{employee_id}/workstation/terminate")
 async def terminate_employee_workstation(
     employee_id: str,
+    approval_id: str = Query(..., min_length=1),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     container_repo: ContainerRepository = Depends(get_container_repo),
     audit_repo: AuditRepository = Depends(get_audit_repo),
-    container_mgr: ContainerManager = Depends(get_container_manager)
+    approval_repo: ApprovalRepository = Depends(get_approval_repo),
+    container_mgr: ContainerManager = Depends(get_container_manager),
+    actor: str = Depends(require_owner_identity),
 ):
     employee = await employee_repo.get_by_employee_id(employee_id)
     if not employee:
@@ -246,14 +288,22 @@ async def terminate_employee_workstation(
         raise HTTPException(status_code=404, detail=f"No active workstation found for employee '{employee_id}'")
 
     docker_id = desktop_spec["docker_id"]
+    approval = await approval_repo.consume_once(
+        approval_id,
+        "TERMINATE_WORKSTATION",
+        {"employee_id": employee.employee_id, "docker_id": docker_id},
+        actor,
+    )
+    if not approval:
+        raise HTTPException(status_code=409, detail="A current, approved, unused workstation-termination approval is required.")
     await container_mgr.terminate_desktop(docker_id, container_repo=container_repo)
 
     await audit_repo.log(
-        actor="BossAI",
+        actor=actor,
         action="TERMINATE_WORKSTATION",
         resource_type="Container",
         resource_id=docker_id,
-        details={"employee_id": employee.employee_id}
+        details={"employee_id": employee.employee_id, "approval_id": approval.id}
     )
 
     return {"status": "terminated", "docker_id": docker_id, "employee_id": employee.employee_id}
