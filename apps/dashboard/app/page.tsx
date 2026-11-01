@@ -17,7 +17,7 @@ import {
 export default function DashboardOverview() {
   const [killSwitchActive, setKillSwitchActive] = useState(false);
   const [showKillModal, setShowKillModal] = useState(false);
-  const [projects, setProjects] = useState<Array<{ name: string; progress: number; color: string }>>([]);
+  const [projects, setProjects] = useState<Array<{ name: string; status: string }>>([]);
   const [activities, setActivities] = useState<Array<{ text: string; time: string }>>([]);
   const [bossStatus, setBossStatus] = useState<any>(null);
   const [telemetry, setTelemetry] = useState<any>(null);
@@ -45,10 +45,9 @@ export default function DashboardOverview() {
 
         if (projs.status === 'fulfilled' && Array.isArray(projs.value)) {
           setProjects(
-            projs.value.map((p: any, idx: number) => ({
-              name: p.name || `Project #${idx + 1}`,
-              progress: p.status === 'completed' ? 100 : (p.status === 'in_progress' ? 65 : 25),
-              color: p.status === 'completed' ? 'bg-emerald-400' : 'bg-sky-400',
+            projs.value.map((p: any) => ({
+              name: p.name || p.title || 'Untitled project',
+              status: String(p.status || 'unknown').replaceAll('_', ' '),
             }))
           );
         }
@@ -62,7 +61,7 @@ export default function DashboardOverview() {
           for (const p of projs.value.slice(0, 2)) {
             activityList.push({
               text: `Project "${p.name}" status: ${p.status}`,
-              time: 'Active',
+              time: p.status || 'Project',
             });
           }
         }
@@ -70,7 +69,7 @@ export default function DashboardOverview() {
           for (const m of mtgs.value.slice(0, 2)) {
             activityList.push({
               text: `Meeting "${m.title}" (${m.status})`,
-              time: 'Recent',
+              time: m.status || 'Meeting',
             });
           }
         }
@@ -79,7 +78,7 @@ export default function DashboardOverview() {
             const preview = msg.payload?.content || (typeof msg.payload === 'string' ? msg.payload : '') || '';
             activityList.push({
               text: `Comms: ${msg.sender} → ${msg.recipient || 'All'}: ${preview.slice(0, 25)}`,
-              time: 'Live',
+              time: msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Message',
             });
           }
         }
@@ -87,12 +86,9 @@ export default function DashboardOverview() {
           for (const emp of emps.value.slice(0, 2)) {
             activityList.push({
               text: `Workforce: ${emp.name} (${emp.title}) assigned to ${emp.department}`,
-              time: 'Assigned',
+              time: 'Employee',
             });
           }
-        }
-        if (activityList.length === 0) {
-          activityList.push({ text: 'All autonomous agent loops standing by', time: 'Nominal' });
         }
         setActivities(activityList.slice(0, 4));
       } catch (e) {
@@ -105,10 +101,10 @@ export default function DashboardOverview() {
     return () => clearInterval(interval);
   }, []);
 
-  const cpuVal = Math.round(telemetry?.cpu?.percent ?? 15);
-  const memVal = Math.round(telemetry?.memory?.percent ?? 50);
-  const diskVal = Math.round(telemetry?.disk?.percent ?? 25);
-  const netVal = Math.round(((telemetry?.network?.bytes_recv ?? 100000) % 100000) / 1000) || 75;
+  const cpuVal = telemetry?.cpu?.percent == null ? null : Math.round(telemetry.cpu.percent);
+  const memVal = telemetry?.memory?.percent == null ? null : Math.round(telemetry.memory.percent);
+  const diskVal = telemetry?.disk?.percent == null ? null : Math.round(telemetry.disk.percent);
+  const netVal = telemetry?.network?.bytes_recv == null ? null : Math.round(telemetry.network.bytes_recv / 1000);
 
   const gauges = [
     { label: 'CPU', val: cpuVal, color: '#38bdf8', stroke: 'stroke-sky-400' },
@@ -120,24 +116,40 @@ export default function DashboardOverview() {
 
   return (
     <DashboardShell>
-      <div className="space-y-4 text-slate-200">
+      <div className="space-y-5 text-slate-200">
         {/* ─────────────────────────────────────────────────────────────────────────────
             1. LIVING 2D ISOMETRIC ANIME COMPANY SIMULATION (Exact Reference Match)
         ───────────────────────────────────────────────────────────────────────────── */}
-        <div className="w-full">
+        <section className="overflow-hidden rounded-[26px] border border-slate-800/90 bg-[#080f1d] shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 px-5 py-4 sm:px-6">
+            <div>
+              <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-sky-300/80">
+                <span className="h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_10px_#67e8f9]" />
+                Operations floor
+              </div>
+              <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl">Company world</h1>
+              <p className="mt-1 text-xs text-slate-400 sm:text-sm">Live view of your ANCOS workspace</p>
+            </div>
+            <div className="flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/70 px-3 py-2 text-xs text-slate-300">
+              <span className={`h-2 w-2 rounded-full ${telemetry ? 'bg-emerald-400 shadow-[0_0_9px_#34d399]' : 'bg-amber-400'}`} />
+              {telemetry ? 'Telemetry connected' : 'Waiting for telemetry'}
+            </div>
+          </div>
+          <div className="w-full">
           <IsometricCompanyWorld />
-        </div>
+          </div>
+        </section>
 
         {/* ─────────────────────────────────────────────────────────────────────────────
             2. BOTTOM MANAGEMENT DECK (Exact 4 Cards from Reference Image)
         ───────────────────────────────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           
           {/* Card 1: Active Projects */}
-          <div className="bg-[#091122]/90 border border-[#162540] rounded-2xl p-4 shadow-xl flex flex-col justify-between">
+          <div className="min-h-44 rounded-2xl border border-slate-800 bg-gradient-to-br from-[#0d1729] to-[#080f1c] p-5 shadow-lg shadow-black/10">
             <div>
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-bold text-white tracking-wide">Active Projects</h3>
+                <h3 className="text-sm font-bold text-white tracking-wide">Projects</h3>
                 <a href="#projects" className="text-xs text-sky-400 hover:text-sky-300 font-medium">
                   View All →
                 </a>
@@ -146,27 +158,21 @@ export default function DashboardOverview() {
               <div className="space-y-3">
                 {projects.length > 0 ? (
                   projects.map((proj, idx) => (
-                    <div key={idx} className="space-y-1">
+                    <div key={`${proj.name}-${idx}`} className="flex items-center justify-between gap-3 rounded-xl border border-slate-800/80 bg-slate-950/40 px-3 py-2.5">
                       <div className="flex items-center justify-between text-xs font-medium">
                         <div className="flex items-center space-x-2">
-                          <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
-                          <span className="text-slate-200">{proj.name}</span>
+                          <span className={`h-2 w-2 rounded-full ${proj.status.toLowerCase().includes('complete') ? 'bg-emerald-400' : 'bg-sky-400'}`}></span>
+                          <span className="max-w-44 truncate text-slate-200">{proj.name}</span>
                         </div>
-                        <span className="font-mono text-emerald-400 font-semibold">{proj.progress}%</span>
                       </div>
-                      <div className="w-full h-1.5 bg-[#0e1c36] rounded-full overflow-hidden">
-                        <div
-                          className={`h-full ${proj.color} rounded-full`}
-                          style={{ width: `${proj.progress}%` }}
-                        ></div>
-                      </div>
+                      <span className="shrink-0 rounded-full bg-slate-800 px-2 py-1 text-[10px] capitalize text-slate-300">{proj.status}</span>
                     </div>
                   ))
                 ) : (
                   <div className="text-center py-4 text-xs text-slate-400">
-                    No active missions.
+                    No projects returned by ANCOS.
                     <br />
-                    <span className="text-[10px] text-slate-500">Boss AI waiting for operator objective</span>
+                    <span className="text-[10px] text-slate-500">Projects will appear here when available.</span>
                   </div>
                 )}
               </div>
@@ -174,7 +180,7 @@ export default function DashboardOverview() {
           </div>
 
           {/* Card 2: System Resources (4 Circular SVG Gauges) */}
-          <div className="bg-[#091122]/90 border border-[#162540] rounded-2xl p-4 shadow-xl flex flex-col justify-between">
+          <div className="min-h-44 rounded-2xl border border-slate-800 bg-gradient-to-br from-[#0d1729] to-[#080f1c] p-5 shadow-lg shadow-black/10">
             <div>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-bold text-white tracking-wide">System Resources</h3>
@@ -184,7 +190,8 @@ export default function DashboardOverview() {
                 {gauges.map((g, idx) => {
                   const radius = 22;
                   const circ = 2 * Math.PI * radius;
-                  const strokeDashoffset = circ - (g.val / 100) * circ;
+                  const normalizedVal = g.val === null ? 0 : Math.min(100, Math.max(0, g.val));
+                  const strokeDashoffset = circ - (normalizedVal / 100) * circ;
 
                   return (
                     <div key={idx} className="flex flex-col items-center">
@@ -214,7 +221,7 @@ export default function DashboardOverview() {
                           />
                         </svg>
                         <span className="absolute font-mono font-bold text-xs text-white">
-                          {g.val}%
+                          {g.val === null ? '—' : `${g.val}${g.label === 'Network' ? 'k' : '%'}`}
                         </span>
                       </div>
                       <span className="text-[11px] text-slate-400 mt-1 font-semibold">{g.label}</span>
@@ -226,7 +233,7 @@ export default function DashboardOverview() {
           </div>
 
           {/* Card 3: Recent Activity */}
-          <div className="bg-[#091122]/90 border border-[#162540] rounded-2xl p-4 shadow-xl flex flex-col justify-between">
+          <div className="min-h-44 rounded-2xl border border-slate-800 bg-gradient-to-br from-[#0d1729] to-[#080f1c] p-5 shadow-lg shadow-black/10">
             <div>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-bold text-white tracking-wide">Recent Activity</h3>
@@ -236,7 +243,7 @@ export default function DashboardOverview() {
               </div>
 
               <div className="space-y-2.5">
-                {activities.map((act, idx) => (
+                {activities.length > 0 ? activities.map((act, idx) => (
                   <div key={idx} className="flex items-center justify-between text-xs">
                     <div className="flex items-center space-x-2 truncate pr-2">
                       <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0"></span>
@@ -246,13 +253,13 @@ export default function DashboardOverview() {
                       {act.time}
                     </span>
                   </div>
-                ))}
+                )) : <div className="rounded-xl border border-dashed border-slate-800 px-3 py-5 text-center text-xs text-slate-500">No recent activity received from ANCOS yet.</div>}
               </div>
             </div>
           </div>
 
           {/* Card 4: Emergency Kill Switch */}
-          <div className="bg-[#1a080c]/90 border border-rose-500/40 rounded-2xl p-4 shadow-[0_0_20px_rgba(244,63,94,0.15)] flex flex-col justify-between">
+          <div className="flex min-h-44 flex-col justify-between rounded-2xl border border-rose-900/70 bg-gradient-to-br from-[#210d17] to-[#100910] p-5 shadow-lg shadow-rose-950/20">
             <div>
               <div className="flex items-center space-x-2 mb-1">
                 <span className="text-rose-400 text-base">⚠️</span>

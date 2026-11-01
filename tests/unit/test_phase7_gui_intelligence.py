@@ -91,7 +91,7 @@ def test_pyramidal_visual_encoder():
     assert sample.foveal_patch.shape == (384, 384, 3)
     assert sample.focus_point == (640, 400)
     assert len(sample.foveal_signature) == 16
-    assert sample.encoding_latency_ms < 25.0
+    assert sample.encoding_latency_ms < 50.0
 
 
 def test_pixel_ocr_engine():

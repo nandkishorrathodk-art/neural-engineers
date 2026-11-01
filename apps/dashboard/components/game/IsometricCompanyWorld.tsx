@@ -81,7 +81,8 @@ export const IsometricCompanyWorld: React.FC = () => {
   const [selectedDeptId, setSelectedDeptId] = useState<string | null>(null);
   const [isBoardroomSelected, setIsBoardroomSelected] = useState(false);
 
-  const [camera, setCamera] = useState<CameraState>({ x: -60, y: -30, zoom: 0.98 });
+  const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0, zoom: 0.9 });
+  const fitZoomRef = useRef(0.9);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
@@ -91,8 +92,7 @@ export const IsometricCompanyWorld: React.FC = () => {
   const [metrics, setMetrics] = useState({
     employeeCount: 0,
     activeProjects: 0,
-    completionRate: 94,
-    systemHealth: 'nominal',
+    systemHealth: 'unknown',
   });
 
   const isInitialSyncRef = useRef(true);
@@ -402,6 +402,8 @@ export const IsometricCompanyWorld: React.FC = () => {
       if (!canvas.parentElement) return;
       canvas.width = canvas.parentElement.clientWidth;
       canvas.height = canvas.parentElement.clientHeight || 680;
+      fitZoomRef.current = Math.min(1.05, (canvas.width - 48) / 1536, (canvas.height - 48) / 768);
+      setCamera((current) => ({ ...current, x: 0, y: 0, zoom: fitZoomRef.current }));
     };
     resize();
     window.addEventListener('resize', resize);
@@ -440,7 +442,7 @@ export const IsometricCompanyWorld: React.FC = () => {
       ctx.save();
       // Apply Camera Transform
       const originX = canvas.width / 2 + current.camera.x;
-      const originY = 140 + current.camera.y;
+      const originY = canvas.height / 2 - 384 + current.camera.y;
 
       ctx.translate(canvas.width / 2, canvas.height / 2);
       ctx.scale(current.camera.zoom, current.camera.zoom);
@@ -615,7 +617,7 @@ export const IsometricCompanyWorld: React.FC = () => {
     if (!canvas) return;
     const { x: mouseX, y: mouseY } = getCanvasMousePos(e);
     const originX = canvas.width / 2 + camera.x;
-    const originY = 140 + camera.y;
+    const originY = canvas.height / 2 - 384 + camera.y;
 
     // Hit test characters for hover rings
     let hitChar: string | null = null;
@@ -637,7 +639,7 @@ export const IsometricCompanyWorld: React.FC = () => {
     if (!canvas) return;
     const { x: mouseX, y: mouseY } = getCanvasMousePos(e);
     const originX = canvas.width / 2 + camera.x;
-    const originY = 140 + camera.y;
+    const originY = canvas.height / 2 - 384 + camera.y;
 
     // 1. Check Character Click (highest priority)
     for (const char of characters.values()) {
@@ -711,7 +713,7 @@ export const IsometricCompanyWorld: React.FC = () => {
     const factor = e.deltaY < 0 ? 1.08 : 0.92;
     setCamera((prev) => ({
       ...prev,
-      zoom: Math.min(Math.max(prev.zoom * factor, 0.7), 2.2),
+      zoom: Math.min(Math.max(prev.zoom * factor, 0.45), 2.2),
     }));
   };
 
@@ -964,7 +966,7 @@ export const IsometricCompanyWorld: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-[680px] lg:h-[740px] bg-[#050912] rounded-2xl overflow-hidden border border-[#16233d] shadow-2xl select-none"
+      className="relative h-[620px] w-full bg-[radial-gradient(ellipse_at_50%_45%,#0c1b30_0%,#070d19_56%,#050912_100%)] sm:h-[680px] lg:h-[700px] overflow-hidden select-none"
     >
       {/* ─────────────────────────────────────────────────────────────────────────────
           1. TOP-LEFT OVERLAY: COMPANY OVERVIEW & LIVE ACTIVITY ECG
@@ -1007,16 +1009,6 @@ export const IsometricCompanyWorld: React.FC = () => {
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2 text-slate-300">
-                  <span className="w-5 h-5 rounded-full bg-green-500/20 text-green-400 flex items-center justify-center text-[10px]">🟢</span>
-                  <span>Completion Rate</span>
-                </div>
-                <span className="font-mono font-bold text-emerald-400 text-sm">
-                  {metrics.completionRate}%
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2 text-slate-300">
                   <span className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center text-[10px]">❤️</span>
                   <span>System Health</span>
                 </div>
@@ -1031,7 +1023,7 @@ export const IsometricCompanyWorld: React.FC = () => {
           <div className="bg-[#091122]/90 backdrop-blur-md border border-[#162540] rounded-2xl p-3.5 shadow-2xl">
             <div className="text-xs font-bold text-white mb-2 flex items-center justify-between">
               <span>Live Activity</span>
-              <span className="text-[10px] font-mono text-emerald-400">60 FPS</span>
+              <span className="text-[10px] font-mono text-slate-500">Visual loop</span>
             </div>
             <canvas
               ref={ecgCanvasRef}
@@ -1041,7 +1033,7 @@ export const IsometricCompanyWorld: React.FC = () => {
             />
             <div className="flex items-center space-x-2 text-[11px] font-mono text-emerald-400 mt-2 font-semibold">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>All systems operational</span>
+              <span>World animation active</span>
             </div>
           </div>
         </div>
@@ -1409,14 +1401,14 @@ export const IsometricCompanyWorld: React.FC = () => {
           ➕
         </button>
         <button
-          onClick={() => setCamera((prev) => ({ ...prev, zoom: Math.max(prev.zoom - 0.15, 0.7) }))}
+          onClick={() => setCamera((prev) => ({ ...prev, zoom: Math.max(prev.zoom - 0.15, 0.45) }))}
           className="w-7 h-7 rounded-lg hover:bg-slate-800 flex items-center justify-center font-bold text-xs"
           title="Zoom Out"
         >
           ➖
         </button>
         <button
-          onClick={() => setCamera({ x: 0, y: -40, zoom: 1.05 })}
+          onClick={() => setCamera({ x: 0, y: 0, zoom: fitZoomRef.current })}
           className="px-2.5 py-1 rounded-lg hover:bg-slate-800 text-[11px] font-mono font-semibold"
           title="Reset View"
         >

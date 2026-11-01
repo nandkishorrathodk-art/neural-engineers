@@ -3,6 +3,12 @@ from __future__ import annotations
 import uuid
 from typing import Any, Sequence
 
+from neural.cognitive_fabric.memory.models import (
+    MemoryLayer,
+    MemoryRecord,
+    RecordVerificationStatus,
+)
+from neural.cognitive_fabric.memory.six_tier_store import SixTierMemoryStore
 from neural.constants import MemoryCategory
 from neural.db.models import MemoryEntry
 from neural.db.repositories import MemoryRepository
@@ -13,16 +19,20 @@ logger = get_logger("ancos.memory.store")
 
 class OrganizationalMemoryStore:
     """
-    Four-Tier Organizational Memory Store:
-    1. Episodic: Execution history, task receipts, failure and success traces.
-    2. Semantic: Architectural patterns, technical concepts, design rationale.
-    3. Procedural: Verified workflows, step-by-step guides, operational procedures.
-    4. Policy: Immutable company policies, security rules, safety envelopes.
+    Unified Organizational Memory Store:
+    Integrates 6 complementary memory layers:
+    1. Working: Transient active context, turn state.
+    2. Episodic: Execution history, task receipts, failure/success traces.
+    3. Semantic: Architectural patterns, technical concepts, design rationale.
+    4. Procedural: Verified workflows, step-by-step guides, operational procedures.
+    5. Relational: Employees, projects, decisions, dependencies.
+    6. Organizational: Immutable company policies, security rules, safety envelopes.
     """
 
     def __init__(self, memory_repo: MemoryRepository | None = None) -> None:
         self.memory_repo = memory_repo
         self._in_memory_store: list[MemoryEntry] = []
+        self.six_tier_store = SixTierMemoryStore(memory_repo=None)
 
     async def store_entry(
         self,
@@ -36,22 +46,47 @@ class OrganizationalMemoryStore:
         cat_enum = category if isinstance(category, MemoryCategory) else MemoryCategory(category.lower())
         logger.info("Storing memory entry", category=cat_enum.value, source=source)
 
+        entry_id = str(uuid.uuid4())
+        meta = metadata_json or {}
+
+        # Also store into 6-tier store
+        cat_to_layer = {
+            MemoryCategory.EPISODE: MemoryLayer.EPISODIC,
+            MemoryCategory.KNOWLEDGE: MemoryLayer.SEMANTIC,
+            MemoryCategory.PROCEDURE: MemoryLayer.PROCEDURAL,
+            MemoryCategory.POLICY: MemoryLayer.ORGANIZATIONAL,
+            MemoryCategory.DECISION: MemoryLayer.ORGANIZATIONAL,
+            MemoryCategory.LESSON: MemoryLayer.EPISODIC,
+        }
+        layer = cat_to_layer.get(cat_enum, MemoryLayer.SEMANTIC)
+        rec = MemoryRecord(
+            id=entry_id,
+            layer=layer,
+            category=cat_enum.value,
+            source=source,
+            content=content,
+            confidence=confidence,
+            metadata=meta,
+            verification_status=RecordVerificationStatus.VERIFIED if confidence >= 0.8 else RecordVerificationStatus.UNVERIFIED,
+        )
+        await self.six_tier_store.store_record(rec)
+
         if self.memory_repo:
             return await self.memory_repo.create_entry(
                 category=cat_enum,
                 source=source,
                 content=content,
-                metadata_json=metadata_json or {},
+                metadata_json=meta,
                 confidence=confidence,
                 embedding_ref=embedding_ref,
             )
 
         entry = MemoryEntry(
-            id=str(uuid.uuid4()),
+            id=entry_id,
             category=cat_enum,
             source=source,
             content=content,
-            metadata_json=metadata_json or {},
+            metadata_json=meta,
             confidence=confidence,
             embedding_ref=embedding_ref,
         )

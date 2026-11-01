@@ -8,6 +8,7 @@ from neural.evaluation.benchmarks import (
     create_qa_testing_benchmark,
     create_security_audit_benchmark,
 )
+from neural.evaluation.cognitive_benchmark import ANCOSCognitiveBenchmark
 from neural.evaluation.verifier import IndependentVerifier
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "create_python_backend_benchmark",
     "create_fastapi_benchmark",
     "create_qa_testing_benchmark",
-    "create_security_audit_benchmark"
+    "create_security_audit_benchmark",
+    "ANCOSCognitiveBenchmark",
 ]
