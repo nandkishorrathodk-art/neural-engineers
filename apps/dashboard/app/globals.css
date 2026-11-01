@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #060a12;
+  color: #f1f5f9;
+}
+
+/* 2D Character Game Animations */
+@keyframes idleBreathe {
+  0%, 100% {
+    transform: translateY(0px) scaleY(1);
+  }
+  50% {
+    transform: translateY(-2px) scaleY(1.02);
+  }
+}
+
+@keyframes eyeBlink {
+  0%, 90%, 100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.1);
+  }
+}
+
+@keyframes typingHands {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-3px) rotate(-4deg);
+  }
+  75% {
+    transform: translateY(-2px) rotate(4deg);
+  }
+}
+
+@keyframes floatEmote {
+  0%, 100% {
+    transform: translateY(0px);
+    opacity: 0.9;
+  }
+  50% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+@keyframes celebrateJump {
+  0%, 100% {
+    transform: translateY(0px) scale(1);
+  }
+  30% {
+    transform: translateY(-8px) scale(1.05);
+  }
+  60% {
+    transform: translateY(-2px) scale(0.98);
+  }
+}
+
+@keyframes warningShake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  20%, 60% {
+    transform: translateX(-3px);
+  }
+  40%, 80% {
+    transform: translateX(3px);
+  }
+}
+
+@keyframes neonPulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.4));
+  }
+  50% {
+    filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.8));
+  }
+}
+
+.anim-idle {
+  animation: idleBreathe 3s ease-in-out infinite;
+}
+
+.anim-blink {
+  transform-origin: center;
+  animation: eyeBlink 4s infinite;
+}
+
+.anim-typing {
+  animation: typingHands 0.4s ease-in-out infinite;
+}
+
+.anim-float {
+  animation: floatEmote 2s ease-in-out infinite;
+}
+
+.anim-celebrate {
+  animation: celebrateJump 0.8s ease-in-out infinite;
+}
+
+.anim-warning {
+  animation: warningShake 0.5s ease-in-out infinite;
+}
+
+.neon-glow-blue {
+  animation: neonPulse 2.5s infinite;
+}

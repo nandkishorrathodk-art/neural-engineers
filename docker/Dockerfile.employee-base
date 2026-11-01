@@ -1,0 +1,53 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    DISPLAY=:1 \
+    VNC_PORT=5901 \
+    NOVNC_PORT=6081 \
+    HOME=/home/employee
+
+# Install Xfce, TigerVNC, noVNC, and development prerequisites
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xfce4 \
+    xfce4-terminal \
+    tigervnc-standalone-server \
+    novnc \
+    websockify \
+    python3 \
+    python3-pip \
+    python3-venv \
+    curl \
+    git \
+    nano \
+    sudo \
+    net-tools \
+    chromium-browser \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root employee user
+RUN useradd -m -s /bin/bash -u 1000 employee && \
+    echo "employee ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+WORKDIR /home/employee
+USER employee
+
+RUN mkdir -p /home/employee/.vnc /home/employee/workspace && \
+    echo "password123" | vncpasswd -f > /home/employee/.vnc/passwd && \
+    chmod 600 /home/employee/.vnc/passwd
+
+COPY --chown=employee:employee docker/configs/vnc-xstartup /home/employee/.vnc/xstartup
+USER root
+RUN chmod +x /home/employee/.vnc/xstartup
+
+COPY docker/entrypoint-employee.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && \
+    chown -R employee:employee /home/employee
+
+# Enforce non-root execution (uid 1000)
+USER employee
+
+EXPOSE 5901 6081
+
+ENTRYPOINT ["/entrypoint.sh"]
+

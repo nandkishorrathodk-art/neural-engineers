@@ -1,0 +1,31 @@
+defaults:
+  max_concurrent_employees: 10
+  default_cpu_limit: "2.0"
+  default_memory_limit: "4g"
+  default_disk_limit: "20g"
+  default_pids_limit: 256
+  default_task_timeout_seconds: 7200 # 2 hours
+  default_container_idle_timeout_seconds: 1800 # 30 mins
+
+tiers:
+  light:
+    cpu: "1.0"
+    memory: "2g"
+    disk: "10g"
+    pids: 128
+  standard:
+    cpu: "2.0"
+    memory: "4g"
+    disk: "20g"
+    pids: 256
+  heavy:
+    cpu: "4.0"
+    memory: "8g"
+    disk: "40g"
+    pids: 512
+
+budgets:
+  max_token_spend_per_task_usd: 10.00
+  max_token_spend_per_project_usd: 150.00
+  monthly_hard_cap_usd: 500.00
+

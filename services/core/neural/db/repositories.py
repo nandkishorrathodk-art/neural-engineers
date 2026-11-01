@@ -1,0 +1,2407 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional, Sequence
+
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from neural.constants import (
+    ActionItemStatus,
+    ApprovalStatus,
+    ContainerStatus,
+    EmployeeStatus,
+    MeetingStatus,
+    MemoryCategory,
+    ProposalStatus,
+    ProposalType,
+    SkillLevel,
+    TaskPriority,
+    TaskStatus,
+    VerificationStatus,
+    VoteChoice,
+)
+from neural.db.models import (
+    ActionItem,
+    Approval,
+    Artifact,
+    AuditLog,
+    Container,
+    DecisionLedgerEntry,
+    DecisionRecord,
+    Employee,
+    EmployeeSkill,
+    EvolutionRecord,
+    Meeting,
+    MemoryEntry,
+    Message,
+    MethodBenchmarkRecord,
+    MethodRecord,
+    PerformanceRecord,
+    Project,
+    Proposal,
+    SkillCertification,
+    Task,
+    TaskDependency,
+    TaskResult,
+    ToolRecord,
+    Vote,
+)
+from neural.exceptions import UnverifiedTaskError, VerificationFailedError
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def get_session_lock(session: AsyncSession) -> asyncio.Lock:
+    if not hasattr(session, "_neural_lock"):
+        session._neural_lock = asyncio.Lock()
+    return session._neural_lock
+
+
+class ProjectRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, name: str, objective: str, execution_plan: Optional[dict[str, Any]] = None) -> Project:
+        project = Project(name=name, objective=objective, execution_plan=execution_plan)
+        self.session.add(project)
+        await self.session.commit()
+        await self.session.refresh(project)
+        return project
+
+    async def get_by_id(self, project_id: str) -> Optional[Project]:
+        stmt = (
+            select(Project)
+            .where(Project.id == project_id)
+            .options(selectinload(Project.tasks))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_all(self) -> Sequence[Project]:
+        stmt = (
+            select(Project)
+            .options(selectinload(Project.tasks))
+            .order_by(Project.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+
+class TaskRepository:
+    def __init__(self, session: AsyncSession, strict_verification: bool = False):
+        self.session = session
+        self.strict_verification = strict_verification
+
+    async def create(self, **kwargs: Any) -> Task:
+        task = Task(**kwargs)
+        self.session.add(task)
+        await self.session.commit()
+        await self.session.refresh(task)
+        return task
+
+    async def get_by_task_id(self, task_id: str) -> Optional[Task]:
+        stmt = (
+            select(Task)
+            .where((Task.task_id == task_id) | (Task.id == task_id))
+            .options(
+                selectinload(Task.dependencies),
+                selectinload(Task.results),
+                selectinload(Task.subtasks)
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_by_project(self, project_id: str) -> Sequence[Task]:
+        stmt = (
+            select(Task)
+            .where(Task.project_id == project_id)
+            .order_by(Task.started_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def update_status(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        enforce_verification: Optional[bool] = None
+    ) -> None:
+        check_gate = enforce_verification if enforce_verification is not None else self.strict_verification
+        if check_gate and status == TaskStatus.COMPLETED:
+            task = await self.get_by_task_id(task_id)
+            if not task:
+                raise ValueError(f"Task {task_id} not found")
+            v_res = task.verification_result
+            if not v_res or not v_res.get("passed"):
+                raise UnverifiedTaskError(
+                    f"Strict gate violation: Task {task_id} cannot transition to completed without an independent verification receipt."
+                )
+
+        values: dict[str, Any] = {"status": status}
+        if status == TaskStatus.RUNNING:
+            values["started_at"] = utc_now()
+        elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            values["completed_at"] = utc_now()
+        elif status == TaskStatus.RETRYING:
+            values["retry_count"] = Task.retry_count + 1
+        stmt = (
+            update(Task)
+            .where((Task.task_id == task_id) | (Task.id == task_id))
+            .values(**values)
+        )
+        lock = get_session_lock(self.session)
+        async with lock:
+            await self.session.execute(stmt)
+            await self.session.commit()
+
+    async def complete_with_receipt(
+        self,
+        task_id: str,
+        verification_receipt: dict[str, Any]
+    ) -> Task:
+        """
+        Completes a task with an independent passing verification receipt.
+        Enforces strict gate: raises VerificationFailedError if receipt failed or missing.
+        """
+        if not verification_receipt or not verification_receipt.get("passed"):
+            raise VerificationFailedError(
+                f"Task {task_id} cannot be marked completed: verification receipt is invalid or failed."
+            )
+        lock = get_session_lock(self.session)
+        async with lock:
+            stmt = (
+                update(Task)
+                .where((Task.task_id == task_id) | (Task.id == task_id))
+                .values(
+                    status=TaskStatus.COMPLETED,
+                    completed_at=utc_now(),
+                    verification_result=verification_receipt
+                )
+            )
+            await self.session.execute(stmt)
+
+            task = await self.get_by_task_id(task_id)
+            if not task:
+                raise ValueError(f"Task {task_id} not found")
+
+            # Persist TaskResult record
+            task_result = TaskResult(
+                id=str(uuid.uuid4()),
+                task_id=task.id,
+                summary=verification_receipt.get("notes", "Task independently verified with passing receipt."),
+                output_data=verification_receipt.get("test_summary", {}),
+                artifacts=verification_receipt.get("artifacts", []),
+                verification_status=VerificationStatus.PASSED,
+                verification_notes=str(verification_receipt.get("details", "")),
+                submitted_at=utc_now()
+            )
+            self.session.add(task_result)
+            await self.session.commit()
+            await self.session.refresh(task)
+            return task
+
+    async def assign_task(self, task_id: str, employee_id: str) -> None:
+        stmt_emp = select(Employee).where(
+            (Employee.employee_id == employee_id) | (Employee.id == employee_id)
+        )
+        lock = get_session_lock(self.session)
+        async with lock:
+            res = await self.session.execute(stmt_emp)
+            emp = res.scalar_one_or_none()
+            emp_id = emp.id if emp else employee_id
+
+            stmt = (
+                update(Task)
+                .where((Task.task_id == task_id) | (Task.id == task_id))
+                .values(assigned_to=emp_id, status=TaskStatus.ASSIGNED)
+            )
+            await self.session.execute(stmt)
+            await self.session.commit()
+
+    async def list_by_assignee(self, employee_id: str) -> Sequence[Task]:
+        stmt = (
+            select(Task)
+            .join(Employee, Task.assigned_to == Employee.id, isouter=True)
+            .where((Task.assigned_to == employee_id) | (Employee.employee_id == employee_id))
+            .order_by(Task.started_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_all(self) -> Sequence[Task]:
+        stmt = select(Task).order_by(Task.started_at.asc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_by_status(self, status: TaskStatus) -> Sequence[Task]:
+        stmt = (
+            select(Task)
+            .where(Task.status == status)
+            .order_by(Task.started_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_tasks(
+        self,
+        status: Optional[TaskStatus] = None,
+        limit: int = 100,
+    ) -> Sequence[Task]:
+        stmt = select(Task)
+        if status:
+            stmt = stmt.where(Task.status == status)
+        stmt = stmt.order_by(Task.started_at.asc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+
+    async def create_subtask(
+        self,
+        parent_task_id: str,
+        title: str,
+        objective: Optional[str] = None,
+        scope: Optional[str] = None,
+        acceptance_criteria: Optional[str] = None,
+        required_capabilities: Optional[list[str]] = None,
+        priority: Optional[TaskPriority] = None,
+        task_id: Optional[str] = None
+    ) -> Task:
+        parent = await self.get_by_task_id(parent_task_id)
+        if not parent:
+            raise ValueError(f"Parent task {parent_task_id} not found")
+
+        tid = task_id or f"{parent.task_id}-SUB-{uuid.uuid4().hex[:4].upper()}"
+        subtask = Task(
+            task_id=tid,
+            project_id=parent.project_id,
+            parent_task_id=parent.id,
+            title=title,
+            objective=objective or title,
+            scope=scope or parent.scope,
+            acceptance_criteria=acceptance_criteria or parent.acceptance_criteria,
+            required_capabilities=required_capabilities or parent.required_capabilities,
+            priority=priority or parent.priority,
+            status=TaskStatus.PENDING,
+            resource_budget=parent.resource_budget
+        )
+        self.session.add(subtask)
+        await self.session.commit()
+        await self.session.refresh(subtask)
+        return subtask
+
+    async def list_subtasks(self, parent_task_id: str) -> Sequence[Task]:
+        parent = await self.get_by_task_id(parent_task_id)
+        p_id = parent.id if parent else parent_task_id
+        stmt = select(Task).where(Task.parent_task_id == p_id).order_by(Task.started_at.asc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+    async def add_dependency(
+        self,
+        task_id: str,
+        depends_on_task_id: str,
+        dependency_type: str = "blocks"
+    ) -> TaskDependency:
+        # Resolve task_id and depends_on_task_id to primary key IDs if public task_ids were passed
+        task = await self.get_by_task_id(task_id)
+        dep_task = await self.get_by_task_id(depends_on_task_id)
+
+        t_id = task.id if task else task_id
+        dep_id = dep_task.id if dep_task else depends_on_task_id
+
+        dep = TaskDependency(
+            task_id=t_id,
+            depends_on_task_id=dep_id,
+            dependency_type=dependency_type
+        )
+        self.session.add(dep)
+        await self.session.commit()
+        await self.session.refresh(dep)
+        return dep
+
+    async def list_dependencies_for_project(self, project_id: str) -> list[tuple[str, str]]:
+        """
+        Returns list of (task_id, depends_on_task_id) public task_id strings for a project.
+        """
+        stmt = (
+            select(TaskDependency, Task)
+            .join(Task, TaskDependency.task_id == Task.id)
+            .where(Task.project_id == project_id)
+        )
+        res = await self.session.execute(stmt)
+        deps = res.all()
+        # Resolve UUIDs back to public task_ids
+        task_lookup_stmt = select(Task.id, Task.task_id).where(Task.project_id == project_id)
+        lookup_res = await self.session.execute(task_lookup_stmt)
+        uuid_to_task_id = dict(lookup_res.all())
+
+        results: list[tuple[str, str]] = []
+        for dep_row in deps:
+            dep_obj = dep_row[0]
+            tid = uuid_to_task_id.get(dep_obj.task_id, dep_obj.task_id)
+            dep_tid = uuid_to_task_id.get(dep_obj.depends_on_task_id, dep_obj.depends_on_task_id)
+            results.append((tid, dep_tid))
+        return results
+
+    async def list_dependencies_for_task(self, task_id: str) -> Sequence[TaskDependency]:
+        task = await self.get_by_task_id(task_id)
+        t_id = task.id if task else task_id
+        stmt = select(TaskDependency).where(TaskDependency.task_id == t_id)
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+
+
+class EmployeeRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, **kwargs: Any) -> Employee:
+        employee = Employee(**kwargs)
+        self.session.add(employee)
+        await self.session.commit()
+        await self.session.refresh(employee)
+        return employee
+
+    async def get_by_employee_id(self, employee_id: str) -> Optional[Employee]:
+        stmt = (
+            select(Employee)
+            .where((Employee.employee_id == employee_id) | (Employee.id == employee_id))
+            .options(
+                selectinload(Employee.skills),
+                selectinload(Employee.container)
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
+    async def list_all(self) -> Sequence[Employee]:
+        stmt = (
+            select(Employee)
+            .options(selectinload(Employee.skills))
+            .order_by(Employee.hired_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def add_skill(self, employee_id: str, skill_name: str, level: Any, verified: bool = False) -> EmployeeSkill:
+        emp = await self.get_by_employee_id(employee_id)
+        if not emp:
+            raise ValueError(f"Employee {employee_id} not found")
+        skill = EmployeeSkill(
+            employee_id=emp.id,
+            skill_name=skill_name,
+            level=level,
+            verified=verified
+        )
+        self.session.add(skill)
+        if skill not in emp.skills:
+            emp.skills.append(skill)
+        await self.session.commit()
+        await self.session.refresh(skill)
+        return skill
+
+    async def verify_skill(self, employee_id: str, skill_name: str, task_evidence_id: str) -> None:
+        emp = await self.get_by_employee_id(employee_id)
+        if not emp:
+            return
+        stmt = (
+            select(EmployeeSkill)
+            .where(
+                EmployeeSkill.employee_id == emp.id,
+                EmployeeSkill.skill_name == skill_name
+            )
+        )
+        result = await self.session.execute(stmt)
+        skill = result.scalar_one_or_none()
+        if skill:
+            skill.verified = True
+            skill.verified_at = utc_now()
+            ev = list(skill.evidence_task_ids or [])
+            if task_evidence_id not in ev:
+                ev.append(task_evidence_id)
+            skill.evidence_task_ids = ev
+        else:
+            # Dynamically certify skill if not already present on employee
+            skill = EmployeeSkill(
+                id=str(uuid.uuid4()),
+                employee_id=emp.id,
+                skill_name=skill_name,
+                level=SkillLevel.INTERMEDIATE,
+                verified=True,
+                verified_at=utc_now(),
+                evidence_task_ids=[task_evidence_id]
+            )
+            self.session.add(skill)
+            if skill not in emp.skills:
+                emp.skills.append(skill)
+
+        # Update performance summary verified_skills
+        perf = dict(emp.performance_summary or {})
+        v_skills = list(perf.get("verified_skills", []))
+        if skill_name not in v_skills:
+            v_skills.append(skill_name)
+        perf["verified_skills"] = v_skills
+        emp.performance_summary = perf
+
+        await self.session.commit()
+
+    async def list_verified_skills(self, employee_id: str) -> list[str]:
+        emp = await self.get_by_employee_id(employee_id)
+        if not emp:
+            return []
+        return [s.skill_name for s in emp.skills if s.verified]
+
+    async def has_verified_skill(self, employee_id: str, skill_name: str) -> bool:
+        verified_skills = await self.list_verified_skills(employee_id)
+        return any(s.lower() == skill_name.lower() for s in verified_skills)
+
+    async def assign_container(self, employee_id: str, container_id: str) -> None:
+        emp = await self.get_by_employee_id(employee_id)
+        if emp:
+            emp.container_id = container_id
+            await self.session.commit()
+
+    async def update_status(self, employee_id: str, status: EmployeeStatus) -> None:
+        emp = await self.get_by_employee_id(employee_id)
+        if emp:
+            emp.status = status
+            await self.session.commit()
+
+    async def upgrade_skill_level(
+        self,
+        employee_id: str,
+        skill_name: str,
+        new_level: SkillLevel,
+        task_evidence_id: Optional[str] = None
+    ) -> EmployeeSkill:
+        emp = await self.get_by_employee_id(employee_id)
+        if not emp:
+            raise ValueError(f"Employee {employee_id} not found")
+
+        stmt = select(EmployeeSkill).where(
+            EmployeeSkill.employee_id == emp.id,
+            EmployeeSkill.skill_name == skill_name
+        )
+        res = await self.session.execute(stmt)
+        skill = res.scalar_one_or_none()
+
+        if skill:
+            skill.level = new_level
+            skill.verified = True
+            skill.verified_at = utc_now()
+            if task_evidence_id:
+                ev = list(skill.evidence_task_ids or [])
+                if task_evidence_id not in ev:
+                    ev.append(task_evidence_id)
+                skill.evidence_task_ids = ev
+        else:
+            skill = EmployeeSkill(
+                id=str(uuid.uuid4()),
+                employee_id=emp.id,
+                skill_name=skill_name,
+                level=new_level,
+                verified=True,
+                verified_at=utc_now(),
+                evidence_task_ids=[task_evidence_id] if task_evidence_id else []
+            )
+            self.session.add(skill)
+            if skill not in emp.skills:
+                emp.skills.append(skill)
+
+        perf = dict(emp.performance_summary or {})
+        v_skills = list(perf.get("verified_skills", []))
+        if skill_name not in v_skills:
+            v_skills.append(skill_name)
+        perf["verified_skills"] = v_skills
+        levels_map = dict(perf.get("skill_levels", {}))
+        levels_map[skill_name] = new_level.value if hasattr(new_level, "value") else str(new_level)
+        perf["skill_levels"] = levels_map
+        emp.performance_summary = perf
+
+        await self.session.commit()
+        await self.session.refresh(skill)
+        return skill
+
+    async def get_skill_matrix(self) -> list[dict[str, Any]]:
+        employees = await self.list_all()
+        matrix = []
+        for emp in employees:
+            emp_skills = {}
+            for s in emp.skills:
+                emp_skills[s.skill_name] = {
+                    "level": s.level.value if hasattr(s.level, "value") else str(s.level),
+                    "verified": s.verified,
+                    "verified_at": s.verified_at.isoformat() if s.verified_at else None,
+                    "evidence_count": len(s.evidence_task_ids or []),
+                }
+            matrix.append({
+                "employee_id": emp.employee_id,
+                "name": emp.name,
+                "title": emp.title,
+                "department": emp.department,
+                "status": emp.status.value if hasattr(emp.status, "value") else str(emp.status),
+                "skills": emp_skills,
+                "total_skills": len(emp.skills),
+                "verified_skills_count": len([s for s in emp.skills if s.verified]),
+            })
+        return matrix
+
+    async def get_employee_progression(self, employee_id: str) -> dict[str, Any]:
+        emp = await self.get_by_employee_id(employee_id)
+        if not emp:
+            raise ValueError(f"Employee {employee_id} not found")
+        skills_info = []
+        for s in emp.skills:
+            skills_info.append({
+                "skill_name": s.skill_name,
+                "level": s.level.value if hasattr(s.level, "value") else str(s.level),
+                "verified": s.verified,
+                "verified_at": s.verified_at.isoformat() if s.verified_at else None,
+                "evidence_task_ids": s.evidence_task_ids or [],
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            })
+        return {
+            "employee_id": emp.employee_id,
+            "name": emp.name,
+            "title": emp.title,
+            "department": emp.department,
+            "status": emp.status.value if hasattr(emp.status, "value") else str(emp.status),
+            "hired_at": emp.hired_at.isoformat() if emp.hired_at else None,
+            "skills": skills_info,
+            "performance_summary": emp.performance_summary or {},
+        }
+
+
+
+class ContainerRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, **kwargs: Any) -> Container:
+        container = Container(**kwargs)
+        self.session.add(container)
+        await self.session.commit()
+        await self.session.refresh(container)
+        return container
+
+    async def get_by_docker_id(self, docker_id: str) -> Optional[Container]:
+        stmt = select(Container).where(Container.docker_id == docker_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_id(self, container_id: str) -> Optional[Container]:
+        stmt = select(Container).where(Container.id == container_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def update_status(self, docker_id: str, status: ContainerStatus) -> None:
+        stmt = (
+            update(Container)
+            .where(Container.docker_id == docker_id)
+            .values(status=status)
+        )
+        await self.session.execute(stmt)
+        await self.session.commit()
+
+    async def list_all(self) -> Sequence[Container]:
+        stmt = select(Container).order_by(Container.started_at.desc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+class MeetingRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, **kwargs: Any) -> Meeting:
+        meeting = Meeting(**kwargs)
+        self.session.add(meeting)
+        await self.session.commit()
+        await self.session.refresh(meeting)
+        return meeting
+
+    async def get_by_meeting_id(self, meeting_id: str) -> Optional[Meeting]:
+        stmt = (
+            select(Meeting)
+            .where((Meeting.meeting_id == meeting_id) | (Meeting.id == meeting_id))
+            .options(selectinload(Meeting.action_items))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_recent(self, limit: int = 20) -> Sequence[Meeting]:
+        stmt = (
+            select(Meeting)
+            .options(selectinload(Meeting.action_items))
+            .order_by(Meeting.scheduled_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def update_status(self, meeting_id: str, status: MeetingStatus, **kwargs: Any) -> Optional[Meeting]:
+        meeting = await self.get_by_meeting_id(meeting_id)
+        if not meeting:
+            return None
+        meeting.status = status
+        for k, v in kwargs.items():
+            if hasattr(meeting, k):
+                setattr(meeting, k, v)
+        await self.session.commit()
+        await self.session.refresh(meeting)
+        return meeting
+
+    async def record_decision(self, meeting_id: str, decision: dict[str, Any]) -> Optional[Meeting]:
+        meeting = await self.get_by_meeting_id(meeting_id)
+        if not meeting:
+            return None
+        decisions = list(meeting.decisions or [])
+        decisions.append(decision)
+        meeting.decisions = decisions
+        await self.session.commit()
+        await self.session.refresh(meeting)
+        return meeting
+
+    async def update_minutes(self, meeting_id: str, minutes: dict[str, Any]) -> Optional[Meeting]:
+        meeting = await self.get_by_meeting_id(meeting_id)
+        if not meeting:
+            return None
+        meeting.minutes = minutes
+        await self.session.commit()
+        await self.session.refresh(meeting)
+        return meeting
+
+
+def normalize_action_item_desc(d: str) -> str:
+    cleaned = d or ""
+    while cleaned.startswith("[Carried Over]"):
+        cleaned = cleaned[len("[Carried Over]"):].strip()
+    return cleaned.strip()
+
+
+def parse_deadline_datetime(deadline: Any) -> Optional[datetime]:
+    if not deadline:
+        return None
+    if isinstance(deadline, datetime):
+        return deadline.astimezone(timezone.utc).replace(tzinfo=None) if deadline.tzinfo else deadline
+    if isinstance(deadline, str):
+        try:
+            dt = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+            return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+        except Exception:
+            return None
+    return None
+
+
+class ActionItemRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self,
+        meeting_id: str,
+        description: str,
+        assigned_to: str,
+        deadline: Optional[datetime | str] = None,
+        status: ActionItemStatus = ActionItemStatus.OPEN
+    ) -> ActionItem:
+        # Resolve meeting_id to primary key UUID if meeting_id string like ANC-MTG-XXXX was passed
+        stmt_m = select(Meeting).where((Meeting.meeting_id == meeting_id) | (Meeting.id == meeting_id))
+        res_m = await self.session.execute(stmt_m)
+        meeting = res_m.scalar_one_or_none()
+        m_uuid = meeting.id if meeting else meeting_id
+
+        parsed_deadline = parse_deadline_datetime(deadline)
+
+        item = ActionItem(
+            id=str(uuid.uuid4()),
+            meeting_id=m_uuid,
+            description=description,
+            assigned_to=assigned_to,
+            deadline=parsed_deadline,
+            status=status,
+            created_at=utc_now()
+        )
+        self.session.add(item)
+        await self.session.commit()
+        await self.session.refresh(item)
+        return item
+
+    async def get_by_id(self, action_item_id: str) -> Optional[ActionItem]:
+        stmt = select(ActionItem).where(ActionItem.id == action_item_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_by_meeting(self, meeting_id: str) -> Sequence[ActionItem]:
+        stmt_m = select(Meeting).where((Meeting.meeting_id == meeting_id) | (Meeting.id == meeting_id))
+        res_m = await self.session.execute(stmt_m)
+        meeting = res_m.scalar_one_or_none()
+        m_uuid = meeting.id if meeting else meeting_id
+
+        stmt = select(ActionItem).where(ActionItem.meeting_id == m_uuid).order_by(ActionItem.created_at.asc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_all(self) -> Sequence[ActionItem]:
+        stmt = select(ActionItem).order_by(ActionItem.created_at.desc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_unresolved(self) -> Sequence[ActionItem]:
+        stmt = (
+            select(ActionItem)
+            .where(ActionItem.status.in_([ActionItemStatus.OPEN, ActionItemStatus.IN_PROGRESS]))
+            .order_by(ActionItem.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        all_unresolved = result.scalars().all()
+        # Deduplicate so carried-over instances of the same deliverable are not counted multiple times
+        seen: dict[tuple[str, str], ActionItem] = {}
+        for item in all_unresolved:
+            key = (normalize_action_item_desc(item.description), item.assigned_to)
+            if key not in seen:
+                seen[key] = item
+        # Return in ascending order of creation
+        return sorted(seen.values(), key=lambda x: x.created_at)
+
+    async def list_overdue(self) -> Sequence[ActionItem]:
+        now = utc_now()
+        stmt = (
+            select(ActionItem)
+            .where(
+                ActionItem.status.in_([ActionItemStatus.OPEN, ActionItemStatus.IN_PROGRESS]),
+                ActionItem.deadline.isnot(None),
+                ActionItem.deadline < now
+            )
+            .order_by(ActionItem.deadline.asc())
+        )
+        result = await self.session.execute(stmt)
+        all_overdue = result.scalars().all()
+        seen: dict[tuple[str, str], ActionItem] = {}
+        for item in all_overdue:
+            key = (normalize_action_item_desc(item.description), item.assigned_to)
+            if key not in seen:
+                seen[key] = item
+        return list(seen.values())
+
+    async def update_status(self, action_item_id: str, status: ActionItemStatus) -> Optional[ActionItem]:
+        item = await self.get_by_id(action_item_id)
+        if not item:
+            return None
+        item.status = status
+        await self.session.commit()
+        await self.session.refresh(item)
+        return item
+
+    async def update_item(self, action_item_id: str, **kwargs: Any) -> Optional[ActionItem]:
+        item = await self.get_by_id(action_item_id)
+        if not item:
+            return None
+        if "deadline" in kwargs:
+            kwargs["deadline"] = parse_deadline_datetime(kwargs["deadline"])
+        for k, v in kwargs.items():
+            if hasattr(item, k):
+                setattr(item, k, v)
+        await self.session.commit()
+        await self.session.refresh(item)
+        return item
+
+
+class ApprovalRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self,
+        action_type: str,
+        description: str,
+        justification: str,
+        requested_by: str,
+        details: Optional[dict[str, Any]] = None,
+        status: ApprovalStatus = ApprovalStatus.PENDING
+    ) -> Approval:
+        approval = Approval(
+            id=str(uuid.uuid4()),
+            action_type=action_type,
+            description=description,
+            justification=justification,
+            requested_by=requested_by,
+            details=details or {},
+            status=status,
+            requested_at=utc_now()
+        )
+        self.session.add(approval)
+        await self.session.commit()
+        await self.session.refresh(approval)
+        return approval
+
+    async def get_by_id(self, approval_id: str) -> Optional[Approval]:
+        stmt = select(Approval).where(Approval.id == approval_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_pending(self) -> Sequence[Approval]:
+        stmt = select(Approval).where(Approval.status == ApprovalStatus.PENDING).order_by(Approval.requested_at.asc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_all(self) -> Sequence[Approval]:
+        stmt = select(Approval).order_by(Approval.requested_at.desc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def decide(self, approval_id: str, decision: str, decided_by: str) -> Optional[Approval]:
+        approval = await self.get_by_id(approval_id)
+        if not approval:
+            return None
+        approval.status = ApprovalStatus.APPROVED if decision.lower() == "approved" else ApprovalStatus.REJECTED
+        approval.decided_by = decided_by
+        approval.decided_at = utc_now()
+        await self.session.commit()
+        await self.session.refresh(approval)
+        return approval
+
+
+
+class AuditRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def log(
+        self,
+        actor: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        details: dict[str, Any],
+        ip: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+        request_hash: Optional[str] = None,
+    ) -> AuditLog:
+        actual_payload = payload if payload is not None else {}
+        actual_request_hash = request_hash
+        if not actual_request_hash:
+            payload_str = json.dumps(actual_payload or details, sort_keys=True, default=str)
+            actual_request_hash = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
+
+        # Fetch last entry for cryptographic chain link
+        last_stmt = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(1)
+        last_res = await self.session.execute(last_stmt)
+        last_entry = last_res.scalars().first()
+        prev_hash = last_entry.signature if (last_entry and last_entry.signature) else "GENESIS_AUDIT_BLOCK"
+
+        # Compute cryptographic signature
+        sig_raw = f"{prev_hash}:{actor}:{action}:{resource_type}:{resource_id}:{actual_request_hash}"
+        signature = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
+
+        entry = AuditLog(
+            actor=actor,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details=details,
+            ip_address=ip,
+            request_hash=actual_request_hash,
+            payload=actual_payload,
+            signature=signature,
+            previous_hash=prev_hash,
+        )
+        self.session.add(entry)
+        await self.session.commit()
+        await self.session.refresh(entry)
+        return entry
+
+    async def list_all(self, limit: int = 100, offset: int = 0) -> Sequence[AuditLog]:
+        stmt = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).offset(offset).limit(limit)
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def list_by_actor(self, actor: str, limit: int = 100) -> Sequence[AuditLog]:
+        stmt = select(AuditLog).where(AuditLog.actor == actor).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(limit)
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def list_by_action(self, action: str, limit: int = 100) -> Sequence[AuditLog]:
+        stmt = select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(limit)
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def count(self) -> int:
+        stmt = select(AuditLog)
+        res = await self.session.execute(stmt)
+        return len(res.scalars().all())
+
+    async def verify_chain_integrity(self) -> tuple[bool, list[str]]:
+        """
+        Cryptographically verifies the SHA-256 tamper-evident chain of all audit entries.
+        Detects any record modification, deletion, or sequence tampering.
+        """
+        stmt = select(AuditLog)
+        res = await self.session.execute(stmt)
+        records = list(res.scalars().all())
+
+        if not records:
+            return True, []
+
+        from neural.observability.audit import AuditLogChainVerifier
+
+        ordered = AuditLogChainVerifier.order_chain(records)
+        return AuditLogChainVerifier.verify_records(ordered)
+
+
+AuditLogRepository = AuditRepository
+
+
+
+class PerformanceRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def record(
+        self,
+        employee_id: str,
+        task_id: str,
+        completion_time_seconds: float = 0.0,
+        retry_count: int = 0,
+        quality_score: float = 1.0,
+        cost_tokens: int = 0,
+        cost_usd: float = 0.0,
+        outcome: str = "success"
+    ) -> PerformanceRecord:
+        lock = get_session_lock(self.session)
+        async with lock:
+            # Resolve employee UUID if public employee_id was provided
+            stmt_emp = select(Employee).where(
+                (Employee.employee_id == employee_id) | (Employee.id == employee_id)
+            )
+            res = await self.session.execute(stmt_emp)
+            emp = res.scalar_one_or_none()
+            emp_uuid = emp.id if emp else employee_id
+
+            entry = PerformanceRecord(
+                id=str(uuid.uuid4()),
+                employee_id=emp_uuid,
+                task_id=task_id,
+                completion_time_seconds=completion_time_seconds,
+                retry_count=retry_count,
+                quality_score=quality_score,
+                cost_tokens=cost_tokens,
+                cost_usd=cost_usd,
+                outcome=outcome
+            )
+            self.session.add(entry)
+            await self.session.commit()
+            await self.session.refresh(entry)
+            return entry
+
+    async def list_by_employee(self, employee_id: str) -> Sequence[PerformanceRecord]:
+        stmt_emp = select(Employee).where(
+            (Employee.employee_id == employee_id) | (Employee.id == employee_id)
+        )
+        res = await self.session.execute(stmt_emp)
+        emp = res.scalar_one_or_none()
+        emp_uuid = emp.id if emp else employee_id
+
+        stmt = (
+            select(PerformanceRecord)
+            .where(PerformanceRecord.employee_id == emp_uuid)
+            .order_by(PerformanceRecord.recorded_at.desc())
+        )
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def list_by_task(self, task_id: str) -> Sequence[PerformanceRecord]:
+        stmt = (
+            select(PerformanceRecord)
+            .where(PerformanceRecord.task_id == task_id)
+            .order_by(PerformanceRecord.recorded_at.desc())
+        )
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def list_all(self) -> Sequence[PerformanceRecord]:
+        stmt = select(PerformanceRecord).order_by(PerformanceRecord.recorded_at.desc())
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def get_total_cost(self) -> dict[str, Any]:
+        records = await self.list_all()
+        total_tokens = sum(r.cost_tokens for r in records)
+        total_usd = sum(r.cost_usd for r in records)
+        return {
+            "total_tokens": total_tokens,
+            "total_usd": round(total_usd, 6),
+            "records_count": len(records)
+        }
+
+
+class ArtifactRepository:
+    """
+    Repository for managing task deliverables, code artifacts, test logs,
+    and configurations with version history and SHA-256 checksum tracking.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self,
+        project_id: str,
+        name: str,
+        artifact_type: str,
+        path: str,
+        checksum: str,
+        version: int = 1,
+        task_id: Optional[str] = None
+    ) -> Artifact:
+        t_uuid = None
+        if task_id:
+            stmt_t = select(Task).where((Task.task_id == task_id) | (Task.id == task_id))
+            res_t = await self.session.execute(stmt_t)
+            t = res_t.scalar_one_or_none()
+            t_uuid = t.id if t else task_id
+
+        # Resolve project_id to UUID if needed
+        p_uuid = project_id
+        stmt_p = select(Project).where((Project.id == project_id) | (Project.name == project_id))
+        res_p = await self.session.execute(stmt_p)
+        p = res_p.scalar_one_or_none()
+        if p:
+            p_uuid = p.id
+
+        artifact = Artifact(
+            id=str(uuid.uuid4()),
+            project_id=p_uuid,
+            task_id=t_uuid,
+            name=name,
+            artifact_type=artifact_type,
+            path=path,
+            checksum=checksum,
+            version=version,
+            created_at=utc_now()
+        )
+        lock = get_session_lock(self.session)
+        async with lock:
+            self.session.add(artifact)
+            await self.session.commit()
+            await self.session.refresh(artifact)
+        return artifact
+
+    async def get_by_id(self, artifact_id: str) -> Optional[Artifact]:
+        stmt = select(Artifact).where(Artifact.id == artifact_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_name(
+        self,
+        project_id: str,
+        name: str,
+        version: Optional[int] = None
+    ) -> Optional[Artifact]:
+        stmt_p = select(Project).where((Project.id == project_id) | (Project.name == project_id))
+        res_p = await self.session.execute(stmt_p)
+        p = res_p.scalar_one_or_none()
+        p_uuid = p.id if p else project_id
+
+        stmt = select(Artifact).where(
+            Artifact.project_id == p_uuid,
+            Artifact.name == name
+        )
+        if version is not None:
+            stmt = stmt.where(Artifact.version == version)
+        else:
+            stmt = stmt.order_by(Artifact.version.desc())
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_latest_version(self, project_id: str, name: str) -> int:
+        stmt_p = select(Project).where((Project.id == project_id) | (Project.name == project_id))
+        res_p = await self.session.execute(stmt_p)
+        p = res_p.scalar_one_or_none()
+        p_uuid = p.id if p else project_id
+
+        stmt = select(Artifact.version).where(
+            Artifact.project_id == p_uuid,
+            Artifact.name == name
+        ).order_by(Artifact.version.desc())
+        result = await self.session.execute(stmt)
+        latest = result.scalars().first()
+        return latest or 0
+
+    async def list_by_project(
+        self,
+        project_id: str,
+        artifact_type: Optional[str] = None
+    ) -> Sequence[Artifact]:
+        stmt_p = select(Project).where((Project.id == project_id) | (Project.name == project_id))
+        res_p = await self.session.execute(stmt_p)
+        p = res_p.scalar_one_or_none()
+        p_uuid = p.id if p else project_id
+
+        stmt = select(Artifact).where(Artifact.project_id == p_uuid)
+        if artifact_type:
+            stmt = stmt.where(Artifact.artifact_type == artifact_type)
+        stmt = stmt.order_by(Artifact.created_at.desc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_by_task(self, task_id: str) -> Sequence[Artifact]:
+        stmt_t = select(Task).where((Task.task_id == task_id) | (Task.id == task_id))
+        res_t = await self.session.execute(stmt_t)
+        t = res_t.scalar_one_or_none()
+        t_uuid = t.id if t else task_id
+        stmt = select(Artifact).where(Artifact.task_id == t_uuid).order_by(Artifact.created_at.desc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_versions(self, project_id: str, name: str) -> Sequence[Artifact]:
+        stmt_p = select(Project).where((Project.id == project_id) | (Project.name == project_id))
+        res_p = await self.session.execute(stmt_p)
+        p = res_p.scalar_one_or_none()
+        p_uuid = p.id if p else project_id
+
+        stmt = select(Artifact).where(
+            Artifact.project_id == p_uuid,
+            Artifact.name == name
+        ).order_by(Artifact.version.asc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+class MessageRepository:
+    """
+    Persistent audit trail and storage for all agent communications in `messages` table.
+    """
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def save_message(
+        self,
+        message: Any,
+        channel: Optional[str] = None
+    ) -> Message:
+        if hasattr(message, "model_dump"):
+            data = message.model_dump()
+        elif isinstance(message, dict):
+            data = dict(message)
+        else:
+            data = {"content": str(message)}
+
+        msg_id = data.get("message_id") or f"MSG-{uuid.uuid4().hex[:8].upper()}"
+
+        existing = await self.get_by_message_id(str(msg_id))
+        if existing:
+            return existing
+
+        m_type = data.get("message_type", "direct_message")
+        if hasattr(m_type, "value"):
+            m_type = m_type.value
+        chan = channel or data.get("channel") or "general"
+        sender = data.get("sender", "unknown")
+        recipient = data.get("recipient")
+        department = data.get("department")
+        correlation_id = data.get("correlation_id")
+        payload = data.get("payload") or data
+
+        msg_obj = Message(
+            message_id=str(msg_id),
+            message_type=str(m_type),
+            channel=str(chan),
+            sender=str(sender),
+            recipient=str(recipient) if recipient else None,
+            department=str(department) if department else None,
+            correlation_id=str(correlation_id) if correlation_id else None,
+            payload=payload,
+        )
+        lock = get_session_lock(self.session)
+        async with lock:
+            self.session.add(msg_obj)
+            await self.session.commit()
+            await self.session.refresh(msg_obj)
+        return msg_obj
+
+    async def get_by_message_id(self, message_id: str) -> Optional[Message]:
+        stmt = select(Message).where(Message.message_id == message_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_by_channel(self, channel: str, limit: int = 100) -> Sequence[Message]:
+        stmt = (
+            select(Message)
+            .where(Message.channel == channel)
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_by_employee(self, employee_id: str, limit: int = 100) -> Sequence[Message]:
+        stmt = (
+            select(Message)
+            .where(
+                (Message.recipient == employee_id)
+                | (Message.sender == employee_id)
+                | (Message.channel == f"employee:{employee_id}:inbox")
+            )
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_by_department(self, department: str, limit: int = 100) -> Sequence[Message]:
+        stmt = (
+            select(Message)
+            .where(
+                (Message.department == department)
+                | (Message.channel == f"dept:{department}:broadcast")
+                | (Message.channel == f"dept:{department}")
+            )
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_recent(self, limit: int = 50) -> Sequence[Message]:
+        stmt = select(Message).order_by(Message.created_at.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+def compute_ledger_entry_hash(
+    sequence_number: int,
+    proposal_id: str,
+    decision: str,
+    previous_hash: str,
+    recorded_at_iso: str,
+    votes_summary: dict[str, Any],
+    rationale: str
+) -> str:
+    serialized_votes = json.dumps(votes_summary, sort_keys=True)
+    payload = f"{sequence_number}|{proposal_id}|{decision}|{previous_hash}|{recorded_at_iso}|{serialized_votes}|{rationale}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class ProposalRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self,
+        proposal_id: str,
+        title: str,
+        description: str,
+        proposal_type: ProposalType = ProposalType.STRATEGIC_INITIATIVE,
+        status: ProposalStatus = ProposalStatus.DRAFT,
+        proposer_id: str = "BossAI",
+        proposer_role: str = "Chief Architect / CEO",
+        project_id: Optional[str] = None,
+        parameters: Optional[dict[str, Any]] = None,
+        quorum_threshold: float = 0.5,
+        approval_threshold: float = 0.5
+    ) -> Proposal:
+        p_uuid = None
+        if project_id:
+            stmt_p = select(Project).where((Project.id == project_id) | (Project.name == project_id))
+            res_p = await self.session.execute(stmt_p)
+            p = res_p.scalar_one_or_none()
+            p_uuid = p.id if p else project_id
+
+        prop = Proposal(
+            id=str(uuid.uuid4()),
+            proposal_id=proposal_id,
+            title=title,
+            description=description,
+            proposal_type=proposal_type,
+            status=status,
+            proposer_id=proposer_id,
+            proposer_role=proposer_role,
+            project_id=p_uuid,
+            parameters=parameters or {},
+            deliberation_history=[],
+            quorum_threshold=quorum_threshold,
+            approval_threshold=approval_threshold,
+            created_at=utc_now(),
+            updated_at=utc_now()
+        )
+        lock = get_session_lock(self.session)
+        async with lock:
+            self.session.add(prop)
+            await self.session.commit()
+            await self.session.refresh(prop)
+        return prop
+
+    async def get_by_id(self, id: str) -> Optional[Proposal]:
+        stmt = (
+            select(Proposal)
+            .where(Proposal.id == id)
+            .options(
+                selectinload(Proposal.votes),
+                selectinload(Proposal.ledger_entries)
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_proposal_id(self, proposal_id: str) -> Optional[Proposal]:
+        stmt = (
+            select(Proposal)
+            .where((Proposal.proposal_id == proposal_id) | (Proposal.id == proposal_id))
+            .options(
+                selectinload(Proposal.votes),
+                selectinload(Proposal.ledger_entries)
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_all(
+        self,
+        status: Optional[ProposalStatus] = None,
+        project_id: Optional[str] = None,
+        limit: int = 100
+    ) -> Sequence[Proposal]:
+        stmt = (
+            select(Proposal)
+            .options(
+                selectinload(Proposal.votes),
+                selectinload(Proposal.ledger_entries)
+            )
+            .order_by(Proposal.created_at.desc())
+        )
+        if status:
+            stmt = stmt.where(Proposal.status == status)
+        if project_id:
+            stmt_p = select(Project).where((Project.id == project_id) | (Project.name == project_id))
+            res_p = await self.session.execute(stmt_p)
+            p = res_p.scalar_one_or_none()
+            p_uuid = p.id if p else project_id
+            stmt = stmt.where(Proposal.project_id == p_uuid)
+        stmt = stmt.limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def update_status(
+        self,
+        proposal_id: str,
+        status: ProposalStatus,
+        **kwargs: Any
+    ) -> Optional[Proposal]:
+        prop = await self.get_by_proposal_id(proposal_id)
+        if not prop:
+            return None
+        prop.status = status
+        prop.updated_at = utc_now()
+        for k, v in kwargs.items():
+            if hasattr(prop, k):
+                setattr(prop, k, v)
+        lock = get_session_lock(self.session)
+        async with lock:
+            await self.session.commit()
+            await self.session.refresh(prop)
+        return prop
+
+    async def add_deliberation_statement(
+        self,
+        proposal_id: str,
+        statement: dict[str, Any]
+    ) -> Optional[Proposal]:
+        prop = await self.get_by_proposal_id(proposal_id)
+        if not prop:
+            return None
+        history = list(prop.deliberation_history or [])
+        statement_with_time = dict(statement)
+        if "timestamp" not in statement_with_time:
+            statement_with_time["timestamp"] = utc_now().isoformat()
+        history.append(statement_with_time)
+        prop.deliberation_history = history
+        prop.updated_at = utc_now()
+        lock = get_session_lock(self.session)
+        async with lock:
+            await self.session.commit()
+            await self.session.refresh(prop)
+        return prop
+
+    async def add_deliberation_statements(
+        self,
+        proposal_id: str,
+        statements: Sequence[dict[str, Any]]
+    ) -> Optional[Proposal]:
+        prop = await self.get_by_proposal_id(proposal_id)
+        if not prop:
+            return None
+        history = list(prop.deliberation_history or [])
+        now_iso = utc_now().isoformat()
+        for stmt in statements:
+            stmt_with_time = dict(stmt)
+            if "timestamp" not in stmt_with_time:
+                stmt_with_time["timestamp"] = now_iso
+            history.append(stmt_with_time)
+        prop.deliberation_history = history
+        prop.updated_at = utc_now()
+        lock = get_session_lock(self.session)
+        async with lock:
+            await self.session.commit()
+            await self.session.refresh(prop)
+        return prop
+
+    async def set_execution_receipt(
+        self,
+        proposal_id: str,
+        receipt: dict[str, Any],
+        project_id: Optional[str] = None
+    ) -> Optional[Proposal]:
+        prop = await self.get_by_proposal_id(proposal_id)
+        if not prop:
+            return None
+        prop.execution_receipt = receipt
+        prop.status = ProposalStatus.EXECUTED
+        prop.executed_at = utc_now()
+        prop.updated_at = utc_now()
+        if project_id:
+            prop.project_id = project_id
+        lock = get_session_lock(self.session)
+        async with lock:
+            await self.session.commit()
+            await self.session.refresh(prop)
+        return prop
+
+
+class VoteRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def cast_vote(
+        self,
+        proposal_id: str,
+        voter_id: str,
+        voter_name: str,
+        voter_role: str,
+        department: str,
+        choice: VoteChoice,
+        weight: float = 1.0,
+        rationale: Optional[str] = None
+    ) -> Vote:
+        stmt_p = select(Proposal).where((Proposal.proposal_id == proposal_id) | (Proposal.id == proposal_id))
+        res_p = await self.session.execute(stmt_p)
+        prop = res_p.scalar_one_or_none()
+        p_uuid = prop.id if prop else proposal_id
+
+        lock = get_session_lock(self.session)
+        async with lock:
+            stmt_v = select(Vote).where(Vote.proposal_id == p_uuid, Vote.voter_id == voter_id)
+            res_v = await self.session.execute(stmt_v)
+            existing_vote = res_v.scalar_one_or_none()
+
+            if existing_vote:
+                existing_vote.choice = choice
+                existing_vote.voter_name = voter_name
+                existing_vote.voter_role = voter_role
+                existing_vote.department = department
+                existing_vote.weight = weight
+                existing_vote.rationale = rationale
+                existing_vote.voted_at = utc_now()
+                await self.session.commit()
+                await self.session.refresh(existing_vote)
+                return existing_vote
+            else:
+                vote = Vote(
+                    id=str(uuid.uuid4()),
+                    proposal_id=p_uuid,
+                    voter_id=voter_id,
+                    voter_name=voter_name,
+                    voter_role=voter_role,
+                    department=department,
+                    choice=choice,
+                    weight=weight,
+                    rationale=rationale,
+                    voted_at=utc_now()
+                )
+                self.session.add(vote)
+                await self.session.commit()
+                await self.session.refresh(vote)
+                return vote
+
+    async def list_by_proposal(self, proposal_id: str) -> Sequence[Vote]:
+        stmt_p = select(Proposal).where((Proposal.proposal_id == proposal_id) | (Proposal.id == proposal_id))
+        res_p = await self.session.execute(stmt_p)
+        prop = res_p.scalar_one_or_none()
+        p_uuid = prop.id if prop else proposal_id
+
+        stmt = select(Vote).where(Vote.proposal_id == p_uuid).order_by(Vote.voted_at.asc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def get_vote(self, proposal_id: str, voter_id: str) -> Optional[Vote]:
+        stmt_p = select(Proposal).where((Proposal.proposal_id == proposal_id) | (Proposal.id == proposal_id))
+        res_p = await self.session.execute(stmt_p)
+        prop = res_p.scalar_one_or_none()
+        p_uuid = prop.id if prop else proposal_id
+
+        stmt = select(Vote).where(Vote.proposal_id == p_uuid, Vote.voter_id == voter_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
+class DecisionLedgerRepository:
+    _ledger_lock: asyncio.Lock = asyncio.Lock()
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def append_entry(
+        self,
+        proposal_id: str,
+        decision: str,
+        title: str,
+        proposal_type: str,
+        proposer_id: str,
+        votes_summary: dict[str, Any],
+        rationale: str,
+        execution_receipt: Optional[dict[str, Any]] = None
+    ) -> DecisionLedgerEntry:
+        stmt_p = select(Proposal).where((Proposal.proposal_id == proposal_id) | (Proposal.id == proposal_id))
+        res_p = await self.session.execute(stmt_p)
+        prop = res_p.scalar_one_or_none()
+        p_uuid = prop.id if prop else proposal_id
+        prop_id_str = prop.proposal_id if prop else proposal_id
+
+        async with self._ledger_lock:
+            stmt_latest = select(DecisionLedgerEntry).order_by(DecisionLedgerEntry.sequence_number.desc()).limit(1)
+            res_latest = await self.session.execute(stmt_latest)
+            latest_entry = res_latest.scalar_one_or_none()
+
+            if latest_entry:
+                seq_num = latest_entry.sequence_number + 1
+                prev_hash = latest_entry.entry_hash
+            else:
+                seq_num = 1
+                prev_hash = "0" * 64
+
+            now_dt = utc_now()
+            now_iso = now_dt.isoformat()
+            entry_hash = compute_ledger_entry_hash(
+                sequence_number=seq_num,
+                proposal_id=prop_id_str,
+                decision=decision,
+                previous_hash=prev_hash,
+                recorded_at_iso=now_iso,
+                votes_summary=votes_summary,
+                rationale=rationale
+            )
+
+            entry_id = f"LEDGER-{uuid.uuid4().hex[:8].upper()}"
+            entry = DecisionLedgerEntry(
+                id=str(uuid.uuid4()),
+                entry_id=entry_id,
+                proposal_id=p_uuid,
+                sequence_number=seq_num,
+                decision=decision,
+                title=title,
+                proposal_type=proposal_type,
+                proposer_id=proposer_id,
+                votes_summary=votes_summary,
+                rationale=rationale,
+                execution_receipt=execution_receipt,
+                previous_hash=prev_hash,
+                entry_hash=entry_hash,
+                recorded_at=now_dt
+            )
+            self.session.add(entry)
+            await self.session.commit()
+            await self.session.refresh(entry)
+            return entry
+
+    async def update_execution_receipt(
+        self,
+        proposal_id: str,
+        receipt: dict[str, Any]
+    ) -> Optional[DecisionLedgerEntry]:
+        stmt_p = select(Proposal).where((Proposal.proposal_id == proposal_id) | (Proposal.id == proposal_id))
+        res_p = await self.session.execute(stmt_p)
+        prop = res_p.scalar_one_or_none()
+        p_uuid = prop.id if prop else proposal_id
+
+        async with self._ledger_lock:
+            stmt = (
+                select(DecisionLedgerEntry)
+                .where(DecisionLedgerEntry.proposal_id == p_uuid)
+                .order_by(DecisionLedgerEntry.sequence_number.desc())
+                .limit(1)
+            )
+            res = await self.session.execute(stmt)
+            entry = res.scalar_one_or_none()
+            if not entry:
+                return None
+            entry.execution_receipt = receipt
+            await self.session.commit()
+            await self.session.refresh(entry)
+            return entry
+
+    async def get_by_entry_id(self, entry_id: str) -> Optional[DecisionLedgerEntry]:
+        stmt = (
+            select(DecisionLedgerEntry)
+            .where((DecisionLedgerEntry.entry_id == entry_id) | (DecisionLedgerEntry.id == entry_id))
+            .options(selectinload(DecisionLedgerEntry.proposal))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_proposal_id(self, proposal_id: str) -> Optional[DecisionLedgerEntry]:
+        stmt_p = select(Proposal).where((Proposal.proposal_id == proposal_id) | (Proposal.id == proposal_id))
+        res_p = await self.session.execute(stmt_p)
+        prop = res_p.scalar_one_or_none()
+        p_uuid = prop.id if prop else proposal_id
+
+        stmt = (
+            select(DecisionLedgerEntry)
+            .where(DecisionLedgerEntry.proposal_id == p_uuid)
+            .order_by(DecisionLedgerEntry.sequence_number.desc())
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_by_proposal(self, proposal_id: str) -> Sequence[DecisionLedgerEntry]:
+        stmt_p = select(Proposal).where((Proposal.proposal_id == proposal_id) | (Proposal.id == proposal_id))
+        res_p = await self.session.execute(stmt_p)
+        prop = res_p.scalar_one_or_none()
+        p_uuid = prop.id if prop else proposal_id
+
+        stmt = (
+            select(DecisionLedgerEntry)
+            .where(DecisionLedgerEntry.proposal_id == p_uuid)
+            .order_by(DecisionLedgerEntry.sequence_number.asc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_all(self, limit: int = 100) -> Sequence[DecisionLedgerEntry]:
+        stmt = select(DecisionLedgerEntry).order_by(DecisionLedgerEntry.sequence_number.asc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def verify_chain_integrity(self) -> tuple[bool, Optional[str]]:
+        stmt = (
+            select(DecisionLedgerEntry)
+            .options(selectinload(DecisionLedgerEntry.proposal))
+            .order_by(DecisionLedgerEntry.sequence_number.asc())
+        )
+        result = await self.session.execute(stmt)
+        entries = result.scalars().all()
+
+        if not entries:
+            return True, None
+
+        expected_prev_hash = "0" * 64
+        for idx, entry in enumerate(entries, start=1):
+            if entry.sequence_number != idx:
+                return False, f"Sequence gap or mismatch at index {idx}: entry has sequence_number {entry.sequence_number}"
+
+            if entry.previous_hash != expected_prev_hash:
+                return False, f"Broken hash link at sequence {entry.sequence_number}: expected prev_hash {expected_prev_hash}, got {entry.previous_hash}"
+
+            prop_id_str = entry.proposal.proposal_id if entry.proposal else entry.proposal_id
+            recomputed_hash = compute_ledger_entry_hash(
+                sequence_number=entry.sequence_number,
+                proposal_id=prop_id_str,
+                decision=entry.decision,
+                previous_hash=entry.previous_hash,
+                recorded_at_iso=entry.recorded_at.isoformat(),
+                votes_summary=entry.votes_summary,
+                rationale=entry.rationale
+            )
+            if entry.entry_hash != recomputed_hash:
+                return False, f"Entry hash mismatch at sequence {entry.sequence_number}: stored {entry.entry_hash}, recomputed {recomputed_hash}"
+
+            expected_prev_hash = entry.entry_hash
+
+        return True, None
+
+
+def compute_certificate_hash(
+    certificate_id: str,
+    employee_id: str,
+    skill_name: str,
+    level_str: str,
+    score: float,
+    benchmark_id: str,
+    issued_at_iso: str
+) -> str:
+    clean_iso = str(issued_at_iso).replace("+00:00", "").replace("Z", "").replace(" ", "T")
+    if "." in clean_iso:
+        clean_iso = clean_iso.split(".")[0]
+    payload = {
+        "benchmark_id": benchmark_id,
+        "certificate_id": certificate_id,
+        "employee_id": employee_id,
+        "issued_at": clean_iso,
+        "level": level_str,
+        "score": round(score, 4),
+        "skill_name": skill_name,
+    }
+    canonical = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class SkillCertificationRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create_certification(
+        self,
+        certificate_id: str,
+        employee_id: str,
+        skill_name: str,
+        level: SkillLevel,
+        score: float,
+        benchmark_id: str,
+        execution_receipt: Optional[dict[str, Any]] = None,
+        rubric_scores: Optional[dict[str, Any]] = None,
+        certificate_hash: Optional[str] = None,
+        status: str = "certified",
+        issued_at: Optional[datetime] = None,
+        expires_at: Optional[datetime] = None
+    ) -> SkillCertification:
+        now = issued_at or utc_now()
+        if hasattr(now, "tzinfo") and now.tzinfo is not None:
+            now = now.replace(tzinfo=None)
+        level_str = level.value if hasattr(level, "value") else str(level)
+        h = certificate_hash or compute_certificate_hash(
+            certificate_id=certificate_id,
+            employee_id=employee_id,
+            skill_name=skill_name,
+            level_str=level_str,
+            score=score,
+            benchmark_id=benchmark_id,
+            issued_at_iso=now.isoformat()
+        )
+
+        cert = SkillCertification(
+            certificate_id=certificate_id,
+            employee_id=employee_id,
+            skill_name=skill_name,
+            level=level,
+            score=score,
+            benchmark_id=benchmark_id,
+            execution_receipt=execution_receipt or {},
+            rubric_scores=rubric_scores or {},
+            certificate_hash=h,
+            status=status,
+            issued_at=now,
+            expires_at=expires_at
+        )
+        self.session.add(cert)
+        await self.session.commit()
+        await self.session.refresh(cert)
+        return cert
+
+    async def get_by_certificate_id(self, certificate_id: str) -> Optional[SkillCertification]:
+        stmt = (
+            select(SkillCertification)
+            .where(SkillCertification.certificate_id == certificate_id)
+            .options(selectinload(SkillCertification.employee))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_by_employee_id(self, employee_id: str) -> Sequence[SkillCertification]:
+        # Handle lookup either by Employee.employee_id (e.g. ANC-EMP-0001) or Employee.id (UUID)
+        stmt_emp = select(Employee).where(Employee.employee_id == employee_id)
+        res_emp = await self.session.execute(stmt_emp)
+        emp = res_emp.scalar_one_or_none()
+        target_id = emp.id if emp else employee_id
+
+        stmt = (
+            select(SkillCertification)
+            .where(SkillCertification.employee_id == target_id)
+            .order_by(SkillCertification.issued_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_all(
+        self,
+        skill_name: Optional[str] = None,
+        employee_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100
+    ) -> Sequence[SkillCertification]:
+        stmt = select(SkillCertification)
+        if skill_name:
+            stmt = stmt.where(SkillCertification.skill_name.ilike(skill_name))
+        if employee_id:
+            stmt_emp = select(Employee).where(Employee.employee_id == employee_id)
+            res_emp = await self.session.execute(stmt_emp)
+            emp = res_emp.scalar_one_or_none()
+            target_id = emp.id if emp else employee_id
+            stmt = stmt.where(SkillCertification.employee_id == target_id)
+        if status:
+            stmt = stmt.where(SkillCertification.status == status)
+        stmt = stmt.order_by(SkillCertification.issued_at.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def verify_certificate_integrity(self, certificate_id: str) -> tuple[bool, str]:
+        cert = await self.get_by_certificate_id(certificate_id)
+        if not cert:
+            return False, f"Certificate {certificate_id} not found"
+        level_str = cert.level.value if hasattr(cert.level, "value") else str(cert.level)
+        issued_at_iso = cert.issued_at.isoformat() if hasattr(cert.issued_at, "isoformat") else str(cert.issued_at)
+        expected_hash = compute_certificate_hash(
+            certificate_id=cert.certificate_id,
+            employee_id=cert.employee_id,
+            skill_name=cert.skill_name,
+            level_str=level_str,
+            score=cert.score,
+            benchmark_id=cert.benchmark_id,
+            issued_at_iso=issued_at_iso
+        )
+        is_valid = cert.certificate_hash == expected_hash
+        msg = "Cryptographic integrity verified" if is_valid else f"Hash mismatch: stored {cert.certificate_hash}, expected {expected_hash}"
+        return is_valid, msg
+
+
+class EvolutionRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create_record(
+        self,
+        record_type: str,
+        hypothesis: str,
+        experiment_details: Optional[dict[str, Any]] = None,
+        baseline_metrics: Optional[dict[str, Any]] = None,
+        experiment_metrics: Optional[dict[str, Any]] = None,
+        status: str = "in_review",
+        version: str = "1.0.0"
+    ) -> EvolutionRecord:
+        record = EvolutionRecord(
+            record_type=record_type,
+            hypothesis=hypothesis,
+            experiment_details=experiment_details or {},
+            baseline_metrics=baseline_metrics or {},
+            experiment_metrics=experiment_metrics or {},
+            status=status,
+            version=version
+        )
+        self.session.add(record)
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
+
+    async def get_by_id(self, record_id: str) -> Optional[EvolutionRecord]:
+        stmt = select(EvolutionRecord).where(EvolutionRecord.id == record_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_all(
+        self,
+        record_type: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50
+    ) -> Sequence[EvolutionRecord]:
+        stmt = select(EvolutionRecord)
+        if record_type:
+            stmt = stmt.where(EvolutionRecord.record_type == record_type)
+        if status:
+            stmt = stmt.where(EvolutionRecord.status == status)
+        stmt = stmt.order_by(EvolutionRecord.created_at.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def update_status(
+        self,
+        record_id: str,
+        status: str,
+        experiment_metrics: Optional[dict[str, Any]] = None
+    ) -> Optional[EvolutionRecord]:
+        record = await self.get_by_id(record_id)
+        if record:
+            record.status = status
+            if experiment_metrics:
+                m = dict(record.experiment_metrics or {})
+                m.update(experiment_metrics)
+                record.experiment_metrics = m
+            await self.session.commit()
+            await self.session.refresh(record)
+        return record
+
+
+class MemoryRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create_entry(
+        self,
+        category: MemoryCategory,
+        source: str,
+        content: str,
+        metadata_json: Optional[dict[str, Any]] = None,
+        confidence: float = 1.0,
+        embedding_ref: Optional[str] = None,
+    ) -> MemoryEntry:
+        entry = MemoryEntry(
+            category=category,
+            source=source,
+            content=content,
+            metadata_json=metadata_json or {},
+            confidence=confidence,
+            embedding_ref=embedding_ref,
+        )
+        self.session.add(entry)
+        await self.session.commit()
+        await self.session.refresh(entry)
+        return entry
+
+    async def get_by_id(self, entry_id: str) -> Optional[MemoryEntry]:
+        stmt = select(MemoryEntry).where(MemoryEntry.id == entry_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_entries(
+        self,
+        category: Optional[MemoryCategory] = None,
+        source: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[MemoryEntry]:
+        stmt = select(MemoryEntry)
+        if category:
+            stmt = stmt.where(MemoryEntry.category == category)
+        if source:
+            stmt = stmt.where(MemoryEntry.source == source)
+        if search:
+            stmt = stmt.where(MemoryEntry.content.ilike(f"%{search}%"))
+        stmt = stmt.order_by(MemoryEntry.created_at.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def count_by_category(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for cat in MemoryCategory:
+            stmt = select(MemoryEntry).where(MemoryEntry.category == cat)
+            res = await self.session.execute(stmt)
+            counts[cat.value] = len(res.scalars().all())
+        return counts
+
+
+class ToolRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create_tool(
+        self,
+        name: str,
+        code: str,
+        test_code: str,
+        description: str = "",
+        version: str = "1.0.0",
+        category: str = "utility",
+        interface_schema: Optional[dict[str, Any]] = None,
+        dependencies: Optional[list[str]] = None,
+        author_id: str = "autonomous_toolsmith",
+        tool_id: Optional[str] = None,
+        status: str = "draft",
+        safety_status: str = "pending",
+        safety_violations: Optional[list[str]] = None,
+        verification_receipt: Optional[dict[str, Any]] = None,
+    ) -> ToolRecord:
+        t_id = tool_id or f"TOOL-{name.upper().replace('_', '-')}-{version.replace('.', '-')}-{uuid.uuid4().hex[:4].upper()}"
+        tool = ToolRecord(
+            tool_id=t_id,
+            name=name,
+            version=version,
+            description=description,
+            category=category,
+            code=code,
+            test_code=test_code,
+            interface_schema=interface_schema or {},
+            dependencies=dependencies or [],
+            author_id=author_id,
+            status=status,
+            safety_status=safety_status,
+            safety_violations=safety_violations or [],
+            verification_receipt=verification_receipt or {},
+        )
+        self.session.add(tool)
+        await self.session.commit()
+        await self.session.refresh(tool)
+        return tool
+
+    async def get_by_id(self, id: str) -> Optional[ToolRecord]:
+        stmt = select(ToolRecord).where(ToolRecord.id == id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_tool_id(self, tool_id: str) -> Optional[ToolRecord]:
+        stmt = select(ToolRecord).where(ToolRecord.tool_id == tool_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_name_and_version(self, name: str, version: str) -> Optional[ToolRecord]:
+        stmt = select(ToolRecord).where(
+            ToolRecord.name == name,
+            ToolRecord.version == version,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_latest_verified_tool(self, name: str) -> Optional[ToolRecord]:
+        stmt = (
+            select(ToolRecord)
+            .where(
+                ToolRecord.name == name,
+                ToolRecord.status == "verified",
+            )
+            .order_by(ToolRecord.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def list_tools(
+        self,
+        category: Optional[str] = None,
+        status: Optional[str] = None,
+        author_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[ToolRecord]:
+        stmt = select(ToolRecord)
+        if category:
+            stmt = stmt.where(ToolRecord.category == category)
+        if status:
+            stmt = stmt.where(ToolRecord.status == status)
+        if author_id:
+            stmt = stmt.where(ToolRecord.author_id == author_id)
+        stmt = stmt.order_by(ToolRecord.created_at.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def update_status(
+        self,
+        id: str,
+        status: str,
+        verification_receipt: Optional[dict[str, Any]] = None,
+        safety_status: Optional[str] = None,
+        safety_violations: Optional[list[str]] = None,
+    ) -> Optional[ToolRecord]:
+        tool = await self.get_by_id(id)
+        if tool:
+            tool.status = status
+            if verification_receipt is not None:
+                tool.verification_receipt = verification_receipt
+            if safety_status is not None:
+                tool.safety_status = safety_status
+            if safety_violations is not None:
+                tool.safety_violations = safety_violations
+            await self.session.commit()
+            await self.session.refresh(tool)
+        return tool
+
+    async def deprecate_tool(self, tool_id: str) -> Optional[ToolRecord]:
+        tool = await self.get_by_tool_id(tool_id)
+        if not tool:
+            tool = await self.get_by_id(tool_id)
+        if tool:
+            tool.status = "deprecated"
+            await self.session.commit()
+            await self.session.refresh(tool)
+        return tool
+
+
+class MethodRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create_method(
+        self,
+        name: str,
+        objective: str,
+        strategy_type: str,
+        steps: list[dict[str, Any]],
+        version: str = "1.0.0",
+        domain: str = "engineering",
+        fallback_strategy: Optional[dict[str, Any]] = None,
+        baseline_method_id: Optional[str] = None,
+        author_id: str = "MethodLabAI",
+        tags: Optional[list[str]] = None,
+        method_id: Optional[str] = None,
+        status: str = "candidate",
+    ) -> MethodRecord:
+        m_id = method_id or f"MTH-{name.upper().replace('_', '-')}-{version.replace('.', '-')}-{uuid.uuid4().hex[:4].upper()}"
+        method = MethodRecord(
+            method_id=m_id,
+            name=name,
+            version=version,
+            domain=domain,
+            objective=objective,
+            strategy_type=strategy_type,
+            steps=steps,
+            fallback_strategy=fallback_strategy or {},
+            status=status,
+            baseline_method_id=baseline_method_id,
+            author_id=author_id,
+            tags=tags or [],
+        )
+        self.session.add(method)
+        await self.session.commit()
+        await self.session.refresh(method)
+        return method
+
+    async def get_by_id(self, id: str) -> Optional[MethodRecord]:
+        stmt = (
+            select(MethodRecord)
+            .where(MethodRecord.id == id)
+            .options(selectinload(MethodRecord.benchmarks))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_method_id(self, method_id: str) -> Optional[MethodRecord]:
+        stmt = (
+            select(MethodRecord)
+            .where(MethodRecord.method_id == method_id)
+            .options(selectinload(MethodRecord.benchmarks))
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_methods(
+        self,
+        status: Optional[str] = None,
+        domain: Optional[str] = None,
+        strategy_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[MethodRecord]:
+        stmt = select(MethodRecord).options(selectinload(MethodRecord.benchmarks))
+        if status:
+            stmt = stmt.where(MethodRecord.status == status)
+        if domain:
+            stmt = stmt.where(MethodRecord.domain == domain)
+        if strategy_type:
+            stmt = stmt.where(MethodRecord.strategy_type == strategy_type)
+        stmt = stmt.order_by(MethodRecord.created_at.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_active_catalog(self, domain: Optional[str] = None) -> Sequence[MethodRecord]:
+        stmt = (
+            select(MethodRecord)
+            .where(MethodRecord.status == "promoted")
+            .options(selectinload(MethodRecord.benchmarks))
+        )
+        if domain:
+            stmt = stmt.where(MethodRecord.domain == domain)
+        stmt = stmt.order_by(MethodRecord.promoted_at.desc().nullslast(), MethodRecord.created_at.desc())
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def promote_method(self, method_id: str) -> Optional[MethodRecord]:
+        method = await self.get_by_method_id(method_id)
+        if not method:
+            method = await self.get_by_id(method_id)
+        if method:
+            method.status = "promoted"
+            method.promoted_at = utc_now()
+            await self.session.commit()
+            await self.session.refresh(method)
+        return method
+
+    async def update_status(self, id: str, status: str) -> Optional[MethodRecord]:
+        method = await self.get_by_id(id)
+        if method:
+            method.status = status
+            if status == "promoted" and not method.promoted_at:
+                method.promoted_at = utc_now()
+            await self.session.commit()
+            await self.session.refresh(method)
+        return method
+
+
+class MethodBenchmarkRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create_benchmark(
+        self,
+        method_id: str,
+        total_scenarios: int,
+        passed_scenarios: int,
+        accuracy: float,
+        avg_latency_ms: float,
+        token_efficiency: float,
+        reproduction_rate: float,
+        composite_score: float,
+        baseline_method_id: Optional[str] = None,
+        baseline_accuracy: Optional[float] = None,
+        baseline_latency_ms: Optional[float] = None,
+        baseline_token_efficiency: Optional[float] = None,
+        relative_improvement_pct: float = 0.0,
+        recommendation: str = "iterate",
+        scenario_results: Optional[list[dict[str, Any]]] = None,
+        benchmark_id: Optional[str] = None,
+    ) -> MethodBenchmarkRecord:
+        bmk_id = benchmark_id or f"BMK-{uuid.uuid4().hex[:8].upper()}"
+        record = MethodBenchmarkRecord(
+            benchmark_id=bmk_id,
+            method_id=method_id,
+            baseline_method_id=baseline_method_id,
+            total_scenarios=total_scenarios,
+            passed_scenarios=passed_scenarios,
+            accuracy=accuracy,
+            avg_latency_ms=avg_latency_ms,
+            token_efficiency=token_efficiency,
+            reproduction_rate=reproduction_rate,
+            composite_score=composite_score,
+            baseline_accuracy=baseline_accuracy,
+            baseline_latency_ms=baseline_latency_ms,
+            baseline_token_efficiency=baseline_token_efficiency,
+            relative_improvement_pct=relative_improvement_pct,
+            recommendation=recommendation,
+            scenario_results=scenario_results or [],
+        )
+        self.session.add(record)
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
+
+    async def get_by_id(self, id: str) -> Optional[MethodBenchmarkRecord]:
+        stmt = select(MethodBenchmarkRecord).where(MethodBenchmarkRecord.id == id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_benchmark_id(self, benchmark_id: str) -> Optional[MethodBenchmarkRecord]:
+        stmt = select(MethodBenchmarkRecord).where(MethodBenchmarkRecord.benchmark_id == benchmark_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_for_method(self, method_id: str) -> Sequence[MethodBenchmarkRecord]:
+        stmt = (
+            select(MethodBenchmarkRecord)
+            .outerjoin(MethodRecord, MethodBenchmarkRecord.method_id == MethodRecord.id)
+            .where(
+                (MethodBenchmarkRecord.method_id == method_id)
+                | (MethodRecord.method_id == method_id)
+                | (MethodRecord.name == method_id)
+            )
+            .order_by(MethodBenchmarkRecord.recorded_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_all(self, limit: int = 50) -> Sequence[MethodBenchmarkRecord]:
+        stmt = select(MethodBenchmarkRecord).order_by(MethodBenchmarkRecord.recorded_at.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+class DecisionRecordRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self,
+        decision_id: str,
+        actor_id: str,
+        decision_type: str,
+        model_checkpoint: str,
+        input_payload: dict[str, Any],
+        output_choice: Optional[str] = None,
+        probabilities: Optional[dict[str, float]] = None,
+        confidence: float = 0.0,
+        calibrated_prob: float = 0.0,
+        latency_ms: float = 0.0,
+        was_escalated: bool = False,
+        shadow_mode: bool = True,
+        task_id: Optional[str] = None,
+        actual_outcome: Optional[str] = None,
+    ) -> DecisionRecord:
+        record = DecisionRecord(
+            decision_id=decision_id,
+            actor_id=actor_id,
+            task_id=task_id,
+            decision_type=decision_type,
+            model_checkpoint=model_checkpoint,
+            input_payload=input_payload,
+            output_choice=output_choice,
+            probabilities=probabilities or {},
+            confidence=confidence,
+            calibrated_prob=calibrated_prob,
+            latency_ms=latency_ms,
+            was_escalated=was_escalated,
+            shadow_mode=shadow_mode,
+            actual_outcome=actual_outcome,
+        )
+        self.session.add(record)
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
+
+    async def get_by_decision_id(self, decision_id: str) -> Optional[DecisionRecord]:
+        stmt = select(DecisionRecord).where(DecisionRecord.decision_id == decision_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_by_task(self, task_id: str) -> Sequence[DecisionRecord]:
+        stmt = (
+            select(DecisionRecord)
+            .where(DecisionRecord.task_id == task_id)
+            .order_by(DecisionRecord.timestamp.asc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def list_by_actor(self, actor_id: str) -> Sequence[DecisionRecord]:
+        stmt = (
+            select(DecisionRecord)
+            .where(DecisionRecord.actor_id == actor_id)
+            .order_by(DecisionRecord.timestamp.desc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+    async def update_outcome(self, decision_id: str, actual_outcome: str) -> Optional[DecisionRecord]:
+        record = await self.get_by_decision_id(decision_id)
+        if not record:
+            return None
+        record.actual_outcome = actual_outcome
+        await self.session.commit()
+        await self.session.refresh(record)
+        return record
+
+    async def list_recent(
+        self,
+        limit: int = 100,
+        shadow_mode: Optional[bool] = None,
+        decision_type: Optional[str] = None,
+    ) -> Sequence[DecisionRecord]:
+        stmt = select(DecisionRecord)
+        if shadow_mode is not None:
+            stmt = stmt.where(DecisionRecord.shadow_mode == shadow_mode)
+        if decision_type is not None:
+            stmt = stmt.where(DecisionRecord.decision_type == decision_type)
+        stmt = stmt.order_by(DecisionRecord.timestamp.desc()).limit(limit)
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
+
+
+
+
+
+

@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ancos-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ancos-network
+
+  core-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.core
+    container_name: ancos-core-api
+    restart: unless-stopped
+    ports:
+      - "12000:12000"
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=sqlite+aiosqlite:///./data/neural_company.db
+      - REDIS_URL=redis://redis:6379/0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/app/data
+      - ./configs:/app/configs
+    depends_on:
+      - redis
+    networks:
+      - ancos-network
+
+  dashboard:
+    build:
+      context: ./apps/dashboard
+      dockerfile: Dockerfile
+    container_name: ancos-dashboard
+    restart: unless-stopped
+    ports:
+      - "12001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:12000
+    depends_on:
+      - core-api
+    networks:
+      - ancos-network
+
+networks:
+  ancos-network:
+    name: ancos-network
+    driver: bridge
+
+volumes:
+  redis_data:
+

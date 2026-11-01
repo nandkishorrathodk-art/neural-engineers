@@ -1,0 +1,23 @@
+security:
+  enforce_sandboxing: true
+  allow_root_in_container: false
+  allow_docker_socket_mount: false
+  emergency_stop_enabled: true
+
+human_approval_required:
+  - "destructive_file_deletion"
+  - "database_drop_or_truncate"
+  - "external_cloud_deployment"
+  - "external_financial_transaction"
+  - "production_policy_mutation"
+  - "credentials_and_secrets_access"
+  - "external_public_network_publish"
+
+network_policies:
+  isolated_employee_bridge: true
+  block_internal_rfc1918_access: true
+  allowed_external_ports:
+    - 80
+    - 443
+    - 22
+

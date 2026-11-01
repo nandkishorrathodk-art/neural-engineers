@@ -1,0 +1,30 @@
+tiers:
+  reasoning:
+    primary: "claude-3-7-sonnet"
+    fallbacks:
+      - "gpt-4o"
+      - "gemini-1.5-pro"
+  
+  coding:
+    primary: "claude-3-5-sonnet-20241022"
+    fallbacks:
+      - "gpt-4o"
+      - "qwen-2.5-coder-32b"
+
+  fast:
+    primary: "gpt-4o-mini"
+    fallbacks:
+      - "claude-3-5-haiku"
+      - "gemini-1.5-flash"
+
+routes:
+  boss_brain: "reasoning"
+  task_decomposer: "reasoning"
+  meeting_moderator: "reasoning"
+  independent_verifier: "reasoning"
+  code_generation: "coding"
+  code_debugging: "coding"
+  code_review: "reasoning"
+  status_reporting: "fast"
+  log_summarization: "fast"
+
