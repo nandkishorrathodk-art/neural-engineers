@@ -3,7 +3,7 @@ import secrets
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from neural.api.routes import (
@@ -28,6 +28,7 @@ from neural.api.routes import (
 )
 from neural.config import get_settings
 from neural.db.engine import init_db
+from neural.exceptions import ContainerError
 from neural.logger import configure_logging, get_logger
 
 logger = get_logger("ancos.api")
@@ -45,6 +46,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         message_bus = get_message_bus()
         await message_bus.connect()
+    if settings.DOCKER_BROKER_URL:
+        from neural.api.deps import get_container_manager
+
+        await get_container_manager()._broker_request("GET", "/health")
+    elif settings.APP_ENV == "production":
+        raise RuntimeError("Production startup requires the restricted Docker broker.")
     os.makedirs(os.path.abspath(settings.EMPLOYEE_WORKSPACE_BASE), exist_ok=True)
     logger.info("Database and workspace directories initialized successfully.")
     try:
@@ -75,6 +82,13 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(ContainerError)
+    async def container_operation_error(request: Request, exc: ContainerError):
+        status_code = getattr(exc, "status_code", 503)
+        if not isinstance(status_code, int) or not 400 <= status_code <= 599:
+            status_code = 503
+        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
 
     @app.middleware("http")
     async def require_owner_token(request, call_next):

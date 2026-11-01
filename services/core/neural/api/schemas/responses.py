@@ -12,7 +12,7 @@ from neural.constants import (
     TaskStatus,
     VoteChoice,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ProjectResponse(BaseModel):
@@ -62,6 +62,13 @@ class WorkstationResponse(BaseModel):
     status: str
     workspace: str
     started_at: Optional[str] = None
+    vnc_password: Optional[str] = Field(default=None, repr=False)
+
+
+class VncCredentialResponse(BaseModel):
+    employee_id: str
+    docker_id: str
+    vnc_password: str = Field(repr=False)
 
 
 

@@ -31,9 +31,7 @@ RUN useradd -m -s /bin/bash -u 1000 employee
 WORKDIR /home/employee
 USER employee
 
-RUN mkdir -p /home/employee/.vnc /home/employee/workspace && \
-    echo "password123" | vncpasswd -f > /home/employee/.vnc/passwd && \
-    chmod 600 /home/employee/.vnc/passwd
+RUN mkdir -p /home/employee/.vnc /home/employee/workspace
 
 COPY --chown=employee:employee docker/configs/vnc-xstartup /home/employee/.vnc/xstartup
 USER root

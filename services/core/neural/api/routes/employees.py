@@ -9,7 +9,12 @@ from neural.api.deps import (
     get_task_repo,
 )
 from neural.api.schemas.requests import CreateEmployeeRequest
-from neural.api.schemas.responses import EmployeeResponse, TaskResponse, WorkstationResponse
+from neural.api.schemas.responses import (
+    EmployeeResponse,
+    TaskResponse,
+    VncCredentialResponse,
+    WorkstationResponse,
+)
 from neural.containers.manager import ContainerManager
 from neural.db.repositories import (
     AuditRepository,
@@ -186,7 +191,37 @@ async def provision_employee_workstation(
         mem_limit=spec["mem_limit"],
         status=spec["status"],
         workspace=spec["workspace"],
-        started_at=spec.get("started_at")
+        started_at=spec.get("started_at"),
+        vnc_password=spec.get("vnc_password")
+    )
+
+
+@router.post("/{employee_id}/workstation/vnc-password", response_model=VncCredentialResponse)
+async def rotate_employee_vnc_password(
+    employee_id: str,
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_mgr: ContainerManager = Depends(get_container_manager),
+):
+    employee = await employee_repo.get_by_employee_id(employee_id)
+    if not employee:
+        raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
+
+    workstation = await container_mgr.get_desktop_by_employee_id(
+        employee.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    if not workstation:
+        raise HTTPException(status_code=404, detail=f"No workstation found for employee '{employee_id}'")
+    if workstation.get("status") != "running":
+        raise HTTPException(status_code=409, detail="Workstation must be running before rotating its VNC password")
+
+    password = await container_mgr.rotate_vnc_password(workstation["docker_id"])
+    return VncCredentialResponse(
+        employee_id=employee.employee_id,
+        docker_id=workstation["docker_id"],
+        vnc_password=password,
     )
 
 

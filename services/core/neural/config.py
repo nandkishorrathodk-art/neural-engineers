@@ -36,6 +36,8 @@ class Settings(BaseSettings):
 
     # Docker Infrastructure
     DOCKER_HOST: str = "unix:///var/run/docker.sock"
+    DOCKER_BROKER_URL: Optional[str] = None
+    DOCKER_BROKER_TOKEN: Optional[str] = None
     EMPLOYEE_WORKSPACE_BASE: str = "./data/workspaces"
     EMPLOYEE_NETWORK: str = "ancos-bridge-net"
     VNC_PORT_START: int = 5901
