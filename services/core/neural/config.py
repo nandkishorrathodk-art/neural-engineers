@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     SECRET_KEY: Optional[str] = None
     OWNER_API_TOKEN: Optional[str] = None
     WORKER_API_TOKEN: Optional[str] = None
+    VERIFIER_API_TOKEN: Optional[str] = None
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",

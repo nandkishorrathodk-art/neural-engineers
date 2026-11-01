@@ -40,10 +40,28 @@ async def require_worker_token(authorization: str | None = Header(default=None))
     expected = settings.WORKER_API_TOKEN
     if not expected or len(expected) < 32:
         raise HTTPException(status_code=503, detail="Worker API credentials are not configured.")
+    if settings.VERIFIER_API_TOKEN and secrets.compare_digest(expected, settings.VERIFIER_API_TOKEN):
+        raise HTTPException(status_code=503, detail="Worker and verifier credentials must be different.")
     scheme, _, supplied = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Valid worker bearer token required.")
     return "worker-service"
+
+
+async def require_verifier_token(authorization: str | None = Header(default=None)) -> str:
+    settings = get_settings()
+    expected = settings.VERIFIER_API_TOKEN
+    if not expected or len(expected) < 32:
+        raise HTTPException(status_code=503, detail="Verifier API credentials are not configured.")
+    if any(
+        other and secrets.compare_digest(expected, other)
+        for other in (settings.WORKER_API_TOKEN, settings.OWNER_API_TOKEN)
+    ):
+        raise HTTPException(status_code=503, detail="Owner, worker, and verifier credentials must be different.")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Valid verifier bearer token required.")
+    return "verification-service"
 
 
 async def get_employee_repo(session: AsyncSession = Depends(get_db_session)) -> EmployeeRepository:

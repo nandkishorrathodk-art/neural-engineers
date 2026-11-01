@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 from neural.constants import ActionItemStatus, MeetingType, ProposalType, VoteChoice
 from pydantic import BaseModel, Field
@@ -109,6 +109,14 @@ class WorkerSubmitRequest(WorkerLeaseRequest):
 
 class WorkerFailureRequest(WorkerLeaseRequest):
     error_message: str = Field(..., min_length=1, max_length=4000)
+
+
+class VerificationDecisionRequest(BaseModel):
+    passed: bool
+    notes: str = Field(..., min_length=1, max_length=4000)
+    evidence_refs: list[Annotated[str, Field(min_length=1)]] = Field(..., min_length=1)
+    checks: list[dict[str, Any]] = Field(..., min_length=1)
+    test_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecuteDagRequest(BaseModel):

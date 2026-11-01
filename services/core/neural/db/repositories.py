@@ -381,6 +381,97 @@ class TaskRepository:
             await self.session.commit()
         return True
 
+    async def list_pending_verification(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = await self.session.execute(
+            select(TaskAttempt, Task)
+            .join(Task, Task.id == TaskAttempt.task_id)
+            .where(
+                TaskAttempt.status == "submitted",
+                Task.status == TaskStatus.RUNNING,
+                TaskAttempt.fencing_token == Task.fencing_token,
+            )
+            .order_by(TaskAttempt.finished_at.asc())
+            .limit(max(1, min(limit, 200)))
+        )
+        return [
+            {
+                "attempt_id": attempt.id,
+                "task_id": task.task_id,
+                "project_id": task.project_id,
+                "title": task.title,
+                "objective": task.objective,
+                "acceptance_criteria": task.acceptance_criteria,
+                "attempt_number": attempt.attempt_number,
+                "worker_id": attempt.worker_id,
+                "fencing_token": attempt.fencing_token,
+                "submitted_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
+                "execution_receipt": attempt.execution_receipt,
+            }
+            for attempt, task in rows.all()
+        ]
+
+    async def review_task_attempt(
+        self,
+        task_id: str,
+        attempt_id: str,
+        verifier_id: str,
+        verification_receipt: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        now = utc_now()
+        async with get_session_lock(self.session):
+            task = await self.session.scalar(
+                select(Task)
+                .where((Task.task_id == task_id) | (Task.id == task_id))
+                .with_for_update()
+            )
+            if not task:
+                await self.session.rollback()
+                return None
+            attempt = await self.session.scalar(
+                select(TaskAttempt)
+                .where(TaskAttempt.id == attempt_id, TaskAttempt.task_id == task.id)
+                .with_for_update()
+            )
+            if (
+                not attempt
+                or attempt.status != "submitted"
+                or task.status != TaskStatus.RUNNING
+                or task.fencing_token != attempt.fencing_token
+            ):
+                await self.session.rollback()
+                return None
+
+            passed = verification_receipt["passed"]
+            attempt.status = "verified" if passed else "rejected"
+            attempt.verification_receipt = verification_receipt
+            attempt.verified_by = verifier_id
+            attempt.verified_at = now
+            if passed:
+                task.status = TaskStatus.COMPLETED
+                task.completed_at = now
+                task.verification_result = verification_receipt
+                task.fencing_token += 1
+                self.session.add(
+                    TaskResult(
+                        id=str(uuid.uuid4()),
+                        task_id=task.id,
+                        summary=verification_receipt["notes"],
+                        output_data=verification_receipt["test_summary"],
+                        artifacts=verification_receipt["evidence_refs"],
+                        verification_status=VerificationStatus.PASSED,
+                        verification_notes=str(verification_receipt["checks"]),
+                        submitted_at=now,
+                    )
+                )
+            await self.session.commit()
+            return {
+                "task_id": task.task_id,
+                "attempt_id": attempt.id,
+                "task_status": task.status.value,
+                "attempt_status": attempt.status,
+                "fencing_token": task.fencing_token,
+            }
+
     async def get_by_task_id(self, task_id: str) -> Optional[Task]:
         stmt = (
             select(Task)

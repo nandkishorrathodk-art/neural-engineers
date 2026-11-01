@@ -237,6 +237,9 @@ class TaskAttempt(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     execution_receipt: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    verification_receipt: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    verified_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class TaskDependency(Base):
