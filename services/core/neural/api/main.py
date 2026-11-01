@@ -39,9 +39,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     logger.info("Initializing ANCOS Core Operating System...")
     await init_db()
+    message_bus = None
+    if settings.APP_ENV == "production":
+        from neural.api.deps import get_message_bus
+
+        message_bus = get_message_bus()
+        await message_bus.connect()
     os.makedirs(os.path.abspath(settings.EMPLOYEE_WORKSPACE_BASE), exist_ok=True)
     logger.info("Database and workspace directories initialized successfully.")
-    yield
+    try:
+        yield
+    finally:
+        if message_bus is not None:
+            await message_bus.close()
     logger.info("Shutting down ANCOS Core Operating System.")
 
 

@@ -14,9 +14,10 @@ The owner authorized implementation after reviewing this audit. The first P0 tru
 - Docker command execution no longer returns simulated exit code 0. Workstation provision, restart, termination, image build, emergency pause/resume, and command execution report unavailable/failed runtime operations instead of claiming a live state.
 - The objective endpoint no longer auto-creates the fictional Alex Morgan and Maya Chen starter roster.
 - Production API requests require a bearer token of at least 32 characters; production docs are disabled, CORS uses configured origins, and the development defaults bind locally. Compose publishes API and Redis ports on loopback.
+- Production message delivery uses the database message log and Redis only: the API initializes Redis at startup, refuses in-memory fallback, and persists each message before publish. This does not yet provide replayable delivery, consumer acknowledgements, or a durable task worker.
 - This tranche has passed Python bytecode compilation and `git diff --check`. The test suite has not been rerun after these edits.
 
-Still open from the P0/P1 work: the Compose Docker socket proxy still grants a broad container API to the core service; the Next.js client does not yet send an owner token for authenticated production use; auth/approval roles are not modeled; and durable workers, migrations, resource leases, persistent memory, and the other roadmap items remain unimplemented. Docker was unavailable in the inspected environment, so live container behavior remains unverified. Existing dashboard edits were not changed.
+Still open from the P0/P1 work: the Compose Docker socket proxy still grants a broad container API to the core service; the Next.js client does not yet send an owner token for authenticated production use; auth/approval roles are not modeled; Redis Pub/Sub still has no replay/ack contract or durable task worker; migrations, resource leases, persistent memory, and the other roadmap items remain unimplemented. Docker and Redis were unavailable in the inspected environment, so live service behavior remains unverified. Existing dashboard edits were not changed.
 
 ## 1. Executive summary
 

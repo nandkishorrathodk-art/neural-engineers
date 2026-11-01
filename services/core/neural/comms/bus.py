@@ -99,22 +99,27 @@ class MessageBus:
         Persists message to database `messages` audit table using MessageRepository.
         """
         session = db_session or self.db_session
-        if not session and self.session_factory:
-            session = self.session_factory()
+        try:
+            from neural.db.repositories import MessageRepository
 
-        if session:
-            try:
-                from neural.db.repositories import MessageRepository
-                repo = MessageRepository(session)
-                saved = await repo.save_message(message, channel=channel)
-                return saved
-            except Exception as e:
-                logger.warning("Failed to persist message to database audit table", channel=channel, error=str(e))
+            if session is not None:
+                return await MessageRepository(session).save_message(message, channel=channel)
+            if self.session_factory is not None:
+                async with self.session_factory() as owned_session:
+                    return await MessageRepository(owned_session).save_message(message, channel=channel)
+            if self.settings.APP_ENV == "production":
+                raise RuntimeError("Production message bus requires a database session factory.")
+        except Exception as e:
+            logger.error("Failed to persist message before delivery", channel=channel, error=str(e))
+            if self.settings.APP_ENV == "production":
+                raise
         return None
 
     async def connect(self) -> None:
-        """Attempts connection to Redis, falling back to in-memory if unavailable."""
+        """Connects to Redis; production never silently falls back to volatile memory."""
         if self.prefer_in_memory:
+            if self.settings.APP_ENV == "production":
+                raise RuntimeError("In-memory message bus is prohibited in production.")
             self.is_connected = True
             logger.info("Message bus initialized with in-memory backend (prefer_in_memory=True)")
             return
@@ -131,6 +136,10 @@ class MessageBus:
             self.is_connected = True
             logger.info("Connected to Redis Pub/Sub message bus", url=self.redis_url)
         except Exception as e:
+            if self.settings.APP_ENV == "production":
+                self._redis_client = None
+                self.is_connected = False
+                raise RuntimeError("Redis is required for the production message bus.") from e
             logger.warning(
                 "Redis connection failed, falling back to in-memory message bus backend",
                 error=str(e)
@@ -170,6 +179,8 @@ class MessageBus:
                 receivers = await self._redis_client.publish(channel, msg_str)
                 return int(receivers)
             except Exception as e:
+                if self.settings.APP_ENV == "production":
+                    raise RuntimeError("Redis publish failed; message is retained in the database log.") from e
                 logger.warning("Redis publish failed, falling back to in-memory delivery", error=str(e))
                 return await self._in_memory_backend.publish(channel, msg_str)
         else:

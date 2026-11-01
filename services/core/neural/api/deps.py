@@ -1,5 +1,6 @@
 from fastapi import Depends
-from neural.db.engine import get_db_session
+from neural.config import get_settings
+from neural.db.engine import AsyncSessionLocal, get_db_session
 from neural.db.repositories import (
     ActionItemRepository,
     ApprovalRepository,
@@ -195,7 +196,14 @@ def get_message_bus():
     global _message_bus_instance
     if _message_bus_instance is None:
         from neural.comms.bus import MessageBus
-        _message_bus_instance = MessageBus(prefer_in_memory=True)
+        settings = get_settings()
+        if settings.APP_ENV == "production":
+            _message_bus_instance = MessageBus(
+                prefer_in_memory=False,
+                session_factory=AsyncSessionLocal,
+            )
+        else:
+            _message_bus_instance = MessageBus(prefer_in_memory=True)
     return _message_bus_instance
 
 
