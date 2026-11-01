@@ -10,10 +10,17 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     DEBUG: bool = True
     PORT: int = 12000
-    HOST: str = "0.0.0.0"
+    HOST: str = "127.0.0.1"
 
     # Security
-    SECRET_KEY: str = "ancos_default_secret_key_change_in_production_32bytesmin"
+    SECRET_KEY: Optional[str] = None
+    OWNER_API_TOKEN: Optional[str] = None
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:12001",
+        "http://127.0.0.1:12001",
+    ]
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     EMERGENCY_STOP_ENABLED: bool = True

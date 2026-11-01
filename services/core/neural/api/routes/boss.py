@@ -24,13 +24,6 @@ async def submit_objective(
     if not payload.objective or not payload.objective.strip():
         raise HTTPException(status_code=400, detail="Objective cannot be empty")
 
-    # If workforce roster is empty, bootstrap initial workforce so the first task can be assigned
-    existing_employees = await employee_repo.list_all()
-    if not existing_employees:
-        from neural.employees.factory import EmployeeFactory
-        factory = EmployeeFactory(employee_repo)
-        await factory.bootstrap_initial_workforce()
-
     brain = BossBrain(project_repo=project_repo, task_repo=task_repo, employee_repo=employee_repo)
     # Strategic analysis, planning, project & tasks persistence, and task assignment
     project, tasks = await brain.plan_and_create_project(

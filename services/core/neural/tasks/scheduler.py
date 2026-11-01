@@ -250,6 +250,12 @@ class TaskScheduler:
         Monitors dependencies, tracks worker outcomes, resolves deadlock,
         and cascades failure blocks to dependent tasks.
         """
+        if worker_func is None:
+            raise RuntimeError(
+                "DAG execution requires an explicitly configured task worker; "
+                "no synthetic success worker is available."
+            )
+
         graph = await self.build_graph_for_project(project_id)
         all_task_ids = set(graph.get_all_tasks())
 
@@ -267,12 +273,8 @@ class TaskScheduler:
                 elif t.status == TaskStatus.BLOCKED:
                     blocked_tasks.add(t.task_id)
 
-        async def _default_worker(task: Task) -> dict[str, Any]:
-            await asyncio.sleep(0.01)
-            return {"status": "success", "task_id": task.task_id}
-
         running_workers: dict[str, asyncio.Task] = {}
-        active_worker_func = worker_func or _default_worker
+        active_worker_func = worker_func
 
         async def _execute_worker_task(t: Task) -> Any:
             if inspect.iscoroutinefunction(active_worker_func):
@@ -307,6 +309,11 @@ class TaskScheduler:
                             ) or res is None or res is True
 
                             if is_success:
+                                if self.verifier is None:
+                                    raise RuntimeError(
+                                        "Task execution returned success, but no independent "
+                                        "verifier is configured."
+                                    )
                                 # If verifier is configured, execute empirical verification before completion
                                 if self.verifier:
                                     db_task = await self.task_repo.get_by_task_id(tid) if self.task_repo else None

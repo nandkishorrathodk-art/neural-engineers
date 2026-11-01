@@ -1,9 +1,11 @@
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from neural.api.routes import (
     boss,
     comms,
@@ -50,16 +52,45 @@ def create_app() -> FastAPI:
         title=settings.APP_NAME,
         version="0.1.0",
         description="Autonomous Neural Company Operating System Backend API",
-        lifespan=lifespan
+        lifespan=lifespan,
+        docs_url=None if settings.APP_ENV == "production" else "/docs",
+        redoc_url=None if settings.APP_ENV == "production" else "/redoc",
+        openapi_url=None if settings.APP_ENV == "production" else "/openapi.json",
     )
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def require_owner_token(request, call_next):
+        # Development remains convenient for the loopback-only local dashboard.
+        # Deployed production APIs require an independently provisioned owner token.
+        if settings.APP_ENV == "production" and request.method != "OPTIONS" and request.url.path not in {
+            "/health/live",
+            "/health/ready",
+        }:
+            configured_token = settings.OWNER_API_TOKEN
+            if not configured_token or len(configured_token) < 32:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Production owner API token must be configured with at least 32 characters."},
+                )
+            authorization = request.headers.get("authorization", "")
+            scheme, _, supplied_token = authorization.partition(" ")
+            if scheme.lower() != "bearer" or not supplied_token or not secrets.compare_digest(
+                supplied_token, configured_token
+            ):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Valid bearer token required."},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        return await call_next(request)
 
     app.include_router(health.router)
     app.include_router(observability.router)

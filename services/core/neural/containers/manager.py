@@ -53,7 +53,7 @@ class ContainerManager:
                     self._docker_client = docker.from_env()
                 except Exception as ex:
                     logger.warning(
-                        "Docker daemon connection unavailable; operating in sandbox/simulated mode",
+                        "Docker daemon connection unavailable; container operations are disabled",
                         error=str(ex)
                     )
                     self._docker_client = None
@@ -128,6 +128,10 @@ class ContainerManager:
             image=role_image
         )
 
+        client = self._get_client()
+        if client is None:
+            raise ContainerError("Docker runtime is unavailable; workstation was not provisioned.")
+
         docker_id = f"ancos-desktop-{employee_id.lower()}"
         used_ports = set()
         if container_repo:
@@ -167,46 +171,41 @@ class ContainerManager:
             "network": self.settings.EMPLOYEE_NETWORK
         }
 
-        # Attempt to run via live Docker client if available
-        client = self._get_client()
-        if client:
+        # Create a real workstation; metadata is recorded only after Docker confirms it.
+        try:
+            # Remove an existing container with this approved employee name if stale.
             try:
-                # Remove existing container with same name if stale
-                try:
-                    existing = client.containers.get(docker_id)
-                    existing.remove(force=True)
-                except Exception:
-                    pass
+                existing = client.containers.get(docker_id)
+                existing.remove(force=True)
+            except NotFound:
+                pass
 
-                nano_cpus = int(effective_cpu * 1e9)
-                run_kwargs = {
-                    "image": image_name,
-                    "name": docker_id,
-                    "detach": True,
-                    "user": "1000:1000",
-                    "ports": {"5901/tcp": vnc_port, "6081/tcp": novnc_port},
-                    "volumes": {workspace_path: {"bind": "/home/employee/workspace", "mode": "rw"}},
-                    "environment": {
-                        "DISPLAY": ":1",
-                        "VNC_PORT": str(vnc_port),
-                        "NOVNC_PORT": str(novnc_port),
-                        "EMPLOYEE_ID": employee_id
-                    },
-                    "nano_cpus": nano_cpus,
-                    "mem_limit": effective_mem,
-                    "pids_limit": 200,
-                    "privileged": False,
-                    "security_opt": ["no-new-privileges:true"]
-                }
-                hardened_kwargs = self.broker.harden_container_kwargs(run_kwargs)
-                client.containers.run(**hardened_kwargs)
-                logger.info("Docker container started successfully", docker_id=docker_id)
-            except Exception as e:
-                logger.warning(
-                    "Docker container launch failed or daemon not running; continuing with verified container spec",
-                    docker_id=docker_id,
-                    error=str(e)
-                )
+            nano_cpus = int(effective_cpu * 1e9)
+            run_kwargs = {
+                "image": image_name,
+                "name": docker_id,
+                "detach": True,
+                "user": "1000:1000",
+                "ports": {"5901/tcp": vnc_port, "6081/tcp": novnc_port},
+                "volumes": {workspace_path: {"bind": "/home/employee/workspace", "mode": "rw"}},
+                "environment": {
+                    "DISPLAY": ":1",
+                    "VNC_PORT": str(vnc_port),
+                    "NOVNC_PORT": str(novnc_port),
+                    "EMPLOYEE_ID": employee_id
+                },
+                "nano_cpus": nano_cpus,
+                "mem_limit": effective_mem,
+                "pids_limit": 200,
+                "privileged": False,
+                "security_opt": ["no-new-privileges:true"]
+            }
+            hardened_kwargs = self.broker.harden_container_kwargs(run_kwargs)
+            client.containers.run(**hardened_kwargs)
+            logger.info("Docker container started successfully", docker_id=docker_id)
+        except Exception as e:
+            logger.warning("Docker workstation provisioning failed", docker_id=docker_id, error=str(e))
+            raise ContainerError(f"Workstation {docker_id} was not provisioned: {e}") from e
 
         self._containers[docker_id] = container_spec
 
@@ -243,14 +242,16 @@ class ContainerManager:
         logger.info("Terminating desktop container", docker_id=docker_id)
         self.broker.validate_container_id(docker_id)
         client = self._get_client()
-        if client:
-            try:
-                container = client.containers.get(docker_id)
-                container.stop(timeout=5)
-                container.remove()
-                logger.info("Docker container removed", docker_id=docker_id)
-            except Exception as e:
-                logger.debug("Container termination via docker client", error=str(e))
+        if client is None:
+            raise ContainerError("Docker runtime is unavailable; workstation termination was not confirmed.")
+        try:
+            container = client.containers.get(docker_id)
+            container.stop(timeout=5)
+            container.remove()
+            logger.info("Docker container removed", docker_id=docker_id)
+        except Exception as e:
+            logger.warning("Docker workstation termination failed", docker_id=docker_id, error=str(e))
+            raise ContainerError(f"Workstation {docker_id} was not terminated: {e}") from e
 
         self.release_ports(docker_id)
         if docker_id in self._containers:
@@ -357,18 +358,21 @@ class ContainerManager:
         Preserves port assignments and workspace volume mounts.
         """
         logger.info("Restarting desktop workstation", docker_id=docker_id)
+        self.broker.validate_container_id(docker_id)
         spec = self._containers.get(docker_id)
         if not spec:
             raise ContainerError(f"Container {docker_id} not found in manager registry")
 
         client = self._get_client()
-        if client:
-            try:
-                container = client.containers.get(docker_id)
-                container.restart(timeout=5)
-                logger.info("Docker container restarted", docker_id=docker_id)
-            except Exception as e:
-                logger.warning("Live docker restart encountered exception; updating spec state", error=str(e))
+        if client is None:
+            raise ContainerError("Docker runtime is unavailable; workstation restart was not performed.")
+        try:
+            container = client.containers.get(docker_id)
+            container.restart(timeout=5)
+            logger.info("Docker container restarted", docker_id=docker_id)
+        except Exception as e:
+            logger.warning("Docker workstation restart failed", docker_id=docker_id, error=str(e))
+            raise ContainerError(f"Workstation {docker_id} was not restarted: {e}") from e
 
         spec["status"] = ContainerStatus.RUNNING.value
         spec["started_at"] = datetime.now(timezone.utc).isoformat()
@@ -392,31 +396,32 @@ class ContainerManager:
         Enforces non-root execution (uid 1000).
         """
         logger.info("Executing command in container", docker_id=docker_id, command=command)
+        self.broker.validate_container_id(docker_id)
         client = self._get_client()
-        if client:
-            try:
-                container = client.containers.get(docker_id)
-                exec_workdir = workdir or "/home/employee/workspace"
-                exec_res = container.exec_run(
-                    cmd=command,
-                    user="1000:1000",
-                    workdir=exec_workdir
-                )
-                stdout = exec_res.output.decode("utf-8", errors="replace") if exec_res.output else ""
-                return {
-                    "exit_code": exec_res.exit_code,
-                    "stdout": stdout,
-                    "stderr": ""
-                }
-            except Exception as e:
-                logger.warning("Docker exec failed, falling back to simulated output", error=str(e))
+        if client is None:
+            raise ContainerError(
+                "Docker runtime is unavailable; command was not executed."
+            )
 
-        cmd_str = " ".join(command) if isinstance(command, list) else command
-        return {
-            "exit_code": 0,
-            "stdout": f"[SIMULATED] Executed '{cmd_str}' in container {docker_id}",
-            "stderr": ""
-        }
+        try:
+            container = client.containers.get(docker_id)
+            exec_workdir = workdir or "/home/employee/workspace"
+            exec_res = container.exec_run(
+                cmd=command,
+                user="1000:1000",
+                workdir=exec_workdir
+            )
+            stdout = exec_res.output.decode("utf-8", errors="replace") if exec_res.output else ""
+            return {
+                "exit_code": exec_res.exit_code,
+                "stdout": stdout,
+                "stderr": ""
+            }
+        except Exception as e:
+            logger.warning("Docker exec failed", docker_id=docker_id, error=str(e))
+            raise ContainerError(
+                f"Command was not executed in container {docker_id}: {e}"
+            ) from e
 
     async def build_employee_image(
         self,
@@ -432,35 +437,61 @@ class ContainerManager:
             return False
 
         client = self._get_client()
-        if client:
-            try:
-                logger.info("Building employee workstation image", tag=tag, dockerfile=abs_dockerfile)
-                os.path.dirname(abs_dockerfile)
-                client.images.build(
-                    path=os.path.abspath("."),
-                    dockerfile=dockerfile,
-                    tag=tag,
-                    rm=True
-                )
-                logger.info("Successfully built employee workstation image", tag=tag)
-                return True
-            except Exception as e:
-                logger.warning("Docker image build failed or daemon not running", error=str(e))
-                return False
-
-        logger.info("Docker daemon not available; verified employee base image specification", tag=tag)
-        return True
+        if client is None:
+            logger.warning("Docker daemon unavailable; employee image was not built", tag=tag)
+            return False
+        try:
+            logger.info("Building employee workstation image", tag=tag, dockerfile=abs_dockerfile)
+            client.images.build(
+                path=os.path.abspath("."),
+                dockerfile=dockerfile,
+                tag=tag,
+                rm=True
+            )
+            logger.info("Successfully built employee workstation image", tag=tag)
+            return True
+        except Exception as e:
+            logger.warning("Docker image build failed", error=str(e))
+            return False
 
     async def inspect_workstation_health(self, docker_id: str) -> dict[str, Any]:
         """Inspects live health, resource utilization, and ports of a workstation."""
+        self.broker.validate_container_id(docker_id)
         spec = self._containers.get(docker_id)
         if not spec:
             return {"status": "not_found", "docker_id": docker_id}
+
+        client = self._get_client()
+        if client is None:
+            return {
+                "docker_id": docker_id,
+                "status": "runtime_unavailable",
+                "runtime_available": False,
+                "healthy": False,
+            }
+        try:
+            container = client.containers.get(docker_id)
+            container.reload()
+            runtime_status = container.status
+            spec["status"] = (
+                ContainerStatus.RUNNING.value
+                if runtime_status == "running"
+                else ContainerStatus.STOPPED.value
+            )
+        except Exception as e:
+            logger.warning("Workstation health inspection failed", docker_id=docker_id, error=str(e))
+            return {
+                "docker_id": docker_id,
+                "status": "inspection_failed",
+                "runtime_available": True,
+                "healthy": False,
+            }
 
         return {
             "docker_id": docker_id,
             "employee_id": spec.get("employee_id"),
             "status": spec.get("status"),
+            "runtime_available": True,
             "vnc_port": spec.get("vnc_port"),
             "novnc_port": spec.get("novnc_port"),
             "desktop_url": spec.get("desktop_url"),
@@ -474,34 +505,38 @@ class ContainerManager:
     async def freeze_all_workstations(self) -> int:
         """Emergency halt: immediately freezes or pauses all active workstation containers."""
         client = self._get_client()
+        if client is None:
+            logger.error("Cannot freeze workstations because Docker runtime is unavailable")
+            return 0
         frozen_count = 0
         for docker_id, spec in self._containers.items():
             if spec.get("status") == ContainerStatus.RUNNING.value:
-                spec["status"] = ContainerStatus.STOPPED.value
-                frozen_count += 1
-                if client:
-                    try:
-                        c = client.containers.get(docker_id)
-                        c.pause()
-                    except Exception as e:
-                        logger.debug("Container pause error", docker_id=docker_id, error=str(e))
+                try:
+                    c = client.containers.get(docker_id)
+                    c.pause()
+                    spec["status"] = ContainerStatus.STOPPED.value
+                    frozen_count += 1
+                except Exception as e:
+                    logger.error("Container pause failed", docker_id=docker_id, error=str(e))
         logger.warning("All active workstations frozen by emergency stop", count=frozen_count)
         return frozen_count
 
     async def unfreeze_all_workstations(self) -> int:
         """Resumes frozen workstation containers upon emergency resume."""
         client = self._get_client()
+        if client is None:
+            logger.error("Cannot resume workstations because Docker runtime is unavailable")
+            return 0
         resumed_count = 0
         for docker_id, spec in self._containers.items():
             if spec.get("status") == ContainerStatus.STOPPED.value:
-                spec["status"] = ContainerStatus.RUNNING.value
-                resumed_count += 1
-                if client:
-                    try:
-                        c = client.containers.get(docker_id)
-                        c.unpause()
-                    except Exception as e:
-                        logger.debug("Container unpause error", docker_id=docker_id, error=str(e))
+                try:
+                    c = client.containers.get(docker_id)
+                    c.unpause()
+                    spec["status"] = ContainerStatus.RUNNING.value
+                    resumed_count += 1
+                except Exception as e:
+                    logger.error("Container unpause failed", docker_id=docker_id, error=str(e))
         logger.info("All workstations resumed from freeze", count=resumed_count)
         return resumed_count
 

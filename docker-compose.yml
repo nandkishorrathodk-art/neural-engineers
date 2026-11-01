@@ -6,7 +6,7 @@ services:
     container_name: ancos-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -46,9 +46,10 @@ services:
     container_name: ancos-core-api
     restart: unless-stopped
     ports:
-      - "12000:12000"
+      - "127.0.0.1:12000:12000"
     environment:
       - APP_ENV=development
+      - HOST=0.0.0.0
       - DATABASE_URL=sqlite+aiosqlite:///./data/neural_company.db
       - REDIS_URL=redis://redis:6379/0
       - DOCKER_HOST=tcp://docker-proxy:2375

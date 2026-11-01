@@ -268,6 +268,8 @@ async def execute_project_dag(
         result = await scheduler.execute_dag(project.id)
     except TaskDependencyError as err:
         raise HTTPException(status_code=400, detail=f"Cannot execute DAG: {err}")
+    except RuntimeError as err:
+        raise HTTPException(status_code=503, detail=str(err))
 
     return ExecuteDagResponse(
         project_id=project.id,
