@@ -1,7 +1,7 @@
 """initial schema baseline
 
 Revision ID: 12f5e817193f
-Revises: 
+Revises: None
 Create Date: 2026-11-01 22:00:41.198651
 """
 
