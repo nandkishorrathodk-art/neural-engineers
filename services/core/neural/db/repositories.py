@@ -11,7 +11,6 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from neural.config import get_settings
 from neural.constants import (
     ActionItemStatus,
     ApprovalStatus,
@@ -102,11 +101,10 @@ class ProjectRepository:
 class TaskRepository:
     def __init__(self, session: AsyncSession, strict_verification: Optional[bool] = None):
         self.session = session
-        self.strict_verification = (
-            get_settings().APP_ENV == "production"
-            if strict_verification is None
-            else strict_verification
-        )
+        # Completion is an evidence invariant in every environment. Keep the
+        # argument for call-site compatibility, but never let configuration
+        # turn an unverified task into a successful one.
+        self.strict_verification = True
 
     async def create(self, **kwargs: Any) -> Task:
         task = Task(**kwargs)
@@ -411,8 +409,7 @@ class TaskRepository:
         status: TaskStatus,
         enforce_verification: Optional[bool] = None
     ) -> None:
-        check_gate = enforce_verification if enforce_verification is not None else self.strict_verification
-        if check_gate and status == TaskStatus.COMPLETED:
+        if status == TaskStatus.COMPLETED:
             task = await self.get_by_task_id(task_id)
             if not task:
                 raise ValueError(f"Task {task_id} not found")
