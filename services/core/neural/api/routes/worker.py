@@ -7,7 +7,6 @@ from neural.api.deps import (
     require_worker_token,
 )
 from neural.api.schemas.requests import (
-    WorkerClaimRequest,
     WorkerFailureRequest,
     WorkerLeaseRequest,
     WorkerSubmitRequest,
@@ -25,13 +24,13 @@ router = APIRouter(
 
 @router.post("/tasks/claim")
 async def claim_next_task(
-    request: WorkerClaimRequest,
+    worker_id: str = Depends(require_worker_token),
     task_repo: TaskRepository = Depends(get_task_repo),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     container_repo: ContainerRepository = Depends(get_container_repo),
     container_manager: ContainerManager = Depends(get_container_manager),
 ):
-    task = await task_repo.claim_next_task(request.worker_id)
+    task = await task_repo.claim_next_task(worker_id)
     if task:
         workstation = await container_manager.get_desktop_by_employee_id(
             task["employee_id"],
@@ -41,7 +40,7 @@ async def claim_next_task(
         if not workstation or workstation.get("status") != "running":
             await task_repo.release_task_claim(
                 task["task_id"],
-                request.worker_id,
+                worker_id,
                 task["fencing_token"],
                 "Assigned employee workstation is not live and available.",
             )
@@ -57,6 +56,7 @@ async def start_task_attempt(
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     container_repo: ContainerRepository = Depends(get_container_repo),
     container_manager: ContainerManager = Depends(get_container_manager),
+    worker_id: str = Depends(require_worker_token),
 ):
     task = await task_repo.get_by_task_id(task_id)
     employee = await employee_repo.get_by_employee_id(task.assigned_to) if task and task.assigned_to else None
@@ -72,12 +72,12 @@ async def start_task_attempt(
     if not workstation or workstation.get("status") != "running":
         await task_repo.release_task_claim(
             task_id,
-            request.worker_id,
+            worker_id,
             request.fencing_token,
             "Assigned employee workstation is not live at worker start.",
         )
         raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
-    started = await task_repo.start_task_attempt(task_id, request.worker_id, request.fencing_token)
+    started = await task_repo.start_task_attempt(task_id, worker_id, request.fencing_token)
     if not started:
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     return {"task_id": task_id, "status": "running", "fencing_token": request.fencing_token}
@@ -88,10 +88,11 @@ async def heartbeat_task_attempt(
     task_id: str,
     request: WorkerLeaseRequest,
     task_repo: TaskRepository = Depends(get_task_repo),
+    worker_id: str = Depends(require_worker_token),
 ):
     lease_expires_at = await task_repo.heartbeat_task_attempt(
         task_id,
-        request.worker_id,
+        worker_id,
         request.fencing_token,
     )
     if lease_expires_at is None:
@@ -104,10 +105,11 @@ async def submit_task_attempt(
     task_id: str,
     request: WorkerSubmitRequest,
     task_repo: TaskRepository = Depends(get_task_repo),
+    worker_id: str = Depends(require_worker_token),
 ):
     submitted = await task_repo.submit_task_attempt(
         task_id,
-        request.worker_id,
+        worker_id,
         request.fencing_token,
         request.execution_receipt,
     )
@@ -127,11 +129,12 @@ async def fail_task_attempt(
     request: WorkerFailureRequest,
     task_repo: TaskRepository = Depends(get_task_repo),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    worker_id: str = Depends(require_worker_token),
 ):
     task = await task_repo.get_by_task_id(task_id)
     failed = await task_repo.fail_task_attempt(
         task_id,
-        request.worker_id,
+        worker_id,
         request.fencing_token,
         request.error_message,
     )

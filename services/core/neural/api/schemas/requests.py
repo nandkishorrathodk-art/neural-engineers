@@ -94,12 +94,7 @@ class UpdateTaskStatusRequest(BaseModel):
     notes: Optional[str] = None
 
 
-class WorkerClaimRequest(BaseModel):
-    worker_id: str = Field(..., min_length=1, max_length=128)
-
-
 class WorkerLeaseRequest(BaseModel):
-    worker_id: str = Field(..., min_length=1, max_length=128)
     fencing_token: int = Field(..., ge=1)
 
 
