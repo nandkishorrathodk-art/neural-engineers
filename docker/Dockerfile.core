@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 RUN pip install --no-cache-dir .
 
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 COPY services/core/neural ./neural
 COPY configs ./configs
 
