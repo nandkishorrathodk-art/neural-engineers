@@ -26,7 +26,7 @@ class MessageType(str, Enum):
 class BaseMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    message_id: str = Field(default_factory=lambda: f"MSG-{uuid.uuid4().hex[:8].upper()}")
+    message_id: str = Field(default_factory=lambda: f"MSG-{uuid.uuid4().hex.upper()}")
     message_type: MessageType
     sender: str
     recipient: Optional[str] = None

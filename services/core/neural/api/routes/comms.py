@@ -28,13 +28,13 @@ async def send_executive_broadcast(
         priority=request.priority,
         channel="boss:broadcast"
     )
-    saved = await message_repo.save_message(msg, channel="boss:broadcast")
-    receivers = await bus.publish("boss:broadcast", msg)
+    receivers = await bus.publish("boss:broadcast", msg, db_session=message_repo.session)
     return {
-        "status": "published",
+        "status": "queued" if bus.settings.APP_ENV == "production" else "published",
         "channel": "boss:broadcast",
         "receivers": receivers,
-        "message_id": saved.message_id
+        "message_id": msg.message_id,
+        "delivery_state": "queued" if bus.settings.APP_ENV == "production" else "published",
     }
 
 
@@ -54,14 +54,14 @@ async def send_department_broadcast(
         priority=request.priority,
         channel=channel
     )
-    saved = await message_repo.save_message(msg, channel=channel)
-    receivers = await bus.publish(channel, msg)
+    receivers = await bus.publish(channel, msg, db_session=message_repo.session)
     return {
-        "status": "published",
+        "status": "queued" if bus.settings.APP_ENV == "production" else "published",
         "department": department,
         "channel": channel,
         "receivers": receivers,
-        "message_id": saved.message_id
+        "message_id": msg.message_id,
+        "delivery_state": "queued" if bus.settings.APP_ENV == "production" else "published",
     }
 
 
@@ -79,14 +79,14 @@ async def send_direct_message(
         subject=request.subject,
         channel=channel
     )
-    saved = await message_repo.save_message(msg, channel=channel)
-    receivers = await bus.publish(channel, msg)
+    receivers = await bus.publish(channel, msg, db_session=message_repo.session)
     return {
-        "status": "sent",
+        "status": "queued" if bus.settings.APP_ENV == "production" else "sent",
         "recipient": request.recipient,
         "channel": channel,
         "receivers": receivers,
-        "message_id": saved.message_id
+        "message_id": msg.message_id,
+        "delivery_state": "queued" if bus.settings.APP_ENV == "production" else "published",
     }
 
 

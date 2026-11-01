@@ -58,8 +58,9 @@ class InMemoryBusBackend:
 
 class MessageBus:
     """
-    Inter-Agent Message Bus with Typed Message Routing and Persistent DB Audit Trail.
-    Supports Redis Pub/Sub with automatic in-memory fallback for hermetic testing.
+    Inter-Agent Message Bus with a durable production outbox and typed routing.
+    Production delivery is at-least-once to Redis Pub/Sub; local tests can use
+    the explicitly selected in-memory backend.
     Standard channels:
     - boss:broadcast: Executive broadcast announcements
     - dept:{department}:broadcast: Department-wide announcements
@@ -84,6 +85,9 @@ class MessageBus:
         self._in_memory_backend = InMemoryBusBackend()
         self._active_listeners: dict[str, asyncio.Task] = {}
         self._lock = asyncio.Lock()
+        self._outbox_wakeup = asyncio.Event()
+        self._outbox_task: Optional[asyncio.Task[None]] = None
+        self._outbox_worker_id = f"api-{uuid.uuid4().hex}"
 
     def set_db_session(self, session: Any) -> None:
         """Sets the active database session for persistent message auditing."""
@@ -93,7 +97,8 @@ class MessageBus:
         self,
         message: Union[BaseMessage, dict[str, Any], str],
         channel: str,
-        db_session: Optional[Any] = None
+        db_session: Optional[Any] = None,
+        delivery_payload: Optional[str] = None,
     ) -> Optional[Any]:
         """
         Persists message to database `messages` audit table using MessageRepository.
@@ -103,10 +108,18 @@ class MessageBus:
             from neural.db.repositories import MessageRepository
 
             if session is not None:
-                return await MessageRepository(session).save_message(message, channel=channel)
+                return await MessageRepository(session).save_message(
+                    message,
+                    channel=channel,
+                    delivery_payload=delivery_payload,
+                )
             if self.session_factory is not None:
                 async with self.session_factory() as owned_session:
-                    return await MessageRepository(owned_session).save_message(message, channel=channel)
+                    return await MessageRepository(owned_session).save_message(
+                        message,
+                        channel=channel,
+                        delivery_payload=delivery_payload,
+                    )
             if self.settings.APP_ENV == "production":
                 raise RuntimeError("Production message bus requires a database session factory.")
         except Exception as e:
@@ -116,7 +129,7 @@ class MessageBus:
         return None
 
     async def connect(self) -> None:
-        """Connects to Redis; production never silently falls back to volatile memory."""
+        """Connects to Redis; production queues through SQL when Redis is unavailable."""
         if self.prefer_in_memory:
             if self.settings.APP_ENV == "production":
                 raise RuntimeError("In-memory message bus is prohibited in production.")
@@ -125,27 +138,112 @@ class MessageBus:
             return
 
         try:
-            import redis.asyncio as aioredis
-            client = aioredis.from_url(
-                self.redis_url,
-                decode_responses=True,
-                socket_connect_timeout=0.5
-            )
-            await client.ping()
-            self._redis_client = client
+            await self._connect_redis()
             self.is_connected = True
             logger.info("Connected to Redis Pub/Sub message bus", url=self.redis_url)
         except Exception as e:
             if self.settings.APP_ENV == "production":
+                if self.session_factory is None:
+                    self.is_connected = False
+                    raise RuntimeError("Production message bus requires the durable database outbox.") from e
                 self._redis_client = None
-                self.is_connected = False
-                raise RuntimeError("Redis is required for the production message bus.") from e
+                self.is_connected = True
+                logger.warning("Redis unavailable; production messages will remain queued in the database outbox", error=str(e))
+                return
             logger.warning(
                 "Redis connection failed, falling back to in-memory message bus backend",
                 error=str(e)
             )
             self._redis_client = None
             self.is_connected = True
+
+    async def _connect_redis(self) -> None:
+        import redis.asyncio as aioredis
+
+        client = aioredis.from_url(
+            self.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=0.5,
+        )
+        try:
+            await client.ping()
+        except Exception:
+            await client.close()
+            raise
+        self._redis_client = client
+
+    async def start_outbox_dispatcher(self) -> None:
+        if self.settings.APP_ENV != "production":
+            raise RuntimeError("The durable outbox dispatcher is reserved for production mode.")
+        if self.session_factory is None:
+            raise RuntimeError("Outbox dispatcher requires a database session factory.")
+        if self._outbox_task and not self._outbox_task.done():
+            return
+        self._outbox_task = asyncio.create_task(self._outbox_dispatch_loop())
+
+    async def _dispatch_outbox_once(self, batch_size: int = 32) -> int:
+        if self._redis_client is None:
+            await self._connect_redis()
+        if self.session_factory is None or self._redis_client is None:
+            raise RuntimeError("Outbox delivery dependencies are unavailable.")
+
+        from neural.db.repositories import OutboxRepository
+
+        async with self.session_factory() as session:
+            deliveries = await OutboxRepository(session).claim_ready(
+                worker_id=self._outbox_worker_id,
+                limit=batch_size,
+            )
+
+        delivered = 0
+        for item in deliveries:
+            try:
+                await self._redis_client.publish(item["channel"], item["payload"])
+            except Exception as err:
+                retry_delay = min(300, 2 ** min(item["attempt_count"], 8))
+                async with self.session_factory() as session:
+                    status = await OutboxRepository(session).record_failure(
+                        event_id=item["event_id"],
+                        lease_owner=item["lease_owner"],
+                        error=str(err),
+                        retry_delay_seconds=retry_delay,
+                        max_attempts=12,
+                    )
+                logger.error(
+                    "Outbox event delivery failed",
+                    event_id=item["event_id"],
+                    status=status,
+                    attempt=item["attempt_count"],
+                    error=str(err),
+                )
+                continue
+
+            async with self.session_factory() as session:
+                acknowledged = await OutboxRepository(session).mark_delivered(
+                    event_id=item["event_id"],
+                    lease_owner=item["lease_owner"],
+                )
+            if acknowledged:
+                delivered += 1
+            else:
+                logger.warning("Outbox lease expired before delivery acknowledgement", event_id=item["event_id"])
+        return delivered
+
+    async def _outbox_dispatch_loop(self) -> None:
+        while True:
+            try:
+                delivered = await self._dispatch_outbox_once()
+                if delivered:
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                logger.warning("Outbox dispatcher will retry", error=str(err))
+            try:
+                await asyncio.wait_for(self._outbox_wakeup.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+            self._outbox_wakeup.clear()
 
     async def publish(
         self,
@@ -164,8 +262,17 @@ class MessageBus:
         if isinstance(message, BaseMessage) and not message.channel:
             message.channel = channel
 
-        # Persist to database audit trail if session is available
-        await self.persist_message(message, channel=channel, db_session=db_session)
+        if self.settings.APP_ENV == "production":
+            if isinstance(message, dict):
+                message = dict(message)
+                message.setdefault("message_id", f"MSG-{uuid.uuid4().hex.upper()}")
+            elif isinstance(message, str):
+                message = BaseMessage(
+                    message_type=MessageType.DIRECT_MESSAGE,
+                    sender="system",
+                    channel=channel,
+                    payload={"raw": message},
+                )
 
         if isinstance(message, BaseMessage):
             msg_str = message.to_json()
@@ -173,6 +280,19 @@ class MessageBus:
             msg_str = json.dumps(message)
         else:
             msg_str = str(message)
+
+        if self.settings.APP_ENV == "production":
+            await self.persist_message(
+                message,
+                channel=channel,
+                db_session=db_session,
+                delivery_payload=msg_str,
+            )
+            self._outbox_wakeup.set()
+            return 0
+
+        # Development retains immediate in-memory/Redis fanout for local workflows.
+        await self.persist_message(message, channel=channel, db_session=db_session)
 
         if self._redis_client:
             try:
@@ -196,6 +316,9 @@ class MessageBus:
         """
         if not self.is_connected:
             await self.connect()
+
+        if self.settings.APP_ENV == "production" and self._redis_client is None:
+            raise RuntimeError("Redis is currently unavailable; production subscriptions cannot use volatile memory.")
 
         sub_id = f"sub-{uuid.uuid4().hex[:8]}"
 
@@ -389,6 +512,13 @@ class MessageBus:
 
     async def close(self) -> None:
         """Closes all active listener tasks and Redis connections."""
+        if self._outbox_task and not self._outbox_task.done():
+            self._outbox_task.cancel()
+            try:
+                await self._outbox_task
+            except asyncio.CancelledError:
+                pass
+        self._outbox_task = None
         for sub_id, task in list(self._active_listeners.items()):
             task.cancel()
         self._active_listeners.clear()

@@ -4,13 +4,14 @@ import asyncio
 import hashlib
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from neural.config import get_settings
 from neural.constants import (
     ActionItemStatus,
     ApprovalStatus,
@@ -26,7 +27,6 @@ from neural.constants import (
     VerificationStatus,
     VoteChoice,
 )
-from neural.config import get_settings
 from neural.db.models import (
     ActionItem,
     Approval,
@@ -43,6 +43,7 @@ from neural.db.models import (
     Message,
     MethodBenchmarkRecord,
     MethodRecord,
+    OutboxEvent,
     PerformanceRecord,
     Project,
     Proposal,
@@ -1189,7 +1190,7 @@ class ArtifactRepository:
 
 class MessageRepository:
     """
-    Persistent audit trail and storage for all agent communications in `messages` table.
+    Persistent audit trail, optionally paired with an outbox delivery record.
     """
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -1197,7 +1198,8 @@ class MessageRepository:
     async def save_message(
         self,
         message: Any,
-        channel: Optional[str] = None
+        channel: Optional[str] = None,
+        delivery_payload: Optional[str] = None,
     ) -> Message:
         if hasattr(message, "model_dump"):
             data = message.model_dump()
@@ -1206,10 +1208,23 @@ class MessageRepository:
         else:
             data = {"content": str(message)}
 
-        msg_id = data.get("message_id") or f"MSG-{uuid.uuid4().hex[:8].upper()}"
+        msg_id = data.get("message_id") or f"MSG-{uuid.uuid4().hex.upper()}"
 
         existing = await self.get_by_message_id(str(msg_id))
         if existing:
+            if delivery_payload is not None:
+                pending_outbox = await self.session.execute(
+                    select(OutboxEvent.id).where(OutboxEvent.event_id == str(msg_id))
+                )
+                if pending_outbox.scalar_one_or_none() is None:
+                    self.session.add(
+                        OutboxEvent(
+                            event_id=str(msg_id),
+                            channel=str(channel or existing.channel),
+                            payload=delivery_payload,
+                        )
+                    )
+                    await self.session.commit()
             return existing
 
         m_type = data.get("message_type", "direct_message")
@@ -1232,6 +1247,14 @@ class MessageRepository:
             correlation_id=str(correlation_id) if correlation_id else None,
             payload=payload,
         )
+        if delivery_payload is not None:
+            self.session.add(
+                OutboxEvent(
+                    event_id=str(msg_id),
+                    channel=str(chan),
+                    payload=delivery_payload,
+                )
+            )
         lock = get_session_lock(self.session)
         async with lock:
             self.session.add(msg_obj)
@@ -1286,6 +1309,118 @@ class MessageRepository:
         stmt = select(Message).order_by(Message.created_at.desc()).limit(limit)
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+
+class OutboxRepository:
+    """Leased, retryable publication records for the Redis fanout boundary."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def claim_ready(
+        self,
+        worker_id: str,
+        limit: int = 32,
+        lease_seconds: int = 30,
+    ) -> list[dict[str, Any]]:
+        now = utc_now()
+        ready = or_(
+            and_(OutboxEvent.status == "pending", OutboxEvent.available_at <= now),
+            and_(OutboxEvent.status == "leased", OutboxEvent.lease_expires_at <= now),
+        )
+        stmt = (
+            select(OutboxEvent)
+            .where(ready)
+            .order_by(OutboxEvent.created_at.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        events = (await self.session.execute(stmt)).scalars().all()
+        deliveries: list[dict[str, Any]] = []
+        async with get_session_lock(self.session):
+            for event in events:
+                lease_owner = f"{worker_id}:{uuid.uuid4().hex}"
+                claimed = await self.session.execute(
+                    update(OutboxEvent)
+                    .where(OutboxEvent.id == event.id, ready)
+                    .values(
+                        status="leased",
+                        lease_owner=lease_owner,
+                        lease_expires_at=now + timedelta(seconds=lease_seconds),
+                        attempt_count=OutboxEvent.attempt_count + 1,
+                    )
+                )
+                if claimed.rowcount == 1:
+                    deliveries.append(
+                        {
+                            "event_id": event.event_id,
+                            "channel": event.channel,
+                            "payload": event.payload,
+                            "lease_owner": lease_owner,
+                            "attempt_count": event.attempt_count + 1,
+                        }
+                    )
+            await self.session.commit()
+        return deliveries
+
+    async def mark_delivered(self, event_id: str, lease_owner: str) -> bool:
+        async with get_session_lock(self.session):
+            result = await self.session.execute(
+                update(OutboxEvent)
+                .where(
+                    OutboxEvent.event_id == event_id,
+                    OutboxEvent.status == "leased",
+                    OutboxEvent.lease_owner == lease_owner,
+                )
+                .values(
+                    status="delivered",
+                    delivered_at=utc_now(),
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    last_error=None,
+                )
+            )
+            await self.session.commit()
+        return result.rowcount == 1
+
+    async def record_failure(
+        self,
+        event_id: str,
+        lease_owner: str,
+        error: str,
+        retry_delay_seconds: int,
+        max_attempts: int,
+    ) -> Optional[str]:
+        async with get_session_lock(self.session):
+            event = (
+                await self.session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_id == event_id,
+                        OutboxEvent.status == "leased",
+                        OutboxEvent.lease_owner == lease_owner,
+                    )
+                )
+            ).scalar_one_or_none()
+            if event is None:
+                return None
+            next_status = "failed" if event.attempt_count >= max_attempts else "pending"
+            result = await self.session.execute(
+                update(OutboxEvent)
+                .where(
+                    OutboxEvent.id == event.id,
+                    OutboxEvent.status == "leased",
+                    OutboxEvent.lease_owner == lease_owner,
+                )
+                .values(
+                    status=next_status,
+                    available_at=utc_now() + timedelta(seconds=retry_delay_seconds),
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    last_error=error[:4000],
+                )
+            )
+            await self.session.commit()
+        return next_status if result.rowcount == 1 else None
 
 
 def compute_ledger_entry_hash(

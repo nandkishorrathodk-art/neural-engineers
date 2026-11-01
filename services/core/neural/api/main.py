@@ -39,22 +39,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging()
     settings = get_settings()
     logger.info("Initializing ANCOS Core Operating System...")
-    await init_db()
     message_bus = None
-    if settings.APP_ENV == "production":
-        from neural.api.deps import get_message_bus
-
-        message_bus = get_message_bus()
-        await message_bus.connect()
-    if settings.DOCKER_BROKER_URL:
-        from neural.api.deps import get_container_manager
-
-        await get_container_manager()._broker_request("GET", "/health")
-    elif settings.APP_ENV == "production":
-        raise RuntimeError("Production startup requires the restricted Docker broker.")
-    os.makedirs(os.path.abspath(settings.EMPLOYEE_WORKSPACE_BASE), exist_ok=True)
-    logger.info("Database and workspace directories initialized successfully.")
     try:
+        await init_db()
+        if settings.APP_ENV == "production":
+            from neural.api.deps import get_message_bus
+
+            message_bus = get_message_bus()
+            await message_bus.connect()
+        if settings.DOCKER_BROKER_URL:
+            from neural.api.deps import get_container_manager
+
+            await get_container_manager()._broker_request("GET", "/health")
+        elif settings.APP_ENV == "production":
+            raise RuntimeError("Production startup requires the restricted Docker broker.")
+        os.makedirs(os.path.abspath(settings.EMPLOYEE_WORKSPACE_BASE), exist_ok=True)
+        if message_bus is not None:
+            await message_bus.start_outbox_dispatcher()
+        logger.info("Database and workspace directories initialized successfully.")
         yield
     finally:
         if message_bus is not None:
