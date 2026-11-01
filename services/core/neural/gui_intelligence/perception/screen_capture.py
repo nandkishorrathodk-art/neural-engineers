@@ -7,10 +7,15 @@ from typing import Any, Optional
 import numpy as np
 from PIL import Image, ImageDraw
 
+from neural.config import get_settings
 from neural.gui_intelligence.models import ScreenFrame
 from neural.logger import get_logger
 
 logger = get_logger("ancos.gui_intelligence.perception.screen_capture")
+
+
+class ScreenCaptureUnavailableError(RuntimeError):
+    """Raised when real desktop pixels are unavailable in a non-simulated run."""
 
 
 class ScreenCaptureEngine:
@@ -25,10 +30,16 @@ class ScreenCaptureEngine:
         default_resolution: tuple[int, int] = (1280, 800),
         vnc_host: str = "127.0.0.1",
         vnc_port: int = 5901,
+        allow_synthetic: Optional[bool] = None,
     ) -> None:
         self.default_resolution = default_resolution
         self.vnc_host = vnc_host
         self.vnc_port = vnc_port
+        self.allow_synthetic = (
+            get_settings().APP_ENV != "production"
+            if allow_synthetic is None
+            else allow_synthetic
+        )
         self._current_frame: Optional[ScreenFrame] = None
         self._mock_pixels: Optional[np.ndarray] = None
         self._synthetic_elements: list[dict[str, Any]] = []
@@ -223,6 +234,10 @@ class ScreenCaptureEngine:
         start = time.perf_counter()
 
         if self._mock_pixels is not None:
+            if not self.allow_synthetic:
+                raise ScreenCaptureUnavailableError(
+                    "Mock screen frames are disabled in production; no live VNC capture adapter is configured."
+                )
             pixels = self._mock_pixels.copy()
             h, w = pixels.shape[:2]
             latency_ms = (time.perf_counter() - start) * 1000.0
@@ -237,7 +252,10 @@ class ScreenCaptureEngine:
             self._current_frame = frame
             return frame
 
-        # Default fallback: generate baseline clean desktop
+        if not self.allow_synthetic:
+            raise ScreenCaptureUnavailableError(
+                "No live desktop capture adapter is configured; refusing to synthesize a production screen."
+            )
         return self.render_synthetic_desktop()
 
     def apply_visual_action(
@@ -251,6 +269,10 @@ class ScreenCaptureEngine:
         Produces realistic pixel deltas and updates rendered elements.
         """
         if self._mock_pixels is None:
+            if not self.allow_synthetic:
+                raise ScreenCaptureUnavailableError(
+                    "Synthetic GUI actions are disabled in production; no live desktop action adapter is configured."
+                )
             self.render_synthetic_desktop()
 
         if self._mock_pixels is None:

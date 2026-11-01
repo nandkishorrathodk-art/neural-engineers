@@ -12,7 +12,10 @@ from neural.gui_intelligence.models import (
     GUIActionReceipt,
     GUIActionRequest,
 )
-from neural.gui_intelligence.perception.screen_capture import ScreenCaptureEngine
+from neural.gui_intelligence.perception.screen_capture import (
+    ScreenCaptureEngine,
+    ScreenCaptureUnavailableError,
+)
 from neural.gui_intelligence.skills.skill_compiler import GUISkillCompiler
 from neural.gui_intelligence.skills.skill_registry import get_gui_skill_registry
 from neural.gui_intelligence.skills.skill_validator import SkillValidator
@@ -69,21 +72,30 @@ async def plan_task(req: PlanRequest) -> dict[str, Any]:
 async def execute_gui_action(req: GUIActionRequest) -> GUIActionReceipt:
     """Dispatches a single motor action through the observe-ground-act-verify loop."""
     loop = GUIExecutionLoop()
-    return loop.execute_action(req)
+    try:
+        return loop.execute_action(req)
+    except ScreenCaptureUnavailableError as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
 
 
 @router.post("/chunk", response_model=list[GUIActionReceipt])
 async def execute_action_chunk(chunk: list[GUIActionRequest]) -> list[GUIActionReceipt]:
     """Dispatches a macro action chunk through the motor loop."""
     loop = GUIExecutionLoop()
-    return loop.execute_chunk(chunk)
+    try:
+        return loop.execute_chunk(chunk)
+    except ScreenCaptureUnavailableError as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
 
 
 @router.get("/screen/capture", response_model=ScreenCaptureResponse)
 async def capture_screen() -> ScreenCaptureResponse:
     """Captures a fresh timestamped screen frame from the active desktop."""
     capture = ScreenCaptureEngine()
-    frame = capture.capture_frame()
+    try:
+        frame = capture.capture_frame()
+    except ScreenCaptureUnavailableError as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
     return ScreenCaptureResponse(
         timestamp=frame.timestamp,
         resolution=frame.resolution,
