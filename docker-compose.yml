@@ -51,10 +51,11 @@ services:
     ports:
       - "127.0.0.1:12000:12000"
     environment:
-      - APP_ENV=development
+      - APP_ENV=${APP_ENV:-development}
       - HOST=0.0.0.0
       - DATABASE_URL=sqlite+aiosqlite:///./data/neural_company.db
       - REDIS_URL=redis://redis:6379/0
+      - OWNER_API_TOKEN=${OWNER_API_TOKEN:?Set OWNER_API_TOKEN in .env}
       - DOCKER_BROKER_URL=http://docker-broker:12002
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
     volumes:
@@ -80,9 +81,11 @@ services:
     container_name: ancos-dashboard
     restart: unless-stopped
     ports:
-      - "12001:3000"
+      - "127.0.0.1:12001:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:12000
+      - NODE_ENV=production
+      - ANCOS_API_URL=http://core-api:12000
+      - OWNER_API_TOKEN=${OWNER_API_TOKEN:?Set OWNER_API_TOKEN in .env}
     depends_on:
       - core-api
     networks:

@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:12000';
+const API_BASE = '/api/ancos';
 
 export async function fetchBossStatus() {
   const res = await fetch(`${API_BASE}/boss/status`, { cache: 'no-store' });
