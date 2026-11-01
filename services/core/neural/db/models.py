@@ -242,6 +242,40 @@ class TaskAttempt(Base):
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class ResourceLease(Base):
+    __tablename__ = "resource_leases"
+    __table_args__ = (
+        UniqueConstraint("resource_key", "fencing_token", name="uq_resource_lease_fence"),
+        Index(
+            "uq_resource_lease_active_resource",
+            "resource_key",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+        Index(
+            "uq_resource_lease_active_employee",
+            "employee_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    resource_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    employee_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    task_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False, index=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    released_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    resource_reservation: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
 class TaskDependency(Base):
     __tablename__ = "task_dependencies"
 

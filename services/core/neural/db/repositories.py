@@ -7,7 +7,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -46,6 +47,7 @@ from neural.db.models import (
     PerformanceRecord,
     Project,
     Proposal,
+    ResourceLease,
     SkillCertification,
     Task,
     TaskAttempt,
@@ -732,6 +734,128 @@ class TaskRepository:
         res = await self.session.execute(stmt)
         return res.scalars().all()
 
+
+
+class ResourceLeaseRepository:
+    """Transactional, restart-safe leases for desktop slots and other scarce resources."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @staticmethod
+    def _as_dict(lease: ResourceLease) -> dict[str, Any]:
+        return {
+            "lease_id": lease.id,
+            "resource_key": lease.resource_key,
+            "employee_id": lease.employee_id,
+            "task_id": lease.task_id,
+            "session_id": lease.session_id,
+            "fencing_token": lease.fencing_token,
+            "status": lease.status,
+            "granted_at": lease.granted_at.isoformat(),
+            "heartbeat_at": lease.heartbeat_at.isoformat(),
+            "lease_expires_at": lease.lease_expires_at.isoformat(),
+            "resource_reservation": lease.resource_reservation,
+        }
+
+    async def claim(
+        self,
+        resource_key: str,
+        employee_id: str,
+        task_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        lease_seconds: int = 60,
+        resource_reservation: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        now = utc_now()
+        ttl = max(5, min(lease_seconds, 3600))
+        async with get_session_lock(self.session):
+            active = (
+                await self.session.execute(
+                    select(ResourceLease)
+                    .where(
+                        or_(
+                            ResourceLease.resource_key == resource_key,
+                            ResourceLease.employee_id == employee_id,
+                        ),
+                        ResourceLease.status == "active",
+                    )
+                    .with_for_update()
+                )
+            ).scalars().all()
+            if any(lease.lease_expires_at > now for lease in active):
+                await self.session.rollback()
+                return None
+            for lease in active:
+                lease.status = "expired"
+                lease.released_at = now
+
+            previous_fence = await self.session.scalar(
+                select(func.max(ResourceLease.fencing_token)).where(ResourceLease.resource_key == resource_key)
+            )
+            lease = ResourceLease(
+                resource_key=resource_key,
+                employee_id=employee_id,
+                task_id=task_id,
+                session_id=session_id,
+                fencing_token=(previous_fence or 0) + 1,
+                status="active",
+                granted_at=now,
+                heartbeat_at=now,
+                lease_expires_at=now + timedelta(seconds=ttl),
+                resource_reservation=resource_reservation or {},
+            )
+            self.session.add(lease)
+            try:
+                await self.session.commit()
+            except IntegrityError:
+                await self.session.rollback()
+                return None
+            await self.session.refresh(lease)
+            return self._as_dict(lease)
+
+    async def heartbeat(self, lease_id: str, fencing_token: int, lease_seconds: int = 60) -> Optional[str]:
+        now = utc_now()
+        expires = now + timedelta(seconds=max(5, min(lease_seconds, 3600)))
+        async with get_session_lock(self.session):
+            result = await self.session.execute(
+                update(ResourceLease)
+                .where(
+                    ResourceLease.id == lease_id,
+                    ResourceLease.fencing_token == fencing_token,
+                    ResourceLease.status == "active",
+                    ResourceLease.lease_expires_at > now,
+                )
+                .values(heartbeat_at=now, lease_expires_at=expires)
+            )
+            await self.session.commit()
+        return expires.isoformat() if result.rowcount == 1 else None
+
+    async def release(self, lease_id: str, fencing_token: int) -> bool:
+        now = utc_now()
+        async with get_session_lock(self.session):
+            result = await self.session.execute(
+                update(ResourceLease)
+                .where(
+                    ResourceLease.id == lease_id,
+                    ResourceLease.fencing_token == fencing_token,
+                    ResourceLease.status == "active",
+                )
+                .values(status="released", released_at=now)
+            )
+            await self.session.commit()
+        return result.rowcount == 1
+
+    async def reconcile_expired(self) -> int:
+        now = utc_now()
+        async with get_session_lock(self.session):
+            result = await self.session.execute(
+                update(ResourceLease)
+                .where(ResourceLease.status == "active", ResourceLease.lease_expires_at <= now)
+                .values(status="expired", released_at=now)
+            )
+            await self.session.commit()
+        return result.rowcount or 0
 
 
 class EmployeeRepository:

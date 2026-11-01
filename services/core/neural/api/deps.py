@@ -19,6 +19,7 @@ from neural.db.repositories import (
     PerformanceRepository,
     ProjectRepository,
     ProposalRepository,
+    ResourceLeaseRepository,
     SkillCertificationRepository,
     TaskRepository,
     ToolRepository,
@@ -33,6 +34,12 @@ async def get_project_repo(session: AsyncSession = Depends(get_db_session)) -> P
 
 async def get_task_repo(session: AsyncSession = Depends(get_db_session)) -> TaskRepository:
     return TaskRepository(session)
+
+
+async def get_resource_lease_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> ResourceLeaseRepository:
+    return ResourceLeaseRepository(session)
 
 
 async def require_worker_token(authorization: str | None = Header(default=None)) -> str:

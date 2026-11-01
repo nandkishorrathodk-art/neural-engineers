@@ -119,6 +119,19 @@ class VerificationDecisionRequest(BaseModel):
     test_summary: dict[str, Any] = Field(default_factory=dict)
 
 
+class ResourceLeaseClaimRequest(BaseModel):
+    resource_key: str = Field(..., min_length=1, max_length=128)
+    employee_id: str = Field(..., min_length=1, max_length=128)
+    task_id: Optional[str] = Field(None, max_length=128)
+    session_id: Optional[str] = Field(None, max_length=128)
+    lease_seconds: int = Field(default=60, ge=5, le=3600)
+    resource_reservation: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResourceLeaseTokenRequest(BaseModel):
+    fencing_token: int = Field(..., ge=1)
+
+
 class ExecuteDagRequest(BaseModel):
     max_concurrency: Optional[int] = Field(5, description="Max parallel workers")
 

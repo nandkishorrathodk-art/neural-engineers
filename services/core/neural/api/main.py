@@ -21,6 +21,7 @@ from neural.api.routes import (
     methods,
     observability,
     projects,
+    resource_leases,
     security,
     skills,
     tasks,
@@ -102,7 +103,9 @@ def create_app() -> FastAPI:
             settings.APP_ENV == "production"
             and request.method != "OPTIONS"
             and request.url.path not in {"/health/live", "/health/ready"}
-            and not request.url.path.startswith(("/internal/worker/", "/internal/verifier/"))
+            and not request.url.path.startswith(
+                ("/internal/worker/", "/internal/verifier/", "/internal/resources/leases/")
+            )
         ):
             configured_token = settings.OWNER_API_TOKEN
             if not configured_token or len(configured_token) < 32:
@@ -131,6 +134,7 @@ def create_app() -> FastAPI:
     app.include_router(meetings.router)
     app.include_router(tasks.router)
     app.include_router(worker.router)
+    app.include_router(resource_leases.router)
     app.include_router(verifier.router)
     app.include_router(llm.router)
     app.include_router(comms.router)
