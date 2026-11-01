@@ -34,6 +34,8 @@ class ContainerManager:
         self._allocated_ports: dict[str, tuple[int, int]] = {}
         # Track in-memory active containers
         self._containers: dict[str, dict[str, Any]] = {}
+        from neural.containers.broker import RestrictedDockerBroker
+        self.broker = RestrictedDockerBroker(workspace_base=self.settings.EMPLOYEE_WORKSPACE_BASE)
         try:
             from neural.security.kill_switch import get_kill_switch
             get_kill_switch().register_container_manager(self)
@@ -177,25 +179,27 @@ class ContainerManager:
                     pass
 
                 nano_cpus = int(effective_cpu * 1e9)
-                client.containers.run(
-                    image=image_name,
-                    name=docker_id,
-                    detach=True,
-                    user="1000:1000",
-                    ports={"5901/tcp": vnc_port, "6081/tcp": novnc_port},
-                    volumes={workspace_path: {"bind": "/home/employee/workspace", "mode": "rw"}},
-                    environment={
+                run_kwargs = {
+                    "image": image_name,
+                    "name": docker_id,
+                    "detach": True,
+                    "user": "1000:1000",
+                    "ports": {"5901/tcp": vnc_port, "6081/tcp": novnc_port},
+                    "volumes": {workspace_path: {"bind": "/home/employee/workspace", "mode": "rw"}},
+                    "environment": {
                         "DISPLAY": ":1",
                         "VNC_PORT": str(vnc_port),
                         "NOVNC_PORT": str(novnc_port),
                         "EMPLOYEE_ID": employee_id
                     },
-                    nano_cpus=nano_cpus,
-                    mem_limit=effective_mem,
-                    pids_limit=200,
-                    privileged=False,
-                    security_opt=["no-new-privileges:true"]
-                )
+                    "nano_cpus": nano_cpus,
+                    "mem_limit": effective_mem,
+                    "pids_limit": 200,
+                    "privileged": False,
+                    "security_opt": ["no-new-privileges:true"]
+                }
+                hardened_kwargs = self.broker.harden_container_kwargs(run_kwargs)
+                client.containers.run(**hardened_kwargs)
                 logger.info("Docker container started successfully", docker_id=docker_id)
             except Exception as e:
                 logger.warning(
@@ -237,6 +241,7 @@ class ContainerManager:
     async def terminate_desktop(self, docker_id: str, container_repo: Optional[Any] = None) -> None:
         """Stops and removes container, releases ports and updates status."""
         logger.info("Terminating desktop container", docker_id=docker_id)
+        self.broker.validate_container_id(docker_id)
         client = self._get_client()
         if client:
             try:

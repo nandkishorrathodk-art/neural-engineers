@@ -26,8 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root employee user
-RUN useradd -m -s /bin/bash -u 1000 employee && \
-    echo "employee ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+RUN useradd -m -s /bin/bash -u 1000 employee
 
 WORKDIR /home/employee
 USER employee

@@ -31,6 +31,11 @@ class ContainerError(ANCOSError):
     pass
 
 
+class StorageError(ANCOSError):
+    """Raised when storage or backup operations fail."""
+    pass
+
+
 class QuotaExceededError(ANCOSError):
     """Raised when employee count, memory, or budget quota is exceeded."""
     pass

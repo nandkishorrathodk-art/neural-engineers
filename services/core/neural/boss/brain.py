@@ -109,7 +109,8 @@ class BossBrain:
         task_repo: Optional[TaskRepository] = None,
         employee_repo: Optional[EmployeeRepository] = None,
         project_name: Optional[str] = None,
-        auto_assign_first_task: bool = True
+        auto_assign_first_task: bool = True,
+        auto_recruit_workforce: bool = False
     ) -> tuple[Project, list[Task]]:
         """
         Analyzes objective, produces structured execution plan,
@@ -185,6 +186,11 @@ class BossBrain:
             # Auto-assign first task if requested
             if auto_assign_first_task and created_tasks and e_repo:
                 employees = await e_repo.list_all()
+                if not employees and auto_recruit_workforce:
+                    from neural.employees.factory import EmployeeFactory
+                    factory = EmployeeFactory(e_repo)
+                    employees = await factory.recruit_workforce_for_plan(plan)
+
                 if employees:
                     first_task = created_tasks[0]
                     # Prioritize employee with empirically verified matching skills
@@ -231,6 +237,14 @@ class BossBrain:
         """
         sched = self.get_scheduler()
         return await sched.execute_dag(project_id=project_id, worker_func=worker_func)
+
+    async def recruit_workforce_for_plan(self, plan: dict[str, Any]) -> list[Any]:
+        """Autonomously recruits the workforce required for an execution plan (Requirements 7 & 12)."""
+        if not self.employee_repo:
+            return []
+        from neural.employees.factory import EmployeeFactory
+        factory = EmployeeFactory(self.employee_repo)
+        return await factory.recruit_workforce_for_plan(plan)
 
     async def get_status(self) -> dict[str, Any]:
         return {

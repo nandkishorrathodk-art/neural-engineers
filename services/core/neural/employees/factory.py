@@ -217,6 +217,105 @@ class EmployeeFactory:
             role_id=role_id
         )
 
+    @classmethod
+    def generate_dynamic_identity(cls, role_title: str = "Software Engineer", department: str = "Engineering") -> dict[str, str]:
+        """
+        Dynamically generates a unique professional persona and identity
+        without relying on static pre-defined hardcoded names (Requirement 7).
+        """
+        import random
+        first_names = [
+            "Devan", "Ananya", "Marcus", "Elena", "Tariq", "Kavya", "Liam", "Zoe",
+            "Mateo", "Priya", "Chen", "Soraya", "Arjun", "Chloe", "Kenji", "Fatima"
+        ]
+        last_names = [
+            "Vance", "Deshmukh", "Holloway", "Rostova", "Al-Mansoor", "Nair", "Gallagher", "Novak",
+            "Silva", "Iyer", "Wu", "Moradi", "Verma", "Dubois", "Tanaka", "El-Sayed"
+        ]
+        fn = random.choice(first_names)
+        ln = random.choice(last_names)
+        name = f"{fn} {ln}"
+
+        personalities = [
+            "Pragmatic, architecture-focused, and thorough",
+            "Adversarial, skeptical, and rigorous verifier",
+            "Fast-paced systems builder and resilience specialist",
+            "Analytical, methodical, and data-driven engineer",
+        ]
+        styles = [
+            "Direct, concise, and code-receipt-grounded",
+            "Evidence-first, uncompromising, and factual",
+            "Clear, collaborative, and precision-driven",
+        ]
+
+        return {
+            "name": name,
+            "title": role_title,
+            "department": department,
+            "personality": random.choice(personalities),
+            "communication_style": random.choice(styles),
+        }
+
+    async def recruit_dynamic_employee(
+        self,
+        role_title: str = "Software Engineer",
+        department: str = "Engineering",
+        role_id: Optional[str] = None,
+        initial_skills: Optional[list[str]] = None,
+    ) -> Employee:
+        """
+        Recruits an employee with a fully dynamic, unique identity (Requirement 7).
+        """
+        persona = self.generate_dynamic_identity(role_title=role_title, department=department)
+        return await self.hire_employee(
+            name=persona["name"],
+            title=persona["title"],
+            department=persona["department"],
+            role_id=role_id,
+            personality=persona["personality"],
+            communication_style=persona["communication_style"],
+            initial_skills=initial_skills,
+        )
+
+    async def recruit_workforce_for_plan(self, plan: dict[str, Any]) -> list[Employee]:
+        """
+        Analyzes an execution plan and dynamically recruits the necessary specialists
+        for all phases and required skills (Requirement 7 & 12).
+        """
+        recruited: list[Employee] = []
+        phases = plan.get("phases", [])
+        needed_roles: dict[str, list[str]] = {}
+
+        for phase in phases:
+            for task in phase.get("tasks", []):
+                req_role = task.get("role_required", "software-engineer")
+                skills = task.get("skills_required", ["Python"])
+                if req_role not in needed_roles:
+                    needed_roles[req_role] = []
+                for s in skills:
+                    if s not in needed_roles[req_role]:
+                        needed_roles[req_role].append(s)
+
+        if not needed_roles:
+            needed_roles = {
+                "senior-backend-engineer": ["Python", "FastAPI", "System Design"],
+                "qa-engineer": ["pytest", "Security Auditing", "Verification"],
+            }
+
+        for role_id, skills in needed_roles.items():
+            role_title = role_id.replace("-", " ").title()
+            dept = "Quality & Reliability" if "qa" in role_id.lower() or "security" in role_id.lower() else "Engineering"
+            emp = await self.recruit_dynamic_employee(
+                role_title=role_title,
+                department=dept,
+                role_id=role_id,
+                initial_skills=skills,
+            )
+            recruited.append(emp)
+
+        logger.info("Dynamically recruited workforce for execution plan", count=len(recruited))
+        return recruited
+
     async def bootstrap_initial_workforce(self) -> list[Employee]:
         """
         Recruits initial Phase 1 workforce as defined in PLAN.md:

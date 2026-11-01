@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from neural.decision_intelligence.calibration.thresholds import (
     ThresholdManager,
@@ -37,12 +37,18 @@ class IntelligentDecisionRouter:
         candidate_selector: Optional[CandidateSelector] = None,
         threshold_manager: Optional[ThresholdManager] = None,
         escalation_controller: Optional[EscalationController] = None,
+        shadow_manager: Optional[Any] = None,
     ) -> None:
         self.inference_service = inference_service or get_inference_service()
         self.complexity_classifier = complexity_classifier or ComplexityClassifier()
         self.candidate_selector = candidate_selector or CandidateSelector()
         self.threshold_manager = threshold_manager or get_threshold_manager()
         self.escalation_controller = escalation_controller or EscalationController()
+        if shadow_manager is not None:
+            self.shadow_manager = shadow_manager
+        else:
+            from neural.decision_intelligence.governance.shadow_mode import get_shadow_mode_manager
+            self.shadow_manager = get_shadow_mode_manager()
 
     def _verify_kill_switch(self) -> None:
         if is_kill_switch_active():
@@ -76,6 +82,16 @@ class IntelligentDecisionRouter:
         # 4. System 1 inference
         s1_result = await self.inference_service.decide_choice(prepared_question)
 
+        # 4b. Shadow mode check (records System 1 telemetry, delegates authoritative decision to System 2)
+        if shadow_mode:
+            escalated = await self.escalation_controller.escalate_choice(
+                prepared_question,
+                reason="Shadow mode active",
+                intermediate_result=s1_result,
+            )
+            escalated.reasoning_hint = f"Shadow Mode: System 1 proposed {s1_result.selected_id} ({s1_result.confidence:.2f})"
+            return escalated
+
         # 5. Calibrated threshold check
         threshold = self.threshold_manager.get_threshold(
             prepared_question.domain, DecisionPrimitive.CHOICE
@@ -108,6 +124,13 @@ class IntelligentDecisionRouter:
 
         s1_result = await self.inference_service.decide_score(question)
 
+        if shadow_mode:
+            return await self.escalation_controller.escalate_score(
+                question,
+                reason="Shadow mode active",
+                intermediate_result=s1_result,
+            )
+
         threshold = self.threshold_manager.get_threshold(
             question.domain, DecisionPrimitive.SCORE
         )
@@ -138,6 +161,13 @@ class IntelligentDecisionRouter:
             return await self.escalation_controller.escalate_noul(question, reason=reason)
 
         s1_result = await self.inference_service.decide_noul(question)
+
+        if shadow_mode:
+            return await self.escalation_controller.escalate_noul(
+                question,
+                reason="Shadow mode active",
+                intermediate_result=s1_result,
+            )
 
         threshold = self.threshold_manager.get_threshold(
             question.domain, DecisionPrimitive.NOUL

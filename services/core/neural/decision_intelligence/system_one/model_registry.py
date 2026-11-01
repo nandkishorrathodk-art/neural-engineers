@@ -58,6 +58,40 @@ DEFAULT_CHECKPOINTS: dict[str, ModelCheckpointMetadata] = {
         input_modality="strict_json",
         description="Specialized typed decision engine: Choice, Score & Noul (30ms - 38ms)",
     ),
+    # Genuine Neural Checkpoints (Official convaiinnovations/laya)
+    "Laya-English-Base-Neural": ModelCheckpointMetadata(
+        name="Laya-English-Base-Neural",
+        version="1.0.0",
+        task_types=["routing", "choice"],
+        sha256_hash="891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
+        model_path="./data/models/laya/base",
+        runtime=ModelRuntime.TORCH,
+        target_latency_ms=35.0,
+        input_modality="neural_sequence",
+        description="Official Laya ModernBERT neural decision engine (English Base)",
+    ),
+    "Laya-Multilingual-Neural": ModelCheckpointMetadata(
+        name="Laya-Multilingual-Neural",
+        version="1.0.0",
+        task_types=["routing", "choice", "multilingual"],
+        sha256_hash="9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
+        model_path="./data/models/laya/multilingual",
+        runtime=ModelRuntime.TORCH,
+        target_latency_ms=45.0,
+        input_modality="multilingual_neural_sequence",
+        description="Official Laya ModernBERT neural decision engine (Multilingual)",
+    ),
+    "Laya-Typed-Decisions-Neural": ModelCheckpointMetadata(
+        name="Laya-Typed-Decisions-Neural",
+        version="1.2.0",
+        task_types=["choice", "score", "noul", "gui_selection"],
+        sha256_hash="891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
+        model_path="./data/models/laya/base",
+        runtime=ModelRuntime.TORCH,
+        target_latency_ms=38.0,
+        input_modality="neural_sequence",
+        description="Official Laya ModernBERT neural decision engine for Choice, Score & Noul",
+    ),
 }
 
 

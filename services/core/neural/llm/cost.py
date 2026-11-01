@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from neural.exceptions import QuotaExceededError
 from neural.logger import get_logger
 
 logger = get_logger("ancos.llm.cost")
@@ -57,9 +58,56 @@ class CostTracker:
     Tracks expenses per task, employee, project, and foundation model.
     """
 
-    def __init__(self, pricing_table: Optional[dict[str, dict[str, float]]] = None):
+    def __init__(
+        self,
+        pricing_table: Optional[dict[str, dict[str, float]]] = None,
+        max_task_budget_usd: float = 10.00,
+        max_project_budget_usd: float = 150.00,
+        monthly_hard_cap_usd: float = 500.00,
+        enforce_budgets: bool = True,
+    ):
         self.pricing_table = pricing_table or MODEL_PRICING_PER_1M
         self.records: list[UsageRecord] = []
+        self.max_task_budget_usd = max_task_budget_usd
+        self.max_project_budget_usd = max_project_budget_usd
+        self.monthly_hard_cap_usd = monthly_hard_cap_usd
+        self.enforce_budgets = enforce_budgets
+
+    def check_budget_ceiling(
+        self,
+        cost_delta: float,
+        task_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+    ) -> None:
+        """Enforces hard budget ceilings on tasks, projects, and organization total."""
+        if not self.enforce_budgets:
+            return
+
+        # 1. Total organizational cap
+        total_after = self.get_total_cost() + cost_delta
+        if total_after > self.monthly_hard_cap_usd:
+            logger.error("Organizational monthly budget cap exceeded", current=total_after, cap=self.monthly_hard_cap_usd)
+            raise QuotaExceededError(
+                f"Monthly organizational budget cap of ${self.monthly_hard_cap_usd:.2f} exceeded (projected: ${total_after:.2f})"
+            )
+
+        # 2. Task budget cap
+        if task_id:
+            task_cost = self.get_task_cost(task_id)["cost_usd"] + cost_delta
+            if task_cost > self.max_task_budget_usd:
+                logger.error("Task budget ceiling exceeded", task_id=task_id, current=task_cost, cap=self.max_task_budget_usd)
+                raise QuotaExceededError(
+                    f"Task '{task_id}' budget ceiling of ${self.max_task_budget_usd:.2f} exceeded (projected: ${task_cost:.2f})"
+                )
+
+        # 3. Project budget cap
+        if project_id:
+            project_cost = self.get_project_cost(project_id)["cost_usd"] + cost_delta
+            if project_cost > self.max_project_budget_usd:
+                logger.error("Project budget ceiling exceeded", project_id=project_id, current=project_cost, cap=self.max_project_budget_usd)
+                raise QuotaExceededError(
+                    f"Project '{project_id}' budget ceiling of ${self.max_project_budget_usd:.2f} exceeded (projected: ${project_cost:.2f})"
+                )
 
     def calculate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """
@@ -93,8 +141,10 @@ class CostTracker:
     ) -> UsageRecord:
         """
         Records a single LLM API usage event and computes USD cost.
+        Enforces budget ceilings before committing usage.
         """
         exact_cost = cost_usd if cost_usd is not None else self.calculate_cost(model, input_tokens, output_tokens)
+        self.check_budget_ceiling(exact_cost, task_id=task_id, project_id=project_id)
         record = UsageRecord(
             task_id=task_id,
             employee_id=employee_id,

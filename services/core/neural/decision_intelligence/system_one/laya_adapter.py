@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import time
 from abc import ABC, abstractmethod
@@ -44,26 +45,32 @@ class LayaAdapter(BaseLayaAdapter):
         self,
         checkpoint_name: str = "Laya-Typed-Decisions",
         registry: Optional[ModelRegistry] = None,
+        runtime: Optional[ModelRuntime] = None,
     ) -> None:
         self.registry = registry or get_model_registry()
         self.checkpoint_metadata: ModelCheckpointMetadata = self.registry.get_checkpoint(checkpoint_name)
-        self.runtime = self._detect_runtime()
+        self.runtime = runtime or self._detect_runtime()
         self._onnx_session = None
         self._torch_model = None
         self._init_runtime()
 
     def _detect_runtime(self) -> ModelRuntime:
         # Check if ONNX model is available and onnxruntime is installed
-        if self.checkpoint_metadata.onnx_path:
+        if self.checkpoint_metadata.onnx_path and os.path.exists(self.checkpoint_metadata.onnx_path):
             try:
                 import onnxruntime  # noqa: F401
                 return ModelRuntime.ONNX
             except ImportError:
                 pass
 
-        # Check if PyTorch model is available
-        if self.checkpoint_metadata.model_path:
+        # Check if PyTorch model is requested/available
+        if (
+            self.checkpoint_metadata.runtime == ModelRuntime.TORCH
+            and self.checkpoint_metadata.model_path
+            and os.path.exists(self.checkpoint_metadata.model_path)
+        ):
             try:
+                import laya  # noqa: F401
                 import torch  # noqa: F401
                 return ModelRuntime.TORCH
             except ImportError:
@@ -81,6 +88,16 @@ class LayaAdapter(BaseLayaAdapter):
                 logger.warning("Failed to initialize ONNX session, falling back", error=str(e))
                 self.runtime = ModelRuntime.FALLBACK
 
+        elif self.runtime == ModelRuntime.TORCH and self.checkpoint_metadata.model_path:
+            try:
+                import laya
+                # Initialize real Laya neural model agent from local weights
+                self._torch_model = laya.Agent(self.checkpoint_metadata.model_path)
+                logger.info("Initialized genuine Laya neural model session", model=self.checkpoint_metadata.name)
+            except Exception as e:
+                logger.warning("Failed to initialize Laya neural session, falling back to heuristic engine", error=str(e))
+                self.runtime = ModelRuntime.FALLBACK
+
     def predict_choice(self, question: ChoiceQuestion) -> ChoiceResult:
         start_time = time.perf_counter()
         candidates = question.candidates
@@ -88,6 +105,38 @@ class LayaAdapter(BaseLayaAdapter):
         if num_candidates < 2 or num_candidates > 12:
             raise ValueError(f"Choice questions require 2-12 candidates, got {num_candidates}")
 
+        # 1. Genuine PyTorch Laya Neural Model Inference
+        if self.runtime == ModelRuntime.TORCH and self._torch_model is not None:
+            try:
+                state = question.context
+                criteria = {c.id: f"{c.label}: {c.metadata or ''}" if c.metadata else c.label for c in candidates}
+                q_dict = {
+                    question.question_id: {
+                        "type": "choice",
+                        "instructions": question.question_text or "Select the best candidate in context",
+                        "criteria": criteria,
+                    }
+                }
+                raw = self._torch_model.predict(state, q_dict)
+                ans = raw.get("answers", {}).get(question.question_id, {})
+                selected_id = ans.get("choice", candidates[0].id)
+                confidence = float(ans.get("confidence", 0.0))
+                raw_probs = ans.get("probabilities", {})
+                prob_dict = {c.id: round(float(raw_probs.get(c.id, 1.0 / num_candidates)), 4) for c in candidates}
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                return ChoiceResult(
+                    question_id=question.question_id,
+                    selected_id=selected_id,
+                    confidence=round(confidence, 4),
+                    probabilities=prob_dict,
+                    latency_ms=round(elapsed_ms, 2),
+                    model_name=self.checkpoint_metadata.name,
+                    reasoning_hint=f"Laya neural choice: {selected_id} ({confidence:.2f})",
+                )
+            except Exception as e:
+                logger.warning("Laya neural choice failed, falling back to heuristic engine", error=str(e))
+
+        # 2. Calibrated Deterministic Heuristic Fallback Engine
         # Compute raw matching scores for each candidate against context
         context_words = set(re.findall(r"\w+", question.context.lower()))
         logits: list[float] = []
@@ -156,6 +205,39 @@ class LayaAdapter(BaseLayaAdapter):
         steps = list(range(s_min, s_max + 1))
         num_steps = len(steps)
 
+        # 1. Genuine PyTorch Laya Neural Model Inference
+        if self.runtime == ModelRuntime.TORCH and self._torch_model is not None:
+            try:
+                state = f"{question.proposition} {question.context}".strip()
+                criteria = [str(step) for step in steps]
+                q_dict = {
+                    question.question_id: {
+                        "type": "score",
+                        "instructions": question.proposition or "Score priority or severity",
+                        "criteria": criteria,
+                    }
+                }
+                raw = self._torch_model.predict(state, q_dict)
+                ans = raw.get("answers", {}).get(question.question_id, {})
+                pred_continuous = float(ans.get("score", float(steps[len(steps) // 2])))
+                chosen_score = int(round(pred_continuous))
+                chosen_score = max(s_min, min(s_max, chosen_score))
+                confidence = float(ans.get("confidence", 0.5))
+                raw_probs = ans.get("probabilities", {})
+                prob_dict = {step: round(float(raw_probs.get(str(i), 1.0 / num_steps)), 4) for i, step in enumerate(steps)}
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                return ScoreResult(
+                    question_id=question.question_id,
+                    score=chosen_score,
+                    probabilities=prob_dict,
+                    confidence=round(confidence, 4),
+                    latency_ms=round(elapsed_ms, 2),
+                    model_name=self.checkpoint_metadata.name,
+                )
+            except Exception as e:
+                logger.warning("Laya neural score failed, falling back to heuristic engine", error=str(e))
+
+        # 2. Calibrated Deterministic Heuristic Fallback Engine
         # Semantic keywords for urgency/severity/complexity
         combined_text = f"{question.proposition} {question.context}".lower()
         urgency_high_cues = ["critical", "emergency", "deadlock", "fatal", "blocker", "urgent", "immediate"]
@@ -205,6 +287,37 @@ class LayaAdapter(BaseLayaAdapter):
 
     def predict_noul(self, question: NoulQuestion) -> NoulResult:
         start_time = time.perf_counter()
+
+        # 1. Genuine PyTorch Laya Neural Model Inference
+        if self.runtime == ModelRuntime.TORCH and self._torch_model is not None:
+            try:
+                state = f"{question.proposition} {question.context}".strip()
+                q_dict = {
+                    question.question_id: {
+                        "type": "noul",
+                        "instructions": question.proposition or "Verify proposition condition",
+                    }
+                }
+                raw = self._torch_model.predict(state, q_dict)
+                ans = raw.get("answers", {}).get(question.question_id, {})
+                prob_true = float(ans.get("noul", 0.5))
+                confidence = float(ans.get("confidence", 0.5))
+                is_true = prob_true >= question.threshold
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                return NoulResult(
+                    question_id=question.question_id,
+                    is_true=is_true,
+                    probability_true=round(prob_true, 4),
+                    calibrated_prob=round(prob_true, 4),
+                    confidence=round(confidence, 4),
+                    threshold=question.threshold,
+                    latency_ms=round(elapsed_ms, 2),
+                    model_name=self.checkpoint_metadata.name,
+                )
+            except Exception as e:
+                logger.warning("Laya neural noul failed, falling back to heuristic engine", error=str(e))
+
+        # 2. Calibrated Deterministic Heuristic Fallback Engine
         combined_text = f"{question.proposition} {question.context}".lower()
 
         # Calibrated evidence assessment
