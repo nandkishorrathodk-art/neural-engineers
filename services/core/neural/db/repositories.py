@@ -26,6 +26,7 @@ from neural.constants import (
     VerificationStatus,
     VoteChoice,
 )
+from neural.config import get_settings
 from neural.db.models import (
     ActionItem,
     Approval,
@@ -97,9 +98,13 @@ class ProjectRepository:
 
 
 class TaskRepository:
-    def __init__(self, session: AsyncSession, strict_verification: bool = False):
+    def __init__(self, session: AsyncSession, strict_verification: Optional[bool] = None):
         self.session = session
-        self.strict_verification = strict_verification
+        self.strict_verification = (
+            get_settings().APP_ENV == "production"
+            if strict_verification is None
+            else strict_verification
+        )
 
     async def create(self, **kwargs: Any) -> Task:
         task = Task(**kwargs)

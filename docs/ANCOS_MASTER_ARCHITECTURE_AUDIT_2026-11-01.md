@@ -18,9 +18,10 @@ The owner authorized implementation after reviewing this audit. The first P0 tru
 - Docker socket access now belongs to a token-protected broker on an internal Compose network. The core API has no Docker socket mount or Docker API proxy; broker operations take typed employee IDs, an image allowlist, fixed mount target, bounded resources, named per-employee Docker volumes, loopback-only VNC ports, and fixed lifecycle/exec operations.
 - The shared VNC password is removed from the workstation image. The broker generates an eight-character per-workstation password at provisioning, injects it into the container, and returns it only in the provisioning response. A token-protected rotation route can issue a replacement; the core manager does not retain passwords in its in-memory workstation registry.
 - The dashboard now signs in with the owner token through a same-origin route, stores it in an HttpOnly/SameSite cookie, and forwards it server-side through a path-restricted API proxy. Compose keeps the dashboard/API published only on loopback and passes the token server-side; it is not exposed through `NEXT_PUBLIC_*` or browser storage.
+- Task assignment now remains `ASSIGNED` until a worker starts; production status APIs cannot claim `RUNNING` without an authenticated worker claim, and the repository enforces a verifier receipt before completion by default. Assignment notifications return an explicit unavailable response instead of silently discarding delivery errors.
 - Static validation: Python bytecode compilation, dashboard TypeScript typecheck, `docker compose config --quiet` with validation-only tokens, and `git diff --check` pass. The test suite has not been rerun after these edits. Docker runtime behavior remains unverified because the daemon is unavailable.
 
-Tests have not been rerun. Still open from the P0/P1 work: auth/approval roles are not modeled; Redis Pub/Sub still has no replay/ack contract or durable task worker; migrations, resource leases, persistent memory, and the other roadmap items remain unimplemented. The dashboard owner-token proxy and Docker broker have only been statically inspected; Docker was unavailable in the inspected environment, so live behavior remains unverified. Existing dashboard edits were not changed.
+Tests have not been rerun. Still open from the P0/P1 work: auth/approval roles are not modeled; Redis Pub/Sub still has no replay/ack contract or durable task worker; worker claims/leases are not wired, so production API execution remains intentionally unavailable; migrations, resource leases, persistent memory, and the other roadmap items remain unimplemented. The dashboard owner-token proxy and Docker broker have only been statically inspected; Docker was unavailable in the inspected environment, so live behavior remains unverified. Existing dashboard edits were not changed.
 
 ## 1. Executive summary
 
@@ -806,7 +807,7 @@ Before implementation, owner should approve:
 - [ ] Which certified workflows and human baseline cohort can be used for a future 4× speed evaluation.
 - [ ] Whether Kasm/GraphRAG/vector serving is evaluated in small POCs or deferred until baseline metrics justify it.
 
-**Stop condition:** this document is the deliverable for the current assignment. No application code, schema, deployment or configuration behavior has been changed. Implementation should start only after the owner approves the decisions above.
+**Implementation status:** the audit was the initial deliverable; the owner subsequently authorized implementation. The checklist records remaining decisions and acceptance evidence, not a stop condition. Continue the roadmap while preserving unresolved owner decisions as explicit deployment gates.
 
 ---
 

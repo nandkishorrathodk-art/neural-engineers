@@ -9,8 +9,9 @@ from neural.api.schemas.requests import (
 )
 from neural.api.schemas.responses import ExecuteDagResponse, TaskDAGResponse, TaskResponse
 from neural.constants import EmployeeStatus, TaskStatus
+from neural.config import get_settings
 from neural.db.repositories import EmployeeRepository, ProjectRepository, TaskRepository
-from neural.exceptions import InvalidTaskStateTransitionError, TaskDependencyError
+from neural.exceptions import InvalidTaskStateTransitionError, TaskDependencyError, UnverifiedTaskError
 from neural.tasks.scheduler import TaskScheduler
 from neural.tasks.state_machine import TaskStateMachine
 
@@ -60,6 +61,7 @@ async def get_task(
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
     return TaskResponse(
         id=task.id,
         task_id=task.task_id,
@@ -85,6 +87,12 @@ async def assign_task(
     if not task:
         raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
 
+    if task.status not in (TaskStatus.PENDING, TaskStatus.ASSIGNED):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task '{task_id}' cannot be assigned while it is {task.status.value}.",
+        )
+
     employee = await employee_repo.get_by_employee_id(request.employee_id)
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee '{request.employee_id}' not found")
@@ -95,8 +103,16 @@ async def assign_task(
             detail=f"Cannot assign task to employee '{request.employee_id}' with status '{employee.status.value}'"
         )
 
+    already_assigned = task.assigned_to == employee.id
+    if employee.status != EmployeeStatus.IDLE and not (already_assigned and employee.status == EmployeeStatus.WORKING):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Employee '{request.employee_id}' is not available for another task.",
+        )
+
     await task_repo.assign_task(task.task_id, employee.id)
-    await task_repo.update_status(task.task_id, TaskStatus.RUNNING)
+    # Assignment is a persisted reservation; execution begins only after a
+    # worker acknowledges and supplies an execution receipt.
     await employee_repo.update_status(employee.employee_id, EmployeeStatus.WORKING)
 
     if bus:
@@ -104,7 +120,7 @@ async def assign_task(
             await bus.publish_task_event(
                 task_id=task.task_id,
                 event_type="task_assigned",
-                status=TaskStatus.RUNNING.value,
+                status=TaskStatus.ASSIGNED.value,
                 details={"assigned_to": employee.employee_id, "title": task.title}
             )
             await bus.send_to_employee(
@@ -116,8 +132,11 @@ async def assign_task(
                     "objective": task.objective
                 }
             )
-        except Exception:
-            pass
+        except Exception as err:
+            raise HTTPException(
+                status_code=503,
+                detail="Task is assigned, but its worker notification could not be delivered. Retry delivery before execution.",
+            ) from err
 
     updated = await task_repo.get_by_task_id(task_id)
     return TaskResponse(
@@ -151,7 +170,16 @@ async def update_task_status(
     except (InvalidTaskStateTransitionError, ValueError) as err:
         raise HTTPException(status_code=400, detail=str(err))
 
-    await task_repo.update_status(task.task_id, target_status)
+    if target_status == TaskStatus.RUNNING and get_settings().APP_ENV == "production":
+        raise HTTPException(
+            status_code=409,
+            detail="A production task can enter running only after an authenticated worker claim; worker identity and leases are not configured.",
+        )
+
+    try:
+        await task_repo.update_status(task.task_id, target_status)
+    except UnverifiedTaskError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
 
     if target_status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED) and task.assigned_to:
         try:
