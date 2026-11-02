@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -194,3 +194,56 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
     reported_success = next(task for task in report["tasks"] if task["task_id"] == "TASK-VERIFIED-REPORT")
     assert reported_success["verified"] is True
     assert reported_success["evidence_refs"] == ["sha256:verified-artifact"]
+
+
+@pytest.mark.asyncio
+async def test_worker_failure_retries_only_retryable_errors_within_budget(async_session):
+    project = await ProjectRepository(async_session).create(name="Recovery", objective="Retry safely")
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-RECOVERY-RETRY",
+        project_id=project.id,
+        title="Retry transient failure",
+        objective="Retry connection timeout",
+        scope="Execution",
+        acceptance_criteria="Independent verification passes",
+        status=TaskStatus.RUNNING,
+        max_retries=1,
+        fencing_token=1,
+    )
+    attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="worker-test",
+        fencing_token=1,
+        status="running",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=2),
+        execution_receipt={},
+    )
+    async_session.add(attempt)
+    await async_session.commit()
+
+    retry = await task_repo.fail_task_attempt(task.task_id, "worker-test", 1, "connection timeout")
+    assert retry == {"retrying": True, "retry_count": 1}
+    retried_task = await task_repo.get_by_task_id(task.task_id)
+    assert retried_task.status == TaskStatus.ASSIGNED
+    assert retried_task.fencing_token == 2
+
+    next_attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=2,
+        worker_id="worker-test",
+        fencing_token=3,
+        status="running",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=2),
+        execution_receipt={},
+    )
+    retried_task.status = TaskStatus.RUNNING
+    retried_task.fencing_token = 3
+    async_session.add(next_attempt)
+    await async_session.commit()
+
+    exhausted = await task_repo.fail_task_attempt(task.task_id, "worker-test", 3, "connection timeout")
+    assert exhausted == {"retrying": False, "retry_count": 1}
+    final_task = await task_repo.get_by_task_id(task.task_id)
+    assert final_task.status == TaskStatus.FAILED

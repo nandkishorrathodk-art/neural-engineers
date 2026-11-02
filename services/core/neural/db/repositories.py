@@ -343,11 +343,16 @@ class TaskRepository:
             await self.session.commit()
         return result.rowcount == 1
 
-    async def fail_task_attempt(self, task_id: str, worker_id: str, fencing_token: int, error_message: str) -> bool:
+    async def fail_task_attempt(self, task_id: str, worker_id: str, fencing_token: int, error_message: str) -> Optional[dict[str, Any]]:
         now = utc_now()
         task = await self._get_task_for_worker(task_id)
         if not task or task.fencing_token != fencing_token or task.status != TaskStatus.RUNNING:
-            return False
+            return None
+        from neural.boss.recovery import classify_failure
+
+        classification = classify_failure(error_message)
+        should_retry = classification.is_retryable and task.retry_count < task.max_retries
+        retry_count = task.retry_count + (1 if should_retry else 0)
         async with get_session_lock(self.session):
             attempt_update = await self.session.execute(
                 update(TaskAttempt)
@@ -367,22 +372,23 @@ class TaskRepository:
             )
             if attempt_update.rowcount != 1:
                 await self.session.rollback()
-                return False
+                return None
             task_update = await self.session.execute(
                 update(Task)
                 .where(Task.id == task.id, Task.fencing_token == fencing_token)
                 .where(Task.status == TaskStatus.RUNNING)
                 .values(
-                    status=TaskStatus.FAILED,
-                    completed_at=now,
+                    status=TaskStatus.ASSIGNED if should_retry else TaskStatus.FAILED,
+                    retry_count=Task.retry_count + (1 if should_retry else 0),
+                    completed_at=None if should_retry else now,
                     fencing_token=Task.fencing_token + 1,
                 )
             )
             if task_update.rowcount != 1:
                 await self.session.rollback()
-                return False
+                return None
             await self.session.commit()
-        return True
+        return {"retrying": should_retry, "retry_count": retry_count}
 
     async def list_pending_verification(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = await self.session.execute(

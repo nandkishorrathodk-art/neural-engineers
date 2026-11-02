@@ -132,14 +132,19 @@ async def fail_task_attempt(
     worker_id: str = Depends(require_worker_token),
 ):
     task = await task_repo.get_by_task_id(task_id)
-    failed = await task_repo.fail_task_attempt(
+    failure = await task_repo.fail_task_attempt(
         task_id,
         worker_id,
         request.fencing_token,
         request.error_message,
     )
-    if not failed:
+    if failure is None:
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
-    if task and task.assigned_to:
+    if task and task.assigned_to and not failure["retrying"]:
         await employee_repo.update_status(task.assigned_to, EmployeeStatus.IDLE)
-    return {"task_id": task_id, "status": "failed", "fencing_token": request.fencing_token}
+    return {
+        "task_id": task_id,
+        "status": "retrying" if failure["retrying"] else "failed",
+        "retry_count": failure["retry_count"],
+        "fencing_token": request.fencing_token,
+    }
