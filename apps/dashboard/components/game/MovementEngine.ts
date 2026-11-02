@@ -128,7 +128,13 @@ export function updateCharacterMovement(char: GameCharacter, dt: number): void {
         } else if (char.currentMeetingSeatIndex !== null) {
           char.animState = 'meeting';
         } else if (char.assignedDeskId) {
-          char.animState = char.status === 'working' || char.status === 'online' ? 'working' : 'idle';
+          char.animState = char.currentTaskStatus === 'running' || char.status === 'working'
+            ? 'working'
+            : char.currentTaskStatus === 'assigned' || char.currentTaskStatus === 'retrying'
+              ? 'sitting'
+              : char.currentTaskStatus === 'blocked'
+                ? 'warning'
+                : 'idle';
         } else {
           char.animState = 'idle';
         }

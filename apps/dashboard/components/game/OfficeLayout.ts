@@ -123,7 +123,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   // CEO Executive Desk
   {
     id: 'WS-BOSS',
-    name: 'CEO Command Workstation',
+    name: 'Executive Desk',
     dept: 'executive',
     deskGridX: 19,
     deskGridY: 4,
@@ -139,7 +139,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   // Engineering Desks
   {
     id: 'WS-ENG-01',
-    name: 'Systems Engineering Pod #1',
+    name: 'Engineering Desk 01',
     dept: 'engineering',
     deskGridX: 4,
     deskGridY: 4,
@@ -154,7 +154,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   },
   {
     id: 'WS-ENG-02',
-    name: 'Backend & Agent Pod #2',
+    name: 'Engineering Desk 02',
     dept: 'engineering',
     deskGridX: 7,
     deskGridY: 4,
@@ -169,7 +169,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   },
   {
     id: 'WS-ENG-03',
-    name: 'Frontend & UI Pod #3',
+    name: 'Engineering Desk 03',
     dept: 'engineering',
     deskGridX: 4,
     deskGridY: 7,
@@ -184,7 +184,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   },
   {
     id: 'WS-ENG-04',
-    name: 'Full-Stack Pod #4',
+    name: 'Engineering Desk 04',
     dept: 'engineering',
     deskGridX: 7,
     deskGridY: 7,
@@ -200,7 +200,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   // Research Desks
   {
     id: 'WS-RES-01',
-    name: 'Neural Model Lab #1',
+    name: 'Research Desk 01',
     dept: 'research',
     deskGridX: 17,
     deskGridY: 16,
@@ -215,7 +215,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   },
   {
     id: 'WS-RES-02',
-    name: 'Cognitive Research Pod #2',
+    name: 'Research Desk 02',
     dept: 'research',
     deskGridX: 20,
     deskGridY: 16,
@@ -230,7 +230,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   },
   {
     id: 'WS-RES-03',
-    name: 'Distillation Pod #3',
+    name: 'Research Desk 03',
     dept: 'research',
     deskGridX: 17,
     deskGridY: 19,
@@ -246,7 +246,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   // Creative Desks
   {
     id: 'WS-CRE-01',
-    name: 'Design System Station #1',
+    name: 'Creative Desk 01',
     dept: 'creative',
     deskGridX: 4,
     deskGridY: 16,
@@ -261,7 +261,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   },
   {
     id: 'WS-CRE-02',
-    name: 'Interactive Motion Pod #2',
+    name: 'Creative Desk 02',
     dept: 'creative',
     deskGridX: 7,
     deskGridY: 16,
@@ -277,7 +277,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   // DevOps / Infrastructure Desk
   {
     id: 'WS-OPS-01',
-    name: 'Cloud & Sandbox Console #1',
+    name: 'Infrastructure Desk',
     dept: 'devops',
     deskGridX: 20,
     deskGridY: 11,
@@ -293,7 +293,7 @@ export const WORKSTATIONS: WorkstationDef[] = [
   // QA Verification Desk
   {
     id: 'WS-QA-01',
-    name: 'Autonomous Verification Deck #1',
+    name: 'Quality Desk',
     dept: 'qa',
     deskGridX: 18,
     deskGridY: 11,

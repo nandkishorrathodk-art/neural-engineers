@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { DashboardShell } from '@/components/layout/DashboardShell';
 import {
+  fetchEmployees,
   fetchMeetings,
   fetchActionItems,
   fetchExecutiveBriefing,
@@ -11,10 +12,13 @@ import {
   updateActionItem,
   scheduleMeeting,
 } from '@/lib/api';
-import { Meeting, ActionItem, ExecutiveBriefing } from '@/types';
+import { Employee, Meeting, ActionItem, ExecutiveBriefing } from '@/types';
 
 export default function BoardroomPage() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employeeRosterState, setEmployeeRosterState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
   const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [briefing, setBriefing] = useState<ExecutiveBriefing | null>(null);
   const [loading, setLoading] = useState(true);
@@ -28,14 +32,22 @@ export default function BoardroomPage() {
 
   const loadData = async () => {
     try {
-      const [mtgs, items, brf] = await Promise.allSettled([
+      const [mtgs, items, brf, roster] = await Promise.allSettled([
         fetchMeetings(50),
         fetchActionItems(),
         fetchExecutiveBriefing(),
+        fetchEmployees(),
       ]);
       if (mtgs.status === 'fulfilled') setMeetings(mtgs.value);
       if (items.status === 'fulfilled') setActionItems(items.value);
       if (brf.status === 'fulfilled') setBriefing(brf.value);
+      if (roster.status === 'fulfilled') {
+        setEmployees(roster.value);
+        setEmployeeRosterState('ready');
+      } else {
+        setEmployees([]);
+        setEmployeeRosterState('unavailable');
+      }
     } finally {
       setLoading(false);
     }
@@ -59,7 +71,8 @@ export default function BoardroomPage() {
 
   const handleScheduleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
+    const participantIds = selectedEmployeeIds.filter((id) => employees.some((employee) => employee.employee_id === id));
+    if (!newTitle.trim() || participantIds.length === 0) return;
     setIsSubmitting(true);
     try {
       const agendaList = newAgenda.split('\n').map((s) => s.trim()).filter(Boolean);
@@ -67,10 +80,11 @@ export default function BoardroomPage() {
         title: newTitle,
         meeting_type: newType,
         agenda: agendaList,
-        participants: ['BossAI'],
+        participants: participantIds,
       });
       setShowScheduleModal(false);
       setNewTitle('');
+      setSelectedEmployeeIds([]);
       await loadData();
     } catch (err) {
       alert('Failed to schedule meeting');
@@ -456,6 +470,42 @@ export default function BoardroomPage() {
                 </select>
               </div>
 
+              <fieldset>
+                <legend className="block text-xs font-medium text-slate-400 mb-2">Invite employees from the current roster</legend>
+                {employeeRosterState === 'loading' ? (
+                  <p className="text-xs text-slate-500 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    Loading employee records…
+                  </p>
+                ) : employeeRosterState === 'unavailable' ? (
+                  <p className="text-xs text-amber-300 rounded-lg border border-amber-900/60 bg-slate-950 p-3">
+                    The employee roster could not be loaded. Try again before scheduling.
+                  </p>
+                ) : employees.length === 0 ? (
+                  <p className="text-xs text-slate-500 rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    No employee records are available to invite.
+                  </p>
+                ) : (
+                  <div className="max-h-36 space-y-2 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3">
+                    {employees.map((employee) => (
+                      <label key={employee.employee_id} className="flex items-center gap-2 text-sm text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={selectedEmployeeIds.includes(employee.employee_id)}
+                          onChange={(event) => setSelectedEmployeeIds((current) => (
+                            event.target.checked
+                              ? [...current, employee.employee_id]
+                              : current.filter((id) => id !== employee.employee_id)
+                          ))}
+                          className="accent-purple-500"
+                        />
+                        <span>{employee.name}</span>
+                        <span className="text-xs text-slate-500">{employee.title} · {employee.employee_id}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </fieldset>
+
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">Agenda Items (One per line)</label>
                 <textarea
@@ -476,7 +526,7 @@ export default function BoardroomPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || employeeRosterState !== 'ready' || employees.length === 0 || selectedEmployeeIds.length === 0}
                   className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg"
                 >
                   Schedule Session

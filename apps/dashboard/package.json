@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 12001",
+    "dev": "node --env-file=../../.env ./node_modules/next/dist/bin/next dev -p 12001",
     "build": "next build",
     "start": "next start -p 12001",
     "lint": "next lint"

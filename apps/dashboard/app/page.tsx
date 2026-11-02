@@ -120,7 +120,7 @@ export default function DashboardOverview() {
         {/* ─────────────────────────────────────────────────────────────────────────────
             1. LIVING 2D ISOMETRIC ANIME COMPANY SIMULATION (Exact Reference Match)
         ───────────────────────────────────────────────────────────────────────────── */}
-        <section className="overflow-hidden rounded-[26px] border border-slate-800/90 bg-[#080f1d] shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
+        <section className="overflow-hidden rounded-[24px] border border-slate-800/90 bg-[#080f1d] shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
           <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 px-5 py-4 sm:px-6">
             <div>
               <div className="mb-1 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-sky-300/80">
@@ -128,16 +128,14 @@ export default function DashboardOverview() {
                 Operations floor
               </div>
               <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl">Company world</h1>
-              <p className="mt-1 text-xs text-slate-400 sm:text-sm">Live view of your ANCOS workspace</p>
+              <p className="mt-1 text-xs text-slate-400 sm:text-sm">Employees and activity are loaded from ANCOS records</p>
             </div>
             <div className="flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/70 px-3 py-2 text-xs text-slate-300">
               <span className={`h-2 w-2 rounded-full ${telemetry ? 'bg-emerald-400 shadow-[0_0_9px_#34d399]' : 'bg-amber-400'}`} />
               {telemetry ? 'Telemetry connected' : 'Waiting for telemetry'}
             </div>
           </div>
-          <div className="w-full">
           <IsometricCompanyWorld />
-          </div>
         </section>
 
         {/* ─────────────────────────────────────────────────────────────────────────────

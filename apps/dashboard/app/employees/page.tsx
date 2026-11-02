@@ -16,6 +16,7 @@ export default function EmployeesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [bossStatus, setBossStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [rosterLoadError, setRosterLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Objective submission state
@@ -39,12 +40,18 @@ export default function EmployeesPage() {
     try {
       setLoading(true);
       setError(null);
-      const [boss, emps] = await Promise.all([
-        fetchBossStatus().catch(() => ({ ceo_status: 'operational', active_mode: 'autonomous_orchestration', active_missions: 1 })),
-        fetchEmployees().catch(() => []),
+      const [boss, emps] = await Promise.allSettled([
+        fetchBossStatus(),
+        fetchEmployees(),
       ]);
-      setBossStatus(boss);
-      setEmployees(emps);
+      setBossStatus(boss.status === 'fulfilled' ? boss.value : null);
+      if (emps.status === 'fulfilled') {
+        setEmployees(emps.value);
+        setRosterLoadError(null);
+      } else {
+        setEmployees([]);
+        setRosterLoadError('Employee records could not be loaded from ANCOS.');
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to load employee roster');
     } finally {
@@ -131,11 +138,11 @@ export default function EmployeesPage() {
                 <h1 className="text-lg font-bold text-white tracking-tight">Boss AI Control Center</h1>
                 <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span>{bossStatus?.ceo_status || 'Operational'}</span>
+                  <span>{bossStatus?.ceo_status || 'Unavailable'}</span>
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Mode: <span className="text-sky-300 font-mono">{bossStatus?.active_mode || 'autonomous_orchestration'}</span> • Active Missions: <span className="text-emerald-400 font-mono font-bold">{bossStatus?.active_missions ?? 1}</span>
+                Mode: <span className="text-sky-300 font-mono">{bossStatus?.active_mode || 'Unavailable'}</span> • Active Missions: <span className="text-emerald-400 font-mono font-bold">{bossStatus?.active_missions ?? '—'}</span>
               </p>
             </div>
           </div>
@@ -202,11 +209,11 @@ export default function EmployeesPage() {
             <h2 className="text-base font-bold text-white flex items-center space-x-2">
               <span>Dynamic Workforce Roster</span>
               <span className="text-xs font-mono px-2 py-0.5 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">
-                {employees.length} Active Agents
+                {rosterLoadError ? 'Unavailable' : `${employees.length} Employees on Record`}
               </span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Isolated Docker Desktop Workstations with live TigerVNC / noVNC remote viewing.
+              Employee records and any workstations provisioned for them.
             </p>
           </div>
         </div>
@@ -215,9 +222,13 @@ export default function EmployeesPage() {
           <div className="bg-[#0a1120] border border-[#16233d] rounded-2xl p-12 text-center text-slate-400 text-xs">
             <span className="inline-block animate-spin mr-2">⏳</span> Loading company employee roster...
           </div>
+        ) : rosterLoadError ? (
+          <div className="bg-[#0a1120] border border-amber-800/60 rounded-2xl p-12 text-center text-amber-300 text-xs">
+            {rosterLoadError}
+          </div>
         ) : employees.length === 0 ? (
           <div className="bg-[#0a1120] border border-[#16233d] rounded-2xl p-12 text-center text-slate-400 text-xs">
-            No employees recruited yet. Submit an objective above to automatically bootstrap the initial engineering workforce!
+            No employee records are currently available. Employees will appear here after ANCOS persists their recruitment.
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">

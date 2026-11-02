@@ -3,10 +3,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   fetchEmployees,
-  fetchBossStatus,
   fetchProjects,
   fetchMeetings,
   fetchMessages,
+  fetchEmployeeTasks,
   triggerDailyStandup,
 } from '@/lib/api';
 import {
@@ -20,7 +20,6 @@ import {
 import {
   WORKSTATIONS,
   MEETING_SEATS,
-  ELEVATOR_SPAWN,
   GRID_SIZE_X,
   GRID_SIZE_Y,
   ROOM_ZONES,
@@ -55,11 +54,7 @@ import {
   returnCharactersFromMeeting,
   MeetingSession,
 } from './MeetingVisualizer';
-import {
-  syncEmployeesToCharacters,
-  generateCharacterTheme,
-  allocateWorkstation,
-} from './EmployeeCharacterManager';
+import { syncEmployeesToCharacters } from './EmployeeCharacterManager';
 
 export const IsometricCompanyWorld: React.FC = () => {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -91,23 +86,21 @@ export const IsometricCompanyWorld: React.FC = () => {
 
   // Floating HUD metrics
   const [showOverviewCard, setShowOverviewCard] = useState(true);
-  const [showDevPanel, setShowDevPanel] = useState(false);
-  const [developerToolsEnabled, setDeveloperToolsEnabled] = useState(false);
   const [metrics, setMetrics] = useState({
     employeeCount: null as number | null,
     activeProjects: null as number | null,
   });
 
   const isInitialSyncRef = useRef(true);
-  const hasSelectedInitialRef = useRef(false);
-  const lastProcessedMsgIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    setDeveloperToolsEnabled(
-      process.env.NODE_ENV === 'development' &&
-      new URLSearchParams(window.location.search).get('worldTools') === '1'
-    );
-  }, []);
+  const processedMessageIdsRef = useRef(new Set<string>());
+  const hasLoadedMessageHistoryRef = useRef(false);
+  const [recentMessages, setRecentMessages] = useState<Array<{
+    id: string;
+    sender: string;
+    recipient: string | null;
+    content: string;
+    createdAt: string;
+  }>>([]);
 
   // Keep references for animation loop without closure staleness
   const stateRef = useRef({
@@ -153,14 +146,11 @@ export const IsometricCompanyWorld: React.FC = () => {
   ]);
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // 1. BACKEND SYNC (Employees, Boss, Projects, Meetings, Communications)
+  // 1. BACKEND SYNC (Persisted employees, tasks, projects, meetings, communications)
   // ─────────────────────────────────────────────────────────────────────────────
   const syncBackendData = useCallback(async () => {
     try {
-      // 1. Fetch Boss Status
-      const bossData = await fetchBossStatus().catch(() => null);
-
-      // 2. Fetch Projects
+      // 1. Fetch persisted projects.
       const projects = await fetchProjects().catch(() => null);
       if (Array.isArray(projects)) {
         setMetrics((prev) => ({
@@ -169,7 +159,7 @@ export const IsometricCompanyWorld: React.FC = () => {
         }));
       }
 
-      // 3. Fetch Real Employees from DB
+      // 2. Fetch persisted employee records.
       const employees = await fetchEmployees().catch(() => null);
       if (Array.isArray(employees)) {
         // Real count of recruited employees
@@ -179,123 +169,114 @@ export const IsometricCompanyWorld: React.FC = () => {
         }));
       }
 
+      const employeesWithTasks = Array.isArray(employees)
+        ? await Promise.all(employees.map(async (employee: any) => {
+            const tasks = await fetchEmployeeTasks(employee.employee_id).catch(() => []);
+            const activeTasks = Array.isArray(tasks)
+              ? tasks.filter((task: any) => ['assigned', 'running', 'retrying', 'blocked'].includes(String(task.status).toLowerCase()))
+              : [];
+            const taskRank = (status: string) => {
+              const normalized = status.toLowerCase();
+              return normalized === 'running' ? 3 : normalized === 'retrying' ? 2 : normalized === 'assigned' ? 1 : 0;
+            };
+            activeTasks.sort((a: any, b: any) => taskRank(String(b.status)) - taskRank(String(a.status)));
+            const activeTask = activeTasks[0];
+            return {
+              ...employee,
+              current_task: activeTask?.title || null,
+              current_task_status: activeTask?.status || null,
+            };
+          }))
+        : null;
+
       setCharacters((prevChars) => {
-        const nextChars = new Map(prevChars);
-        const bossWs = workstations.find((w) => w.id === 'WS-BOSS');
-        const bossStatus = bossData?.ceo_status === 'operational' ? 'online' : 'unknown';
-        const bossTask = bossData?.active_mode
-          ? `Mode: ${bossData.active_mode}`
-          : 'No status reported by backend';
-
-        const boss = nextChars.get('ANC-BOSS');
-        if (boss) {
-          boss.status = bossStatus;
-          boss.currentTask = bossTask;
-          if (boss.path.length === 0 && boss.currentMeetingSeatIndex === null) {
-            boss.animState = bossStatus === 'online' ? 'thinking' : 'idle';
-          }
-        } else {
-          const bossTheme = generateCharacterTheme('boss', 'ANC-BOSS');
-          const bossChar: GameCharacter = {
-            id: 'ANC-BOSS',
-            name: 'Boss AI',
-            title: 'Executive Orchestrator (CEO)',
-            department: 'Executive Office',
-            role: 'boss',
-            status: bossStatus,
-            skills: [],
-            currentTask: bossTask,
-            vncPort: 0,
-            avatarInitials: 'B',
-            gridX: bossWs?.seatGridX ?? 19,
-            gridY: bossWs?.seatGridY ?? 3.5,
-            targetGridX: bossWs?.seatGridX ?? 19,
-            targetGridY: bossWs?.seatGridY ?? 3.5,
-            path: [],
-            speed: 2.2,
-            heading: 'down',
-            animState: bossStatus === 'online' ? 'thinking' : 'idle',
-            animTime: 0,
-            blinkTimer: 2.5,
-            isBlinking: false,
-            assignedDeskId: 'WS-BOSS',
-            currentMeetingSeatIndex: null,
-            theme: bossTheme,
-            speechText: null,
-            speechRemainingMs: 0,
-          };
-          if (bossWs) bossWs.occupantId = 'ANC-BOSS';
-          nextChars.set('ANC-BOSS', bossChar);
-        }
-
         if (Array.isArray(employees)) {
           const isBootstrap = isInitialSyncRef.current;
           isInitialSyncRef.current = false;
-          return syncEmployeesToCharacters(employees, nextChars, workstations, isBootstrap);
+          return syncEmployeesToCharacters(employeesWithTasks || [], prevChars, workstations, isBootstrap);
         }
-        return nextChars;
+        return prevChars;
       });
 
-      // 4. Fetch Comms Messages
-      const msgs = await fetchMessages(20).catch(() => []);
-      if (Array.isArray(msgs) && msgs.length > 0) {
-        const latestMsg = msgs[0];
-        const content =
-          latestMsg.payload?.content ||
-          (typeof latestMsg.payload === 'string' ? latestMsg.payload : '') ||
-          (latestMsg as any).content;
+      // 4. Fetch persisted communication records; only unseen records animate.
+      const msgs = await fetchMessages(20).catch(() => null);
+      if (Array.isArray(msgs)) {
+        const persisted = msgs.flatMap((message: any) => {
+          const content = typeof message.payload?.content === 'string'
+            ? message.payload.content
+            : typeof message.payload === 'string'
+              ? message.payload
+              : '';
+          if (!message.message_id || !message.sender || !content) return [];
+          return [{
+            id: message.message_id,
+            sender: message.sender,
+            recipient: message.recipient || null,
+            content,
+            createdAt: message.created_at,
+          }];
+        });
 
-        if (latestMsg && latestMsg.sender && content && latestMsg.message_id !== lastProcessedMsgIdRef.current) {
-          lastProcessedMsgIdRef.current = latestMsg.message_id;
+        const unseen = persisted.filter((message) => !processedMessageIdsRef.current.has(message.id));
+        for (const message of unseen) processedMessageIdsRef.current.add(message.id);
 
-          setCharacters((prev) => {
-            const next = new Map(prev);
-            const sender = next.get(latestMsg.sender);
-            const receiver = latestMsg.recipient ? next.get(latestMsg.recipient) : null;
-
-            if (sender) {
-              sender.speechText = content;
-              sender.speechRemainingMs = 6000;
-              sender.animState = 'speaking';
-            }
-            if (receiver) {
-              receiver.animState = 'listening';
-              receiver.speechText = `Message from ${sender ? sender.name : latestMsg.sender}: ${content.slice(0, 30)}...`;
-              receiver.speechRemainingMs = 4500;
+        if (!hasLoadedMessageHistoryRef.current) {
+          hasLoadedMessageHistoryRef.current = true;
+          setRecentMessages(persisted.slice(0, 8));
+        } else if (unseen.length > 0) {
+          setRecentMessages((previous) => [...unseen, ...previous].slice(0, 8));
+          const newPackets: CommsPacket[] = unseen.flatMap((message) => {
+            const sender = stateRef.current.characters.get(message.sender);
+            const recipient = message.recipient ? stateRef.current.characters.get(message.recipient) : null;
+            if (!sender || !recipient) return [];
+            return [{
+              id: `comms-${message.id}`,
+              fromCharId: sender.id,
+              toCharId: recipient.id,
+              fromScreenX: 0,
+              fromScreenY: 0,
+              toScreenX: 0,
+              toScreenY: 0,
+              progress: 0,
+              speed: 1.0,
+              textSnippet: message.content.slice(0, 24),
+              color: '#38bdf8',
+            }];
+          });
+          setCharacters((previous) => {
+            const next = new Map(previous);
+            for (const message of unseen) {
+              const sender = next.get(message.sender);
+              const recipient = message.recipient ? next.get(message.recipient) : null;
+              if (sender) {
+                sender.speechText = message.content;
+                sender.speechRemainingMs = 6000;
+                sender.animState = 'speaking';
+              }
+              if (recipient) {
+                recipient.speechText = message.content;
+                recipient.speechRemainingMs = 6000;
+                recipient.animState = 'listening';
+              }
             }
             return next;
           });
-
-          // Dispatch visual laser data packet between sender and receiver
-          if (latestMsg.sender && latestMsg.recipient) {
-            setCommsPackets((prev) => [
-              ...prev,
-              {
-                id: `comms-${latestMsg.message_id}-${Date.now()}`,
-                fromCharId: latestMsg.sender,
-                toCharId: latestMsg.recipient,
-                fromScreenX: 0,
-                fromScreenY: 0,
-                toScreenX: 0,
-                toScreenY: 0,
-                progress: 0,
-                speed: 1.0,
-                textSnippet: content.slice(0, 24),
-                color: '#38bdf8',
-              },
-            ]);
+          if (newPackets.length > 0) {
+            setCommsPackets((previousPackets) => [...previousPackets, ...newPackets]);
           }
         }
       }
 
       // 5. Fetch Real Meetings
-      const meetings = await fetchMeetings(10).catch(() => []);
+      const meetings = await fetchMeetings(10).catch(() => null);
       if (Array.isArray(meetings)) {
         setBackendMeetings(meetings);
         const inProgress = meetings.find((m: any) => m.status === 'in_progress');
         if (inProgress) {
           if (!stateRef.current.activeMeeting || stateRef.current.activeMeeting.id !== inProgress.meeting_id) {
-            const pIds = Array.isArray(inProgress.participants) ? inProgress.participants : [];
+            const pIds = Array.isArray(inProgress.participants)
+              ? inProgress.participants.filter((id: string) => stateRef.current.characters.has(id))
+              : [];
 
             const session = callCharactersToMeeting(
               inProgress.meeting_id,
@@ -306,10 +287,7 @@ export const IsometricCompanyWorld: React.FC = () => {
             );
             setActiveMeeting(session);
           }
-        } else if (
-          stateRef.current.activeMeeting &&
-          !stateRef.current.activeMeeting.id.startsWith('MEET-')
-        ) {
+        } else if (stateRef.current.activeMeeting) {
           returnCharactersFromMeeting(
             stateRef.current.activeMeeting,
             stateRef.current.characters,
@@ -330,14 +308,6 @@ export const IsometricCompanyWorld: React.FC = () => {
     const interval = setInterval(syncBackendData, 4000);
     return () => clearInterval(interval);
   }, [syncBackendData]);
-
-  // Select Boss AI by default once on initial load
-  useEffect(() => {
-    if (!hasSelectedInitialRef.current && characters.has('ANC-BOSS')) {
-      hasSelectedInitialRef.current = true;
-      setSelectedCharId('ANC-BOSS');
-    }
-  }, [characters]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // 3. MASTER CANVAS RENDER LOOP (Layered top-down office world)
@@ -675,250 +645,17 @@ export const IsometricCompanyWorld: React.FC = () => {
     }));
   };
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 5. DEV VERIFICATION SUITE CONTROLS (Requirement #9)
-  // Demonstrates all 7 required simulation behaviors in memory
-  // ─────────────────────────────────────────────────────────────────────────────
-  const test1_walkBetweenWorkstations = () => {
-    const char = Array.from(characters.values())[0];
-    if (!char) return;
-
-    // Find destination desk different from assigned desk
-    const destWs = workstations.find((w) => w.id !== char.assignedDeskId) || workstations[1];
-    if (destWs) {
-      char.path = findPath(
-        { x: char.gridX, y: char.gridY },
-        { x: destWs.approachGridX, y: destWs.approachGridY }
-      );
-      char.speed = 2.8;
-      char.animState = 'walking';
-      char.speechText = `Moving over to ${destWs.name} for code review.`;
-      char.speechRemainingMs = 5000;
-      setSelectedCharId(char.id);
-    }
-  };
-
-  const test2_walkToWorking = () => {
-    const char = Array.from(characters.values())[0];
-    if (!char || !char.assignedDeskId) return;
-
-    const ws = workstations.find((w) => w.id === char.assignedDeskId);
-    if (ws) {
-      char.path = findPath(
-        { x: char.gridX, y: char.gridY },
-        { x: ws.seatGridX, y: ws.seatGridY }
-      );
-      char.speed = 3.8;
-      char.animState = 'walking';
-      char.speechText = 'Returning to desk to resume compilation!';
-      char.speechRemainingMs = 5000;
-      setSelectedCharId(char.id);
-    }
-  };
-
-  const test3_communicate = () => {
-    let sender: GameCharacter;
-    let receiver: GameCharacter;
-
-    const charList = Array.from(characters.values());
-    if (charList.length < 2) {
-      // Spawn a temporary test engineer so communication can immediately proceed
-      const newId = `ANC-TEST-${Date.now().toString().slice(-4)}`;
-      const newName = `Engineer ${newId.slice(-4)}`;
-      const role = 'swe';
-      const ws = allocateWorkstation(role, workstations);
-      if (ws) ws.occupantId = newId;
-
-      const newChar: GameCharacter = {
-        id: newId,
-        name: newName,
-        title: 'Full Stack AI Engineer',
-        department: 'Engineering',
-        role,
-        status: 'online',
-        skills: ['Python', 'FastAPI', 'Rust', 'Docker'],
-        currentTask: 'Autonomous agent integration',
-        vncPort: 6089,
-        avatarInitials: newName.slice(0, 2).toUpperCase(),
-        gridX: ELEVATOR_SPAWN.x,
-        gridY: ELEVATOR_SPAWN.y,
-        targetGridX: ws ? ws.seatGridX : ELEVATOR_SPAWN.x,
-        targetGridY: ws ? ws.seatGridY : ELEVATOR_SPAWN.y,
-        path: ws ? findPath(ELEVATOR_SPAWN, { x: ws.seatGridX, y: ws.seatGridY }) : [],
-        speed: 2.5,
-        heading: 'right',
-        animState: ws ? 'walking' : 'idle',
-        animTime: 0,
-        blinkTimer: 3,
-        isBlinking: false,
-        assignedDeskId: ws ? ws.id : null,
-        currentMeetingSeatIndex: null,
-        theme: generateCharacterTheme(role, newId),
-        speechText: null,
-        speechRemainingMs: 0,
-        isTestCharacter: true,
-      };
-
-      characters.set(newId, newChar);
-      sender = charList[0];
-      receiver = newChar;
-    } else {
-      sender = charList[0];
-      receiver = charList[1];
-    }
-
-    sender.speechText = `Hey ${receiver.name}, API verification tests just passed!`;
-    sender.speechRemainingMs = 6000;
-    sender.animState = 'speaking';
-
-    receiver.speechText = `Awesome ${sender.name}! Deploying to staging.`;
-    receiver.speechRemainingMs = 6000;
-    receiver.animState = 'listening';
-
-    // Dispatch visible laser comms data packet
-    setCommsPackets((prev) => [
-      ...prev,
-      {
-        id: `comms-${Date.now()}`,
-        fromCharId: sender.id,
-        toCharId: receiver.id,
-        fromScreenX: 0,
-        fromScreenY: 0,
-        toScreenX: 0,
-        toScreenY: 0,
-        progress: 0,
-        speed: 0.35,
-        textSnippet: 'API tests passed',
-        color: '#38bdf8',
-      },
-    ]);
-
-    setCharacters(new Map(characters));
-    setSelectedCharId(sender.id);
-  };
-
-  const test4_callBoardroomMeeting = () => {
-    const chars = stateRef.current.characters;
-    const participantIds = Array.from(chars.keys()).slice(0, 5);
-    const session = callCharactersToMeeting(
-      `MEET-${Date.now()}`,
-      'Milestone Alignment & QA Standup',
-      participantIds,
-      chars,
-      meetingSeats
-    );
-    // Set brisk transit speed to reach conference seats promptly
-    for (const id of participantIds) {
-      const c = chars.get(id);
-      if (c) c.speed = 5.5;
-    }
-    setActiveMeeting(session);
-    setIsBoardroomSelected(true);
-    setCharacters(new Map(chars));
-  };
-
-  const test5_concludeMeeting = () => {
-    if (activeMeeting) {
-      const chars = stateRef.current.characters;
-      returnCharactersFromMeeting(activeMeeting, chars, workstations, meetingSeats);
-      for (const id of activeMeeting.participants) {
-        const c = chars.get(id);
-        if (c) c.speed = 4.5;
-      }
-      setActiveMeeting(null);
-      setIsBoardroomSelected(false);
-      setCharacters(new Map(chars));
-    }
-  };
-
-  const test6_recruitEmployee = (customName?: string) => {
-    const newId = `ANC-TEST-${Date.now().toString().slice(-4)}`;
-    const newName = customName || `Engineer ${newId.slice(-4)}`;
-    const role = 'swe';
-    const ws = allocateWorkstation(role, workstations);
-
-    if (ws) ws.occupantId = newId;
-
-    const newChar: GameCharacter = {
-      id: newId,
-      name: newName,
-      title: 'Full Stack AI Engineer',
-      department: 'Engineering',
-      role,
-      status: 'online',
-      skills: ['Python', 'FastAPI', 'Rust', 'Docker'],
-      currentTask: 'Autonomous agent integration',
-      vncPort: 6089,
-      avatarInitials: newName.slice(0, 2).toUpperCase(),
-      gridX: ELEVATOR_SPAWN.x,
-      gridY: ELEVATOR_SPAWN.y,
-      targetGridX: ws ? ws.seatGridX : ELEVATOR_SPAWN.x,
-      targetGridY: ws ? ws.seatGridY : ELEVATOR_SPAWN.y,
-      path: ws ? findPath(ELEVATOR_SPAWN, { x: ws.seatGridX, y: ws.seatGridY }) : [],
-      speed: 2.5,
-      heading: 'right',
-      animState: ws ? 'walking' : 'idle',
-      animTime: 0,
-      blinkTimer: 3,
-      isBlinking: false,
-      assignedDeskId: ws ? ws.id : null,
-      currentMeetingSeatIndex: null,
-      theme: generateCharacterTheme(role, newId),
-      speechText: `Just arrived at ANCOS HQ! Heading to my workstation.`,
-      speechRemainingMs: 5000,
-      isTestCharacter: true,
-    };
-
-    setCharacters((prev) => new Map(prev).set(newId, newChar));
-    setSelectedCharId(newId);
-    setSelectedWsId(null);
-    setSelectedDeptId(null);
-    setIsBoardroomSelected(false);
-  };
-
-  const test7_toggleStatus = (state: 'celebrating' | 'warning') => {
-    const chars = stateRef.current.characters;
-    const char = chars.get(selectedCharId || '') || Array.from(chars.values())[0];
-    if (char) {
-      char.animState = state;
-      char.speechText =
-        state === 'celebrating'
-          ? 'Milestone Complete! 100% tests passed!'
-          : 'Warning: High memory utilization detected!';
-      char.speechRemainingMs = 4500;
-      setSelectedCharId(char.id);
-      setCharacters(new Map(chars));
-    }
-  };
-
-  const test8_inspectWorkstation = () => {
-    setSelectedWsId('WS-ENG-01');
-    setSelectedCharId(null);
-    setSelectedDeptId(null);
-    setIsBoardroomSelected(false);
-  };
-
-  const test9_inspectBoardroom = () => {
-    setIsBoardroomSelected(true);
-    setSelectedCharId(null);
-    setSelectedWsId(null);
-    setSelectedDeptId(null);
-  };
-
-  const test10_inspectDepartment = () => {
-    setSelectedDeptId('research_lab');
-    setIsBoardroomSelected(false);
-    setSelectedCharId(null);
-    setSelectedWsId(null);
-  };
-
   // Resolve target objects for inspector
   const selectedCharacter = characters.get(selectedCharId || '');
   const selectedWorkstation = workstations.find((w) => w.id === selectedWsId);
+  const selectedWorkstationOccupant = selectedWorkstation?.occupantId
+    ? characters.get(selectedWorkstation.occupantId)
+    : undefined;
   const selectedDept = ROOM_ZONES.find((z) => z.id === selectedDeptId);
   const deptWorkstations = selectedDept ? workstations.filter((w) => w.dept === selectedDept.dept) : [];
+  const deptWorkstationOccupants = new Set(deptWorkstations.map((ws) => ws.occupantId).filter(Boolean));
   const deptEmployees = selectedDept
-    ? Array.from(characters.values()).filter((c) => c.department.toLowerCase().includes(selectedDept.name.toLowerCase().split(' ')[0]))
+    ? Array.from(characters.values()).filter((character) => deptWorkstationOccupants.has(character.id))
     : [];
 
   return (
@@ -965,6 +702,27 @@ export const IsometricCompanyWorld: React.FC = () => {
                 </span>
               </div>
 
+            </div>
+            <div className="mt-4 border-t border-[#132038] pt-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">Persisted messages</span>
+                <span className="font-mono text-[10px] text-slate-500">{recentMessages.length}</span>
+              </div>
+              {recentMessages.length ? (
+                <div className="max-h-36 space-y-2 overflow-y-auto pr-1">
+                  {recentMessages.slice(0, 4).map((message) => (
+                    <div key={message.id} className="rounded-lg border border-[#162747] bg-[#0c1629] p-2">
+                      <div className="mb-1 flex items-center gap-1 text-[9px] text-cyan-300">
+                        <span className="truncate">{characters.get(message.sender)?.name || message.sender}</span>
+                        {message.recipient && <><span className="text-slate-500">→</span><span className="truncate">{characters.get(message.recipient)?.name || message.recipient}</span></>}
+                      </div>
+                      <p className="break-words text-[10px] leading-4 text-slate-200">{message.content}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="rounded-lg border border-dashed border-slate-700 px-2 py-3 text-center text-[10px] text-slate-500">No persisted messages.</p>
+              )}
             </div>
           </div>
         </div>
@@ -1048,30 +806,37 @@ export const IsometricCompanyWorld: React.FC = () => {
             <div className="text-xs text-slate-200">{selectedCharacter.currentTask}</div>
           </div>
 
-          <div className="mb-3">
-            <div className="text-[11px] font-bold text-slate-300 mb-1.5">Verified Skills:</div>
+            <div className="mb-3">
+            <div className="text-[11px] font-bold text-slate-300 mb-1.5">Skills on record:</div>
             <div className="grid grid-cols-2 gap-1.5">
               {selectedCharacter.skills.slice(0, 4).map((skill, idx) => (
                 <div
                   key={idx}
                   className="flex items-center space-x-1.5 text-[11px] font-medium text-slate-200 bg-[#0c1629] border border-[#162747] px-2 py-1 rounded-lg truncate"
                 >
-                  <span className="text-emerald-400 text-xs">✓</span>
+                  <span className="text-slate-500 text-xs">•</span>
                   <span className="truncate">{skill}</span>
                 </div>
               ))}
             </div>
+            {selectedCharacter.skills.length === 0 && <p className="text-[10px] text-slate-500">No skills recorded.</p>}
           </div>
 
-          <a
-            href={selectedCharacter.desktopUrl || `http://localhost:${selectedCharacter.vncPort}/vnc.html?autoconnect=true`}
-            target="_blank"
-            rel="noreferrer"
-            className="w-full py-2 bg-gradient-to-r from-blue-600 to-sky-600 hover:from-blue-500 hover:to-sky-500 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-[0_0_15px_rgba(14,165,233,0.35)] transition-all cursor-pointer"
-          >
-            <span>Launch Workstation VNC</span>
-            <span>↗</span>
-          </a>
+          {selectedCharacter.desktopUrl ? (
+            <a
+              href={selectedCharacter.desktopUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="w-full py-2 bg-gradient-to-r from-blue-600 to-sky-600 hover:from-blue-500 hover:to-sky-500 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-[0_0_15px_rgba(14,165,233,0.35)] transition-all cursor-pointer"
+            >
+              <span>Open recorded workstation</span>
+              <span>↗</span>
+            </a>
+          ) : (
+            <div className="w-full rounded-xl border border-slate-700 bg-slate-900/70 py-2 text-center text-xs text-slate-400">
+              No active workstation URL recorded
+            </div>
+          )}
         </div>
       )}
 
@@ -1097,17 +862,11 @@ export const IsometricCompanyWorld: React.FC = () => {
           </div>
 
           <div className="mb-3 flex items-center justify-between bg-[#0c1629] border border-[#162747] p-2.5 rounded-xl text-xs">
-            <span className="text-slate-300 font-semibold">Workstation Status:</span>
-            {selectedWorkstation.occupantId ? (
-              <span className="text-emerald-400 font-mono font-bold flex items-center space-x-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                <span>ACTIVE EXECUTION</span>
-              </span>
+            <span className="text-slate-300 font-semibold">Recorded employee:</span>
+            {selectedWorkstationOccupant ? (
+              <span className="font-mono font-bold text-emerald-300">{selectedWorkstationOccupant.status}</span>
             ) : (
-              <span className="text-amber-400 font-mono font-bold flex items-center space-x-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                <span>STANDBY / VACANT</span>
-              </span>
+              <span className="font-mono font-bold text-slate-400">Vacant</span>
             )}
           </div>
 
@@ -1118,15 +877,15 @@ export const IsometricCompanyWorld: React.FC = () => {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">Display Setup:</span>
-              <span className="text-white">{selectedWorkstation.monitorCount}× Neural Code Monitors</span>
+              <span className="text-white">{selectedWorkstation.monitorCount} displays</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400">Current Occupant:</span>
               <span className="text-cyan-300">{selectedWorkstation.occupantId || 'Unassigned'}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-400">Execution Plane:</span>
-              <span className="text-emerald-400">Isolated Docker Sandbox</span>
+              <span className="text-slate-400">Character state:</span>
+              <span className="text-white">{selectedWorkstationOccupant?.animState || '—'}</span>
             </div>
           </div>
 
@@ -1139,7 +898,7 @@ export const IsometricCompanyWorld: React.FC = () => {
             </button>
           ) : (
             <div className="text-[11px] text-center text-slate-400 bg-slate-900/60 py-2 rounded-xl border border-slate-800">
-              Pod vacant and ready for recruitment
+              No persisted employee is assigned here
             </div>
           )}
         </div>
@@ -1298,23 +1057,9 @@ export const IsometricCompanyWorld: React.FC = () => {
       />
 
       {/* ─────────────────────────────────────────────────────────────────────────────
-          4. BOTTOM CONTROLS & DEV VERIFICATION SUITE TOGGLE
+          4. BOTTOM WORLD CONTROLS
       ───────────────────────────────────────────────────────────────────────────── */}
       <div className="absolute bottom-14 left-4 z-20 flex items-center space-x-2 pointer-events-auto">
-        {developerToolsEnabled && (
-          <button
-            onClick={() => setShowDevPanel((prev) => !prev)}
-            className={`px-3 py-1.5 rounded-md border-2 text-xs font-bold font-mono transition-all flex items-center space-x-1.5 shadow-lg ${
-              showDevPanel
-                ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-                : 'bg-[#34383b]/95 text-[#e0d4bc] border-[#716958] hover:bg-[#484d4e]'
-            }`}
-          >
-            <span>🧪</span>
-            <span>Dev Simulation Suite</span>
-          </button>
-        )}
-
         {!showOverviewCard && (
           <button
             onClick={() => setShowOverviewCard(true)}
@@ -1361,115 +1106,6 @@ export const IsometricCompanyWorld: React.FC = () => {
         </div>
       </div>
 
-      {/* ─────────────────────────────────────────────────────────────────────────────
-          5. DEV VERIFICATION SUITE PANEL (Requirement #9)
-          Provides interactive buttons for testing the 7 required behaviors
-      ───────────────────────────────────────────────────────────────────────────── */}
-      {showDevPanel && developerToolsEnabled && (
-        <div className="absolute bottom-16 left-4 z-30 w-80 bg-[#091122]/95 backdrop-blur-md border border-amber-500/40 rounded-2xl p-4 shadow-2xl text-slate-200 pointer-events-auto animate-in fade-in duration-150">
-          <div className="flex items-center justify-between border-b border-[#162540] pb-2 mb-3">
-            <span className="text-xs font-bold text-amber-400 flex items-center space-x-1.5">
-              <span>⚡</span>
-              <span>Verification Test Harness</span>
-            </span>
-            <button
-              onClick={() => setShowDevPanel(false)}
-              className="text-slate-400 hover:text-white text-xs px-1"
-            >
-              ✕
-            </button>
-          </div>
-
-          <div className="space-y-2 text-xs">
-            <button
-              onClick={test1_walkBetweenWorkstations}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-sky-950 border border-sky-500/30 text-sky-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>1. Walk Between Workstations</span>
-              <span>🚶</span>
-            </button>
-
-            <button
-              onClick={test2_walkToWorking}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-emerald-950 border border-emerald-500/30 text-emerald-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>2. Walk & Transition to Work</span>
-              <span>💻</span>
-            </button>
-
-            <button
-              onClick={test3_communicate}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-blue-950 border border-blue-500/30 text-blue-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>3. Two Characters Communicate</span>
-              <span>💬</span>
-            </button>
-
-            <button
-              onClick={test4_callBoardroomMeeting}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-purple-950 border border-purple-500/30 text-purple-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>4. Enter Boardroom Meeting</span>
-              <span>🤝</span>
-            </button>
-
-            <button
-              onClick={test5_concludeMeeting}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-fuchsia-950 border border-fuchsia-500/30 text-fuchsia-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>5. Conclude & Return to Desks</span>
-              <span>↩️</span>
-            </button>
-
-            <button
-              onClick={() => test6_recruitEmployee()}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-cyan-950 border border-cyan-500/30 text-cyan-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>6. Dynamically Recruit Employee</span>
-              <span>✨</span>
-            </button>
-
-            <button
-              onClick={test8_inspectWorkstation}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-teal-950 border border-teal-500/30 text-teal-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>7. Inspect Workstation</span>
-              <span>🖥️</span>
-            </button>
-
-            <button
-              onClick={test9_inspectBoardroom}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-fuchsia-950 border border-fuchsia-500/30 text-fuchsia-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>8. Inspect Boardroom Suite</span>
-              <span>🏛️</span>
-            </button>
-
-            <button
-              onClick={test10_inspectDepartment}
-              className="w-full text-left px-2.5 py-1.5 rounded-lg bg-[#0e1c36] hover:bg-pink-950 border border-pink-500/30 text-pink-200 font-mono text-[11px] flex items-center justify-between"
-            >
-              <span>9. Inspect Research Lab</span>
-              <span>🔬</span>
-            </button>
-
-            <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                onClick={() => test7_toggleStatus('celebrating')}
-                className="px-2 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-500/40 text-emerald-300 font-mono text-[10px] text-center"
-              >
-                🎉 Celebrate
-              </button>
-              <button
-                onClick={() => test7_toggleStatus('warning')}
-                className="px-2 py-1.5 rounded-lg bg-amber-950/60 hover:bg-amber-900 border border-amber-500/40 text-amber-300 font-mono text-[10px] text-center"
-              >
-                ⚠️ Warning
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

@@ -95,7 +95,7 @@ export interface GameCharacter {
   status: 'online' | 'busy' | 'working' | 'offline' | 'idle' | 'suspended' | 'terminated' | 'unknown';
   skills: string[];
   currentTask: string;
-  vncPort: number;
+  currentTaskStatus?: string | null;
   desktopUrl?: string | null;
   avatarInitials: string;
 
@@ -125,8 +125,6 @@ export interface GameCharacter {
   speechText: string | null;
   speechRemainingMs: number;
 
-  // Metadata
-  isTestCharacter?: boolean;
 }
 
 export interface CommsPacket {

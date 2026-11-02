@@ -172,15 +172,20 @@ export function syncEmployeesToCharacters(
       existing.title = emp.title;
       existing.department = emp.department;
       existing.status = (emp.status as GameCharacter['status']) || 'unknown';
+      const taskStatus = String((emp as any).current_task_status || '').toLowerCase();
+      existing.currentTaskStatus = taskStatus || null;
       existing.currentTask = typeof (emp as any).current_task === 'string'
         ? (emp as any).current_task
-        : 'No task reported by backend';
+        : 'No active task';
       existing.skills = Array.isArray(emp.skills)
         ? emp.skills.map((s) => (typeof s === 'string' ? s : s.name))
         : existing.skills;
       existing.desktopUrl = emp.desktop_url;
       if (existing.path.length === 0 && existing.currentMeetingSeatIndex === null) {
-        if (emp.status === 'working') existing.animState = 'working';
+        if (taskStatus === 'running') existing.animState = 'working';
+        else if (taskStatus === 'assigned' || taskStatus === 'retrying') existing.animState = 'sitting';
+        else if (taskStatus === 'blocked') existing.animState = 'warning';
+        else if (emp.status === 'working') existing.animState = 'working';
         else if (emp.status === 'idle' || emp.status === 'suspended' || emp.status === 'terminated') {
           existing.animState = 'idle';
         }
@@ -201,9 +206,10 @@ export function syncEmployeesToCharacters(
         ? emp.skills.map((s) => (typeof s === 'string' ? s : s.name))
         : [];
       const employeeStatus = (emp.status as GameCharacter['status']) || 'unknown';
+      const taskStatus = String((emp as any).current_task_status || '').toLowerCase();
       const currentTask = typeof (emp as any).current_task === 'string'
         ? (emp as any).current_task
-        : 'No task reported by backend';
+        : 'No active task';
 
       // Bootstrap at the assigned desk; later recruits walk in from the entry.
       const startAtDesk = isInitialBootstrap && ws;
@@ -219,7 +225,7 @@ export function syncEmployeesToCharacters(
         status: employeeStatus,
         skills: initialSkills,
         currentTask,
-        vncPort: 6080 + updatedMap.size,
+        currentTaskStatus: taskStatus || null,
         desktopUrl: emp.desktop_url,
         avatarInitials: emp.name
           .split(' ')
@@ -237,7 +243,13 @@ export function syncEmployeesToCharacters(
         speed: 2.2, // grid units / sec
         heading: startAtDesk ? 'down' : 'right',
         animState: startAtDesk
-          ? (employeeStatus === 'working' ? 'working' : 'idle')
+          ? (taskStatus === 'running' || employeeStatus === 'working'
+            ? 'working'
+            : taskStatus === 'assigned' || taskStatus === 'retrying'
+              ? 'sitting'
+              : taskStatus === 'blocked'
+                ? 'warning'
+                : 'idle')
           : (ws ? 'walking' : 'idle'),
         animTime: Math.random() * 5,
         blinkTimer: 2.0,
@@ -253,14 +265,9 @@ export function syncEmployeesToCharacters(
     }
   }
 
-  // Remove employees that no longer exist in backend (preserve test characters and Boss AI)
+  // Keep the rendered workforce identical to persisted backend employee records.
   for (const [id, char] of updatedMap.entries()) {
-    if (
-      !activeIds.has(id) &&
-      !char.isTestCharacter &&
-      char.id !== 'ANC-BOSS' &&
-      char.role !== 'boss'
-    ) {
+    if (!activeIds.has(id)) {
       if (char.assignedDeskId) {
         const ws = workstations.find((w) => w.id === char.assignedDeskId);
         if (ws) ws.occupantId = null;

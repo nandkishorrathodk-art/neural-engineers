@@ -8,7 +8,11 @@ function sameOrigin(request: NextRequest): boolean {
   const origin = request.headers.get('origin');
   if (!origin) return true;
   try {
-    return new URL(origin).origin === request.nextUrl.origin;
+    const host = request.headers.get('host');
+    const forwardedProtocol = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+    const protocol = forwardedProtocol || request.nextUrl.protocol.replace(':', '');
+    const requestOrigin = host ? `${protocol}://${host}` : request.nextUrl.origin;
+    return new URL(origin).origin === new URL(requestOrigin).origin;
   } catch {
     return false;
   }

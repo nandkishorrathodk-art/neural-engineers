@@ -4,7 +4,11 @@ export async function POST(request: NextRequest) {
   const origin = request.headers.get('origin');
   if (origin) {
     try {
-      if (new URL(origin).origin !== request.nextUrl.origin) {
+      const host = request.headers.get('host');
+      const forwardedProtocol = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+      const protocol = forwardedProtocol || request.nextUrl.protocol.replace(':', '');
+      const requestOrigin = host ? `${protocol}://${host}` : request.nextUrl.origin;
+      if (new URL(origin).origin !== new URL(requestOrigin).origin) {
         return NextResponse.json({ detail: 'Cross-origin sign-out is not allowed.' }, { status: 403 });
       }
     } catch {

@@ -52,7 +52,7 @@ export function callCharactersToMeeting(
     title,
     phase: 'assembling',
     participants: participantIds,
-    currentSpeakerId: participantIds[0] || null,
+    currentSpeakerId: null,
     startedAt: Date.now(),
   };
 }
