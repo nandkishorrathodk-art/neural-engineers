@@ -146,5 +146,6 @@ async def fail_task_attempt(
         "task_id": task_id,
         "status": "retrying" if failure["retrying"] else "failed",
         "retry_count": failure["retry_count"],
+        "retry_after_seconds": failure["retry_after_seconds"],
         "fencing_token": request.fencing_token,
     }

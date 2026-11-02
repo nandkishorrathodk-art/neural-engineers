@@ -224,10 +224,12 @@ async def test_worker_failure_retries_only_retryable_errors_within_budget(async_
     await async_session.commit()
 
     retry = await task_repo.fail_task_attempt(task.task_id, "worker-test", 1, "connection timeout")
-    assert retry == {"retrying": True, "retry_count": 1}
+    assert retry == {"retrying": True, "retry_count": 1, "retry_after_seconds": 1}
     retried_task = await task_repo.get_by_task_id(task.task_id)
     assert retried_task.status == TaskStatus.ASSIGNED
     assert retried_task.fencing_token == 2
+    first_attempt = await async_session.get(TaskAttempt, attempt.id)
+    assert first_attempt.lease_expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
 
     next_attempt = TaskAttempt(
         task_id=task.id,
@@ -244,6 +246,6 @@ async def test_worker_failure_retries_only_retryable_errors_within_budget(async_
     await async_session.commit()
 
     exhausted = await task_repo.fail_task_attempt(task.task_id, "worker-test", 3, "connection timeout")
-    assert exhausted == {"retrying": False, "retry_count": 1}
+    assert exhausted == {"retrying": False, "retry_count": 1, "retry_after_seconds": 0}
     final_task = await task_repo.get_by_task_id(task.task_id)
     assert final_task.status == TaskStatus.FAILED

@@ -163,6 +163,9 @@ class TaskRepository:
             if latest_attempt and latest_attempt.status == "submitted":
                 # A submitted attempt waits for independent verification.
                 continue
+            if latest_attempt and latest_attempt.status == "failed" and latest_attempt.lease_expires_at > now:
+                # Persisted retry backoff survives worker process restarts.
+                continue
             if latest_attempt and latest_attempt.status == "waiting" and latest_attempt.lease_expires_at > now:
                 continue
             employee = await self.session.scalar(
@@ -353,6 +356,7 @@ class TaskRepository:
         classification = classify_failure(error_message)
         should_retry = classification.is_retryable and task.retry_count < task.max_retries
         retry_count = task.retry_count + (1 if should_retry else 0)
+        retry_delay_seconds = min(2 ** task.retry_count, 60) if should_retry else 0
         async with get_session_lock(self.session):
             attempt_update = await self.session.execute(
                 update(TaskAttempt)
@@ -367,7 +371,7 @@ class TaskRepository:
                     status="failed",
                     error_message=error_message[:4000],
                     finished_at=now,
-                    lease_expires_at=now,
+                    lease_expires_at=now + timedelta(seconds=retry_delay_seconds),
                 )
             )
             if attempt_update.rowcount != 1:
@@ -388,7 +392,11 @@ class TaskRepository:
                 await self.session.rollback()
                 return None
             await self.session.commit()
-        return {"retrying": should_retry, "retry_count": retry_count}
+        return {
+            "retrying": should_retry,
+            "retry_count": retry_count,
+            "retry_after_seconds": retry_delay_seconds,
+        }
 
     async def list_pending_verification(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = await self.session.execute(
