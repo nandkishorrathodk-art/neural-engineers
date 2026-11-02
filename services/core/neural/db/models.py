@@ -25,6 +25,7 @@ from neural.constants import (
     ApprovalStatus,
     ContainerStatus,
     EmployeeStatus,
+    ExecutionMode,
     MeetingStatus,
     MeetingType,
     MemoryCategory,
@@ -186,6 +187,11 @@ class Task(Base):
     objective: Mapped[str] = mapped_column(Text, nullable=False)
     scope: Mapped[str] = mapped_column(Text, nullable=False)
     acceptance_criteria: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_mode: Mapped[ExecutionMode] = mapped_column(
+        SQLEnum(ExecutionMode, values_callable=lambda enum: [item.value for item in enum]),
+        default=ExecutionMode.TERMINAL,
+        nullable=False,
+    )
     required_capabilities: Mapped[list[str]] = mapped_column(JSON, default=list)
     priority: Mapped[TaskPriority] = mapped_column(
         SQLEnum(TaskPriority), default=TaskPriority.MEDIUM, nullable=False

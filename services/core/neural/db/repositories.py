@@ -217,6 +217,7 @@ class TaskRepository:
                 "objective": task.objective,
                 "scope": task.scope,
                 "acceptance_criteria": task.acceptance_criteria,
+                "execution_mode": task.execution_mode.value,
                 "attempt_id": attempt.id,
                 "attempt_number": attempt_number,
                 "fencing_token": new_fencing_token,

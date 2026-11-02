@@ -4,6 +4,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from neural.constants import ExecutionMode
 from neural.exceptions import ModelProviderError
 from neural.llm.gateway import LLMGateway
 
@@ -15,6 +16,7 @@ class PlannedTask(BaseModel):
     scope: str = Field(min_length=1, max_length=2000)
     role_required: str = Field(min_length=1, max_length=100)
     skills_required: list[str] = Field(min_length=1, max_length=12)
+    execution_mode: ExecutionMode = ExecutionMode.TERMINAL
     dependencies: list[str] = Field(default_factory=list, max_length=20)
     acceptance_criteria: str = Field(min_length=8, max_length=2000)
     subtasks: list[str] = Field(default_factory=list, max_length=12)
@@ -63,6 +65,7 @@ class TaskPlanner:
                 "Create a practical software project plan for this human objective. "
                 "Use 2-6 phases and concrete tasks an engineering team can deliver. "
                 "Every task needs measurable acceptance criteria and required skills. "
+                "Every task must declare its execution_mode as one of gui, terminal, hybrid, or authorized_tools. "
                 "Dependencies must reference task_id values in this plan, point only "
                 "to earlier tasks, and form an acyclic graph. Do not claim work is "
                 "already completed.\n\nOBJECTIVE:\n" + objective
@@ -102,6 +105,7 @@ class TaskPlanner:
                     "scope": task.scope,
                     "role_required": task.role_required,
                     "skills_required": task.skills_required,
+                    "execution_mode": task.execution_mode,
                     "dependencies": task.dependencies,
                     "acceptance_criteria": task.acceptance_criteria,
                     "subtasks": task.subtasks,
@@ -242,6 +246,7 @@ class TaskPlanner:
                             "title": "Domain Modeling & Database Schema Design",
                             "role_required": "senior-backend-engineer",
                             "skills_required": ["System Design", "PostgreSQL"],
+                            "execution_mode": "terminal",
                             "dependencies": [],
                             "acceptance_criteria": "Fully normalized schema with migrations and foreign key integrity.",
                             "subtasks": [
@@ -255,6 +260,7 @@ class TaskPlanner:
                             "title": "API Gateway & Security Specification",
                             "role_required": "senior-backend-engineer",
                             "skills_required": ["FastAPI", "REST APIs"],
+                            "execution_mode": "terminal",
                             "dependencies": [],
                             "acceptance_criteria": "FastAPI routes defined with OpenAPI spec and JWT auth contracts.",
                             "subtasks": [
@@ -274,6 +280,7 @@ class TaskPlanner:
                             "title": "Core Business Logic Services",
                             "role_required": "senior-backend-engineer",
                             "skills_required": ["Python", "FastAPI"],
+                            "execution_mode": "terminal",
                             "dependencies": ["PHASE-01"],
                             "acceptance_criteria": "Business logic implemented with unit test coverage > 90%.",
                             "subtasks": [
@@ -287,6 +294,7 @@ class TaskPlanner:
                             "title": "Interactive Client Dashboard & State",
                             "role_required": "frontend-engineer",
                             "skills_required": ["React", "Next.js", "TypeScript"],
+                            "execution_mode": "terminal",
                             "dependencies": ["PHASE-01"],
                             "acceptance_criteria": "Responsive web client connected to API gateway.",
                             "subtasks": [
@@ -306,6 +314,7 @@ class TaskPlanner:
                             "title": "Adversarial End-to-End & Security Audit",
                             "role_required": "qa-engineer",
                             "skills_required": ["pytest", "Playwright", "API Testing"],
+                            "execution_mode": "hybrid",
                             "dependencies": ["PHASE-02"],
                             "acceptance_criteria": "Zero high-severity vulnerabilities, all e2e test suites passing green.",
                             "subtasks": [

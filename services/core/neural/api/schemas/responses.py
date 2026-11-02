@@ -4,6 +4,7 @@ from typing import Any, Optional
 from neural.constants import (
     ActionItemStatus,
     EmployeeStatus,
+    ExecutionMode,
     MeetingStatus,
     MeetingType,
     ProjectStatus,
@@ -43,6 +44,7 @@ class BossTaskReport(BaseModel):
     title: str
     objective: str
     acceptance_criteria: str
+    execution_mode: ExecutionMode
     status: TaskStatus
     priority: str
     assigned_employee_id: Optional[str] = None
@@ -72,6 +74,7 @@ class TaskResponse(BaseModel):
     task_id: str
     project_id: str
     title: str
+    execution_mode: ExecutionMode
     status: TaskStatus
     assigned_to: Optional[str]
     priority: str

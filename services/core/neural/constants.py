@@ -1,6 +1,13 @@
 from enum import Enum
 
 
+class ExecutionMode(str, Enum):
+    GUI = "gui"
+    TERMINAL = "terminal"
+    HYBRID = "hybrid"
+    AUTHORIZED_TOOLS = "authorized_tools"
+
+
 class ProjectStatus(str, Enum):
     PLANNING = "planning"
     ACTIVE = "active"

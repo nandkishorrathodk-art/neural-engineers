@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 from neural.boss.delegator import TaskDelegator
 from neural.boss.planner import TaskPlanner
 from neural.boss.recovery import FailureRecoveryManager
-from neural.constants import EmployeeStatus, TaskPriority, TaskStatus
+from neural.constants import EmployeeStatus, ExecutionMode, TaskPriority, TaskStatus
 from neural.db.models import Project, Task
 from neural.db.repositories import EmployeeRepository, ProjectRepository, TaskRepository
 from neural.llm.gateway import LLMGateway
@@ -156,6 +156,7 @@ class BossBrain:
                         objective=task_info.get("objective", task_info.get("title", objective)),
                         scope=task_info.get("scope", phase_title),
                         acceptance_criteria=task_info.get("acceptance_criteria", "Verification passing with clean receipts."),
+                        execution_mode=ExecutionMode(task_info.get("execution_mode", ExecutionMode.TERMINAL)),
                         required_capabilities=task_info.get("skills_required", []),
                         priority=priority,
                         status=TaskStatus.PENDING,
@@ -390,6 +391,7 @@ class BossBrain:
                 "title": task.title,
                 "objective": task.objective,
                 "acceptance_criteria": task.acceptance_criteria,
+                "execution_mode": task.execution_mode.value,
                 "status": task.status,
                 "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
                 "assigned_employee_id": employee.employee_id if employee else None,

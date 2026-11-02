@@ -47,6 +47,7 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
                             "scope": "Frontend implementation",
                             "role_required": "frontend-engineer",
                             "skills_required": ["HTML"],
+                            "execution_mode": "gui",
                             "dependencies": [],
                             "acceptance_criteria": "The page renders and contains the requested content.",
                             "subtasks": ["Draft the page"],
@@ -60,6 +61,7 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
                             "scope": "Independent review",
                             "role_required": "qa-engineer",
                             "skills_required": ["Browser QA"],
+                            "execution_mode": "hybrid",
                             "dependencies": ["draft"],
                             "acceptance_criteria": "A reviewer confirms the rendered page meets the criteria.",
                             "subtasks": ["Inspect the page"],
@@ -82,6 +84,8 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
     assert plan["plan_source"] == "llm"
     assert plan["planning_model"] == gateway.get_models_for_tier("reasoning")[0]
     assert second["dependencies"] == [first["task_id"]]
+    assert first["execution_mode"] == "gui"
+    assert second["execution_mode"] == "hybrid"
 
 
 @pytest.mark.asyncio
@@ -102,5 +106,6 @@ async def test_boss_brain_plan_and_create_project(async_session):
     assert len(tasks) >= 4
     persisted = await task_repo.list_by_project(project.id)
     assert len(persisted) == len(tasks)
+    assert {task.execution_mode for task in persisted} == {"terminal", "hybrid"}
 
 
