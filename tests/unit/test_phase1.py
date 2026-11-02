@@ -131,6 +131,10 @@ async def test_container_manager_port_allocation_and_reuse():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv("ANCOS_TEST_DOCKER") != "1",
+    reason="Requires a dedicated disposable Docker daemon; never provision test desktops on the user's live host.",
+)
 async def test_container_manager_workstation_lifecycle_and_health():
     manager = ContainerManager()
     emp_id = "ANC-EMP-PHASE1-TEST"
@@ -236,6 +240,10 @@ async def test_employee_factory_idempotent_bootstrap(async_session: AsyncSession
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv("ANCOS_TEST_DOCKER") != "1",
+    reason="Requires a dedicated disposable Docker daemon; never provision test desktops on the user's live host.",
+)
 async def test_container_manager_cross_restart_persistence(async_session: AsyncSession):
     """
     Verifies that ContainerManager can recover workstation specs and prevent port collisions
@@ -359,7 +367,8 @@ async def test_fastapi_phase1_comprehensive_api(async_session: AsyncSession):
         # Boss status
         res = await client.get("/boss/status")
         assert res.status_code == 200
-        assert res.json()["ceo_status"] == "operational"
+        assert res.json()["ceo_status"] in {"ready", "rules_only"}
+        assert res.json()["system_health"] == "degraded"
 
         # Objective submission validation: empty objective returns 400
         res_bad = await client.post("/boss/objective", json={"objective": "   "})
@@ -396,44 +405,17 @@ async def test_fastapi_phase1_comprehensive_api(async_session: AsyncSession):
         assert res_single_task.status_code == 200
         assert res_single_task.json()["task_id"] == first_task_id
 
-        # List employees (bootstrapped automatically by objective endpoint)
+        # Objective submission must not fabricate or bootstrap employees.
         res_emps = await client.get("/employees")
         assert res_emps.status_code == 200
         emp_list = res_emps.json()
-        assert len(emp_list) >= 1
-        emp_id = emp_list[0]["employee_id"]
-
-        # Get single employee by ID
-        res_single_emp = await client.get(f"/employees/{emp_id}")
-        assert res_single_emp.status_code == 200
-        assert res_single_emp.json()["employee_id"] == emp_id
+        assert emp_list == []
 
         # 404 on non-existent employee
         res_404 = await client.get("/employees/ANC-EMP-NONEXISTENT")
         assert res_404.status_code == 404
 
-        # Provision workstation for employee via API
-        res_prov = await client.post(f"/employees/{emp_id}/workstation/provision")
-        assert res_prov.status_code == 200
-        ws_data = res_prov.json()
-        assert ws_data["vnc_port"] >= 5901
-        assert ws_data["novnc_port"] >= 6081
-        assert "http://localhost:" in ws_data["desktop_url"]
-
-        # Query workstation status
-        res_ws = await client.get(f"/employees/{emp_id}/workstation")
-        assert res_ws.status_code == 200
-        assert res_ws.json()["docker_id"] == ws_data["docker_id"]
-
-        # Query employee tasks
-        res_emp_tasks = await client.get(f"/employees/{emp_id}/tasks")
-        assert res_emp_tasks.status_code == 200
-
-        # Terminate workstation via API
-        res_term = await client.post(f"/employees/{emp_id}/workstation/terminate")
-        assert res_term.status_code == 200
-        assert res_term.json()["status"] == "terminated"
-
-        # Cleanup test workspace
-        if os.path.exists(ws_data["workspace"]):
-            shutil.rmtree(ws_data["workspace"], ignore_errors=True)
+        # Container lifecycle APIs require an owner approval ID and must not
+        # create/delete live desktops as a side effect of this unit test.
+        res_prov = await client.post("/employees/ANC-EMP-NONEXISTENT/workstation/provision")
+        assert res_prov.status_code in {404, 422}

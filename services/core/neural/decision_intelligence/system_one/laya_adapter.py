@@ -70,10 +70,19 @@ class LayaAdapter(BaseLayaAdapter):
             and os.path.exists(self.checkpoint_metadata.model_path)
         ):
             try:
+                # A local checkpoint is executable input: verify the pinned
+                # weights before importing the model runtime or loading them.
+                weights_path = os.path.join(self.checkpoint_metadata.model_path, "model.safetensors")
+                self.registry.verify_checkpoint_file(self.checkpoint_metadata.name, weights_path)
                 import laya  # noqa: F401
                 import torch  # noqa: F401
                 return ModelRuntime.TORCH
-            except ImportError:
+            except Exception as exc:
+                logger.warning(
+                    "Laya checkpoint unavailable or failed integrity verification; using fallback",
+                    model=self.checkpoint_metadata.name,
+                    error=str(exc),
+                )
                 pass
 
         return ModelRuntime.FALLBACK
@@ -92,7 +101,7 @@ class LayaAdapter(BaseLayaAdapter):
             try:
                 import laya
                 # Initialize real Laya neural model agent from local weights
-                self._torch_model = laya.Agent(self.checkpoint_metadata.model_path)
+                self._torch_model = laya.load(self.checkpoint_metadata.model_path)
                 logger.info("Initialized genuine Laya neural model session", model=self.checkpoint_metadata.name)
             except Exception as e:
                 logger.warning("Failed to initialize Laya neural session, falling back to heuristic engine", error=str(e))
@@ -219,12 +228,17 @@ class LayaAdapter(BaseLayaAdapter):
                 }
                 raw = self._torch_model.predict(state, q_dict)
                 ans = raw.get("answers", {}).get(question.question_id, {})
-                pred_continuous = float(ans.get("score", float(steps[len(steps) // 2])))
-                chosen_score = int(round(pred_continuous))
-                chosen_score = max(s_min, min(s_max, chosen_score))
+                # Laya score answers are expected ordinal positions in the
+                # criteria list (0..N-1), not the caller's scale values.
+                pred_continuous = float(ans.get("score", float(num_steps // 2)))
+                score_index = max(0, min(num_steps - 1, int(round(pred_continuous))))
+                chosen_score = steps[score_index]
                 confidence = float(ans.get("confidence", 0.5))
                 raw_probs = ans.get("probabilities", {})
-                prob_dict = {step: round(float(raw_probs.get(str(i), 1.0 / num_steps)), 4) for i, step in enumerate(steps)}
+                prob_dict = {
+                    step: round(float(raw_probs.get(str(step), raw_probs.get(str(i), 1.0 / num_steps))), 4)
+                    for i, step in enumerate(steps)
+                }
                 elapsed_ms = (time.perf_counter() - start_time) * 1000.0
                 return ScoreResult(
                     question_id=question.question_id,

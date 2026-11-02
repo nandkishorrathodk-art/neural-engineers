@@ -1,6 +1,39 @@
 import re
 import uuid
-from typing import Any
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+from neural.exceptions import ModelProviderError
+from neural.llm.gateway import LLMGateway
+
+
+class PlannedTask(BaseModel):
+    task_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=3, max_length=180)
+    objective: str = Field(default="", max_length=2000)
+    scope: str = Field(min_length=1, max_length=2000)
+    role_required: str = Field(min_length=1, max_length=100)
+    skills_required: list[str] = Field(min_length=1, max_length=12)
+    dependencies: list[str] = Field(default_factory=list, max_length=20)
+    acceptance_criteria: str = Field(min_length=8, max_length=2000)
+    subtasks: list[str] = Field(default_factory=list, max_length=12)
+    estimated_hours: float = Field(default=1, gt=0, le=200)
+    max_tokens: int = Field(default=12000, ge=1000, le=200000)
+
+
+class PlannedPhase(BaseModel):
+    title: str = Field(min_length=3, max_length=160)
+    tasks: list[PlannedTask] = Field(min_length=1, max_length=20)
+
+
+class ObjectivePlan(BaseModel):
+    code_name: str = Field(min_length=1, max_length=60)
+    complexity: Literal["low", "medium", "high"]
+    requirements: list[str] = Field(min_length=1, max_length=30)
+    technical_risks: list[str] = Field(default_factory=list, max_length=20)
+    mitigation_strategies: list[str] = Field(default_factory=list, max_length=20)
+    phases: list[PlannedPhase] = Field(min_length=1, max_length=12)
 
 
 class TaskPlanner:
@@ -9,6 +42,100 @@ class TaskPlanner:
     Breaks high-level objectives into Projects -> Phases -> Tasks -> Subtasks
     with explicit dependency DAGs, requirement extraction, and risk analysis.
     """
+
+    def __init__(self, llm_gateway: Optional[LLMGateway] = None) -> None:
+        self.llm_gateway = llm_gateway
+
+    @staticmethod
+    def _has_configured_provider(gateway: LLMGateway) -> bool:
+        if gateway.custom_invoker is not None:
+            return True
+        settings = gateway.settings
+        return settings.BOSS_LLM_PLANNING_ENABLED and any(
+            getattr(settings, name, None)
+            for name in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
+        )
+
+    async def _decompose_with_model(self, objective: str) -> dict[str, Any]:
+        assert self.llm_gateway is not None
+        plan, response = await self.llm_gateway.generate_structured(
+            prompt=(
+                "Create a practical software project plan for this human objective. "
+                "Use 2-6 phases and concrete tasks an engineering team can deliver. "
+                "Every task needs measurable acceptance criteria and required skills. "
+                "Dependencies must reference task_id values in this plan, point only "
+                "to earlier tasks, and form an acyclic graph. Do not claim work is "
+                "already completed.\n\nOBJECTIVE:\n" + objective
+            ),
+            response_model=ObjectivePlan,
+            route="boss_brain",
+            system_prompt="You are ANCOS Boss. Plan only; never report unperformed work as complete.",
+            temperature=0.1,
+            max_tokens=3500,
+        )
+
+        raw_ids = [task.task_id for phase in plan.phases for task in phase.tasks]
+        if len(raw_ids) != len(set(raw_ids)):
+            raise ModelProviderError("Boss plan rejected: duplicate task IDs.")
+        known_ids = set(raw_ids)
+        seen_ids: set[str] = set()
+        for phase in plan.phases:
+            for task in phase.tasks:
+                if task.task_id in task.dependencies or any(
+                    dependency not in known_ids or dependency not in seen_ids
+                    for dependency in task.dependencies
+                ):
+                    raise ModelProviderError(
+                        f"Boss plan rejected: invalid or forward dependency in {task.task_id}."
+                    )
+                seen_ids.add(task.task_id)
+
+        phase_dicts: list[dict[str, Any]] = []
+        for phase_index, phase in enumerate(plan.phases, start=1):
+            tasks = []
+            for task_index, task in enumerate(phase.tasks, start=1):
+                tasks.append({
+                    "task_id": f"TASK-{phase_index:02d}-{task_index:02d}-{uuid.uuid4().hex[:4].upper()}",
+                    "source_task_id": task.task_id,
+                    "title": task.title,
+                    "objective": task.objective or task.title,
+                    "scope": task.scope,
+                    "role_required": task.role_required,
+                    "skills_required": task.skills_required,
+                    "dependencies": task.dependencies,
+                    "acceptance_criteria": task.acceptance_criteria,
+                    "subtasks": task.subtasks,
+                    "resource_budget": {
+                        "estimated_hours": task.estimated_hours,
+                        "max_tokens": task.max_tokens,
+                    },
+                })
+            phase_dicts.append({
+                "phase_id": f"PHASE-{phase_index:02d}",
+                "title": phase.title,
+                "tasks": tasks,
+            })
+
+        id_map = {
+            task["source_task_id"]: task["task_id"]
+            for phase in phase_dicts for task in phase["tasks"]
+        }
+        for phase in phase_dicts:
+            for task in phase["tasks"]:
+                task["dependencies"] = [id_map[value] for value in task["dependencies"]]
+
+        return {
+            "code_name": plan.code_name,
+            "complexity": plan.complexity,
+            "requirements": plan.requirements,
+            "risk_analysis": {
+                "technical_risks": plan.technical_risks,
+                "mitigation_strategies": plan.mitigation_strategies,
+            },
+            "phases": phase_dicts,
+            "plan_source": "llm",
+            "planning_model": response.model,
+        }
 
     def score_complexity(self, objective: str) -> str:
         """Evaluates complexity of an objective based on scope indicators."""
@@ -90,6 +217,9 @@ class TaskPlanner:
         Decomposes natural language objective into hierarchical execution plan:
         Projects -> Phases -> Tasks -> Subtasks
         """
+        if objective and objective.strip() and self.llm_gateway and self._has_configured_provider(self.llm_gateway):
+            return await self._decompose_with_model(objective.strip())
+
         words = re.findall(r"\b[A-Za-z0-9]+\b", objective) if objective else []
         code_name = words[0].capitalize() if words else "Omega"
         complexity = self.score_complexity(objective)
@@ -101,6 +231,7 @@ class TaskPlanner:
             "complexity": complexity,
             "requirements": requirements,
             "risk_analysis": risk_analysis,
+            "plan_source": "rules_fallback",
             "phases": [
                 {
                     "phase_id": "PHASE-01",

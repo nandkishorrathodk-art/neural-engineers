@@ -11,17 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio
-async def test_autonomous_company_acceptance_mission(async_session: AsyncSession, tmp_path):
+async def test_planning_recruitment_and_verification_component_contracts(async_session: AsyncSession, tmp_path):
     """
-    ANCOS RC1 Acceptance Mission:
-    'Build a complete production-quality software product with documented requirements,
-     a working application, tests, and security validation.'
+    Component-level contract check for planning, recruitment, and verifier APIs.
+
+    This test creates sample artifacts itself. It does NOT exercise a live
+    employee worker, VNC desktop, or end-to-end autonomous delivery.
 
     Validates:
     1. Boss understanding and decomposition into DAG tasks.
     2. Dynamic employee recruitment via EmployeeFactory.
     3. Task assignment based on skills.
-    4. Execution resulting in working software artifacts.
+    4. Verifier acceptance of locally generated sample artifacts (not employee execution).
     5. Real independent QA verification with cryptographic signature receipts.
     6. Transition of employee skill to empirically verified.
     """

@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY: Optional[str] = None
     NVIDIA_API_KEY: Optional[str] = None
     NVIDIA_API_BASE: str = "https://integrate.api.nvidia.com/v1"
+    BOSS_LLM_PLANNING_ENABLED: bool = False
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
     # Model Defaults

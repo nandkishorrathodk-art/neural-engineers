@@ -1,5 +1,6 @@
 import asyncio
 import os
+import base64
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -537,7 +538,12 @@ class ContainerManager:
         Executes a command within the employee's isolated container environment.
         Enforces non-root execution (uid 1000).
         """
-        logger.info("Executing command in container", docker_id=docker_id, command=command)
+        logger.info(
+            "Executing operation in employee workstation",
+            docker_id=docker_id,
+            command_kind="argv" if isinstance(command, list) else "shell",
+            argument_count=len(command) if isinstance(command, list) else None,
+        )
         self.broker.validate_container_id(docker_id)
         client = self._get_client()
         if client is None:
@@ -562,6 +568,30 @@ class ContainerManager:
         except Exception as e:
             logger.warning("Docker exec failed", docker_id=docker_id, error=str(e))
             raise ContainerError(f"Command was not executed in container {docker_id}: {e}") from e
+
+    async def capture_screenshot(self, docker_id: str) -> bytes:
+        """Capture real workstation pixels through the restricted broker."""
+        self.broker.validate_container_id(docker_id)
+        result = await self.execute_command(
+            docker_id,
+            [
+                "sh", "-lc",
+                "if ! command -v scrot >/dev/null 2>&1; then echo 'scrot is not installed' >&2; exit 127; fi; scrot - | base64 -w 0",
+            ],
+            workdir="/home/employee/workspace",
+        )
+        if result.get("exit_code") != 0:
+            raise ContainerError("Live workstation screenshot capture failed.")
+        encoded = str(result.get("stdout", "")).strip()
+        if not encoded or len(encoded) > 24_000_000:
+            raise ContainerError("Live workstation screenshot is empty or exceeds the size limit.")
+        try:
+            image_bytes = base64.b64decode(encoded, validate=True)
+        except Exception as exc:
+            raise ContainerError("Live workstation returned an invalid screenshot payload.") from exc
+        if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ContainerError("Live workstation screenshot is not a PNG image.")
+        return image_bytes
 
     async def rotate_vnc_password(self, docker_id: str) -> str:
         """Rotates one workstation's VNC credential and returns it once to the caller."""

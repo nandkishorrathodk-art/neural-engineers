@@ -57,7 +57,10 @@ async def submit_objective(
 
 
 @router.get("/status")
-async def get_boss_status():
-    brain = BossBrain()
+async def get_boss_status(
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    task_repo: TaskRepository = Depends(get_task_repo),
+):
+    brain = BossBrain(project_repo=project_repo, task_repo=task_repo)
     return await brain.get_status()
 

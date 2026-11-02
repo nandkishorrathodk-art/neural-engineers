@@ -250,14 +250,22 @@ class TaskScheduler:
         Monitors dependencies, tracks worker outcomes, resolves deadlock,
         and cascades failure blocks to dependent tasks.
         """
+        graph = await self.build_graph_for_project(project_id)
+        all_task_ids = set(graph.get_all_tasks())
+
+        if not all_task_ids:
+            return {
+                "total_tasks": 0,
+                "completed": [],
+                "failed": [],
+                "blocked": [],
+                "success": True,
+            }
         if worker_func is None:
             raise RuntimeError(
                 "DAG execution requires an explicitly configured task worker; "
                 "no synthetic success worker is available."
             )
-
-        graph = await self.build_graph_for_project(project_id)
-        all_task_ids = set(graph.get_all_tasks())
 
         completed_tasks: set[str] = set()
         failed_tasks: set[str] = set()

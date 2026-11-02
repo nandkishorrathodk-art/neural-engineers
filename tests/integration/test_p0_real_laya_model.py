@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import time
 
@@ -19,6 +20,11 @@ from neural.decision_intelligence.system_one.model_registry import (
     reset_model_registry,
 )
 from neural.exceptions import ModelCheckpointError
+
+requires_laya_runtime = pytest.mark.skipif(
+    importlib.util.find_spec("laya") is None,
+    reason="Optional Laya runtime is not installed in this environment.",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +53,7 @@ def test_laya_checkpoint_integrity_sha256():
         reg.verify_checkpoint_hash("Laya-English-Base-Neural", b"tampered_bytes_not_real_laya")
 
 
+@requires_laya_runtime
 def test_genuine_laya_neural_inference_choice():
     """Requirement 3 & 4: Execute genuine model inference for CHOICE."""
     adapter = LayaAdapter(checkpoint_name="Laya-English-Base-Neural")
@@ -78,6 +85,7 @@ def test_genuine_laya_neural_inference_choice():
     assert "Laya" in result.model_name
 
 
+@requires_laya_runtime
 def test_genuine_laya_neural_inference_score():
     """Requirement 3 & 4: Execute genuine model inference for SCORE."""
     adapter = LayaAdapter(checkpoint_name="Laya-English-Base-Neural")
@@ -99,6 +107,7 @@ def test_genuine_laya_neural_inference_score():
     assert abs(sum(result.probabilities.values()) - 1.0) < 0.05
 
 
+@requires_laya_runtime
 def test_genuine_laya_neural_inference_noul():
     """Requirement 3 & 4: Execute genuine model inference for NOUL."""
     adapter = LayaAdapter(checkpoint_name="Laya-English-Base-Neural")
@@ -118,6 +127,7 @@ def test_genuine_laya_neural_inference_noul():
     assert isinstance(result.is_true, bool)
 
 
+@requires_laya_runtime
 def test_laya_latency_and_resource_consumption():
     """Requirement 5 & 6: Measure cold-start latency, warm latency, CPU, RAM, and GPU consumption."""
     import torch
@@ -162,6 +172,7 @@ def test_laya_latency_and_resource_consumption():
     assert avg_warm_latency_ms > 0.0
 
 
+@requires_laya_runtime
 def test_laya_decision_accuracy_evaluation():
     """Requirement 8: Evaluate decision accuracy against labeled ground truth benchmark."""
     adapter = LayaAdapter(checkpoint_name="Laya-English-Base-Neural")
@@ -181,13 +192,14 @@ def test_laya_decision_accuracy_evaluation():
     for text, expected in benchmark_samples:
         q = ChoiceQuestion(context=text, candidates=candidates)
         res = adapter.predict_choice(q)
-        if res.selected_id in ["eng", "qa", "sec"]:
+        if res.selected_id == expected:
             correct_count += 1
 
     accuracy = correct_count / len(benchmark_samples)
     assert accuracy >= 0.66, f"Model accuracy below benchmark baseline: {accuracy}"
 
 
+@requires_laya_runtime
 def test_laya_probability_calibration_ece():
     """Requirement 9: Evaluate probability calibration (Expected Calibration Error)."""
     from neural.decision_intelligence.calibration.reliability import (
@@ -197,21 +209,36 @@ def test_laya_probability_calibration_ece():
 
     adapter = LayaAdapter(checkpoint_name="Laya-English-Base-Neural")
     candidates = [
-        ChoiceCandidate(id="c1", label="Option 1"),
-        ChoiceCandidate(id="c2", label="Option 2"),
+        ChoiceCandidate(id="eng", label="Engineering: code, build, software"),
+        ChoiceCandidate(id="qa", label="Quality assurance: test, verify, coverage"),
+        ChoiceCandidate(id="sec", label="Security: audit, auth, credentials"),
     ]
-    q = ChoiceQuestion(context="Select optimal choice", candidates=candidates)
-    res = adapter.predict_choice(q)
+    labeled_samples = [
+        ("Write Python code for a backend API", "eng"),
+        ("Run tests and verify the failing assertions", "qa"),
+        ("Audit authentication credentials and permissions", "sec"),
+        ("Implement a software feature", "eng"),
+        ("Measure test coverage", "qa"),
+        ("Review token security", "sec"),
+    ]
+    confidences: list[float] = []
+    correctness: list[int] = []
+    multiclass_probabilities: list[list[float]] = []
+    multiclass_truth: list[int] = []
+    for text, expected_id in labeled_samples:
+        res = adapter.predict_choice(ChoiceQuestion(context=text, candidates=candidates))
+        probs = [res.probabilities[c.id] for c in candidates]
+        assert all(0.0 <= p <= 1.0 for p in probs)
+        assert abs(sum(probs) - 1.0) < 0.05
+        confidences.append(res.confidence)
+        correctness.append(int(res.selected_id == expected_id))
+        multiclass_probabilities.append(probs)
+        multiclass_truth.append([c.id for c in candidates].index(expected_id))
 
-    # Probabilities must be bounded [0, 1] and sum to ~1.0
-    probs = list(res.probabilities.values())
-    assert all(0.0 <= p <= 1.0 for p in probs)
-    assert abs(sum(probs) - 1.0) < 0.05
-
-    # Compute ECE over real inference distribution
-    mock_truth = [1, 0] if res.selected_id == "c1" else [0, 1]
-    ece = calculate_ece(probs, mock_truth, num_bins=5)
-    brier = calculate_brier_score(probs, mock_truth)
+    # ECE uses held-out expected labels; Brier uses the corresponding
+    # multiclass one-hot ground truth rather than the model's own prediction.
+    ece = calculate_ece(confidences, correctness, num_bins=5)
+    brier = calculate_brier_score(multiclass_probabilities, multiclass_truth)
 
     assert 0.0 <= ece <= 1.0
     assert 0.0 <= brier <= 1.0
@@ -245,6 +272,7 @@ async def test_laya_shadow_mode_operation():
 
 
 
+@requires_laya_runtime
 def test_laya_inference_vs_heuristic_comparison():
     """Requirement 7 & 8: Compare Laya neural inference against heuristic logic."""
     neural_adapter = LayaAdapter(checkpoint_name="Laya-English-Base-Neural")
@@ -297,6 +325,7 @@ def test_safe_fallback_when_model_unavailable():
     assert res.confidence > 0.0
 
 
+@requires_laya_runtime
 def test_laya_cannot_approve_privileged_operations():
     """Requirement: The independent ANCOS policy engine must remain final authority."""
     from neural.security.approval_gates import HumanApprovalGate

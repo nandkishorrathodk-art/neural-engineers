@@ -35,7 +35,8 @@ class BossBrain:
         llm_gateway: Optional[LLMGateway] = None,
         message_bus: Optional[Any] = None
     ):
-        self.planner = planner or TaskPlanner()
+        self.llm_gateway = llm_gateway or LLMGateway()
+        self.planner = planner or TaskPlanner(llm_gateway=self.llm_gateway)
         self.project_repo = project_repo
         self.task_repo = task_repo
         self.employee_repo = employee_repo
@@ -43,7 +44,6 @@ class BossBrain:
         self.delegator = delegator or TaskDelegator()
         self.verifier = verifier
         self.recovery_manager = recovery_manager or FailureRecoveryManager()
-        self.llm_gateway = llm_gateway or LLMGateway()
         if scheduler is not None:
             self.scheduler = scheduler
         elif task_repo and employee_repo:
@@ -247,9 +247,45 @@ class BossBrain:
         return await factory.recruit_workforce_for_plan(plan)
 
     async def get_status(self) -> dict[str, Any]:
+        settings = self.llm_gateway.settings
+        provider_configured = any(
+            getattr(settings, name, None)
+            for name in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
+        )
+        worker_auth_configured = bool(
+            settings.WORKER_API_TOKEN or settings.WORKER_API_TOKENS
+        )
+        active_missions = None
+        active_tasks = None
+        if self.project_repo:
+            try:
+                projects = await self.project_repo.list_all()
+                active_missions = sum(
+                    1 for project in projects
+                    if str(getattr(project.status, "value", project.status)).lower()
+                    not in {"completed", "failed", "cancelled"}
+                )
+            except Exception:
+                active_missions = None
+        if self.task_repo:
+            try:
+                tasks = await self.task_repo.list_all()
+                active_tasks = sum(
+                    1 for task in tasks
+                    if str(getattr(task.status, "value", task.status)).lower() == "running"
+                )
+            except Exception:
+                active_tasks = None
+
+        # Credentials only prove a worker could authenticate; they do not prove
+        # that a live worker is consuming tasks. Keep that distinction visible.
         return {
-            "ceo_status": "operational",
-            "active_mode": "autonomous_orchestration",
-            "active_missions": 1,
-            "system_health": "nominal"
+            "ceo_status": "ready" if provider_configured else "rules_only",
+            "active_mode": "planning_and_delegation" if provider_configured else "rules_based_planning",
+            "active_missions": active_missions,
+            "active_tasks": active_tasks,
+            "llm_provider_configured": provider_configured,
+            "worker_auth_configured": worker_auth_configured,
+            "worker_runtime": "not_reported",
+            "system_health": "degraded",
         }

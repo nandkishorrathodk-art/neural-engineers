@@ -76,20 +76,20 @@ async def test_tasks_api_endpoints(async_session: AsyncSession):
             json={"employee_id": emp.employee_id}
         )
         assert res_assign.status_code == 200
-        assert res_assign.json()["status"] == "running"
+        assert res_assign.json()["status"] == "assigned"
 
-        # 4. Status update validation
-        # Legal: RUNNING -> COMPLETED
+        # Assignment cannot be promoted to completion by a status update.
+        # A worker must produce artifacts and an independent verifier receipt.
         res_status = await client.post(
             f"/tasks/{t1.task_id}/status",
             json={"status": "completed", "notes": "Done via API"}
         )
-        assert res_status.status_code == 200
-        assert res_status.json()["status"] == "completed"
+        assert res_status.status_code == 400
+        assert "Illegal task state transition" in res_status.json()["detail"]
 
-        # Verify employee was reset to IDLE on COMPLETED status
+        # Rejected completion keeps the employee reserved for the assigned task.
         emp_after = await emp_repo.get_by_employee_id(emp.employee_id)
-        assert emp_after.status.value == "idle"
+        assert emp_after.status.value == "working"
 
         # Test assigning task to terminated employee is rejected with 400
         terminated_emp = await factory.hire_employee(name="Terminated Emp", title="Ex-Dev")
@@ -100,14 +100,6 @@ async def test_tasks_api_endpoints(async_session: AsyncSession):
         )
         assert res_assign_term.status_code == 400
         assert "Cannot assign task to employee" in res_assign_term.json()["detail"]
-
-        # Illegal: COMPLETED -> RUNNING (should be rejected with 400)
-        res_illegal = await client.post(
-            f"/tasks/{t1.task_id}/status",
-            json={"status": "running"}
-        )
-        assert res_illegal.status_code == 400
-        assert "Illegal task state transition" in res_illegal.json()["detail"]
 
         # 5. Dependencies endpoint
         res_deps = await client.get(f"/tasks/{t2.task_id}/dependencies")
@@ -128,10 +120,9 @@ async def test_tasks_api_endpoints(async_session: AsyncSession):
             f"/tasks/projects/{project.id}/execute",
             json={"max_concurrency": 2}
         )
-        assert res_exec.status_code == 200
-        exec_data = res_exec.json()
-        assert exec_data["success"] is True
-        assert t2.task_id in exec_data["completed"]
+        assert res_exec.status_code == 503
+        assert "explicitly configured task worker" in res_exec.json()["detail"]
+        assert "explicitly configured task worker" in res_exec.json()["detail"]
 
         # 8. Test executing DAG with cyclic dependencies returns 400
         proj_cycle = await proj_repo.create(name="Project-Cycle", objective="Cycle test")

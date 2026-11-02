@@ -18,17 +18,16 @@ def test_model_routing_config_tiers_and_routes():
     assert "fast" in gateway.tiers_config
 
     reasoning_models = gateway.get_models_for_tier("reasoning")
-    assert reasoning_models[0] == "claude-3-7-sonnet"
-    assert "gpt-4o" in reasoning_models
-    assert "gemini-1.5-pro" in reasoning_models
+    assert reasoning_models[0].startswith("nim/")
+    assert len(reasoning_models) >= 2
 
     coding_models = gateway.get_models_for_tier("coding")
-    assert coding_models[0] == "claude-3-5-sonnet-20241022"
-    assert "gpt-4o" in coding_models
+    assert coding_models[0].startswith("nim/")
+    assert len(coding_models) >= 2
 
     fast_models = gateway.get_models_for_tier("fast")
-    assert fast_models[0] == "gpt-4o-mini"
-    assert "claude-3-5-haiku" in fast_models
+    assert fast_models[0].startswith("nim/")
+    assert len(fast_models) >= 2
 
     # Verify routes mapped to tiers
     assert gateway.resolve_tier_for_route("boss_brain") == "reasoning"
@@ -47,7 +46,7 @@ async def test_llm_gateway_transparent_fallback_on_failure():
 
     async def mock_invoker(model: str, prompt: str, **kwargs):
         call_log.append(model)
-        if model == "claude-3-7-sonnet":
+        if model == gateway.get_models_for_tier("reasoning")[0]:
             # Primary model fails with rate limit
             raise ModelProviderError("429 Rate Limit Exceeded on Anthropic API")
         return {
@@ -63,9 +62,10 @@ async def test_llm_gateway_transparent_fallback_on_failure():
         tier="reasoning"
     )
 
-    assert response.model == "gpt-4o"
-    assert "Success from fallback model gpt-4o" in response.content
-    assert call_log == ["claude-3-7-sonnet", "claude-3-7-sonnet", "gpt-4o"]
+    fallback_model = gateway.get_models_for_tier("reasoning")[1]
+    assert response.model == fallback_model
+    assert f"Success from fallback model {fallback_model}" in response.content
+    assert call_log == [gateway.get_models_for_tier("reasoning")[0]] * 2 + [fallback_model]
     assert response.cost_usd > 0.0
 
 
@@ -302,7 +302,8 @@ async def test_llm_gateway_circuit_breaker_fast_skips_open_models():
 
     gateway = LLMGateway(provider_invoker=mock_invoker)
     # Trip primary model breaker to OPEN manually
-    breaker = gateway.get_circuit_breaker("claude-3-7-sonnet")
+    primary_model, fallback_model = gateway.get_models_for_tier("reasoning")[:2]
+    breaker = gateway.get_circuit_breaker(primary_model)
     breaker.record_failure()
     breaker.record_failure()
     breaker.record_failure()
@@ -312,9 +313,9 @@ async def test_llm_gateway_circuit_breaker_fast_skips_open_models():
     res = await gateway.generate(prompt="Quick reasoning", tier="reasoning")
 
     # claude-3-7-sonnet must NOT be called because circuit breaker was OPEN
-    assert "claude-3-7-sonnet" not in call_log
-    assert res.model == "gpt-4o"
-    assert call_log == ["gpt-4o"]
+    assert primary_model not in call_log
+    assert res.model == fallback_model
+    assert call_log == [fallback_model]
 
 
 def test_cost_tracker_unknown_model_fallback():

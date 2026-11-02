@@ -65,6 +65,7 @@ services:
       - VERIFIER_API_TOKEN=${VERIFIER_API_TOKEN:-}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
       - NVIDIA_API_BASE=${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
+      - BOSS_LLM_PLANNING_ENABLED=${BOSS_LLM_PLANNING_ENABLED:-true}
       - DOCKER_BROKER_URL=http://docker-broker:12002
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
     volumes:

@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from io import BytesIO
+import numpy as np
+import pytest
+from httpx import ASGITransport, AsyncClient
+from PIL import Image
+
+from neural.api.deps import (
+    get_container_manager,
+    get_container_repo,
+    get_employee_repo,
+    require_owner_identity,
+)
+from neural.api.main import create_app
+
+
+@pytest.mark.asyncio
+async def test_screen_capture_api_returns_hash_of_live_png_bytes():
+    image = Image.fromarray(np.full((12, 20, 3), (12, 90, 180), dtype=np.uint8), mode="RGB")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+
+    class FakeContainerManager:
+        async def get_desktop_by_employee_id(self, employee_id, **kwargs):
+            assert employee_id == "ANC-EMP-TEST"
+            return {"docker_id": "ancos-desktop-anc-emp-test", "status": "running"}
+
+        async def capture_screenshot(self, docker_id):
+            assert docker_id == "ancos-desktop-anc-emp-test"
+            return buffer.getvalue()
+
+    app = create_app()
+    app.dependency_overrides[require_owner_identity] = lambda: "test-owner"
+    app.dependency_overrides[get_container_manager] = lambda: FakeContainerManager()
+    app.dependency_overrides[get_container_repo] = lambda: object()
+    app.dependency_overrides[get_employee_repo] = lambda: object()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/gui/screen/capture?employee_id=ANC-EMP-TEST")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["resolution"] == [20, 12]
+    assert len(body["frame_hash"]) == 64
+    assert body["capture_latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_screen_capture_api_does_not_fall_back_to_synthetic_desktop():
+    class MissingDesktopManager:
+        async def get_desktop_by_employee_id(self, employee_id, **kwargs):
+            return None
+
+    app = create_app()
+    app.dependency_overrides[require_owner_identity] = lambda: "test-owner"
+    app.dependency_overrides[get_container_manager] = lambda: MissingDesktopManager()
+    app.dependency_overrides[get_container_repo] = lambda: object()
+    app.dependency_overrides[get_employee_repo] = lambda: object()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/gui/screen/capture?employee_id=ANC-EMP-TEST")
+
+    assert response.status_code == 409
+    assert "not running" in response.json()["detail"]

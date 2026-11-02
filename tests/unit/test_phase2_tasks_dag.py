@@ -5,6 +5,7 @@ from neural.boss.recovery import FailureRecoveryManager
 from neural.constants import EmployeeStatus, TaskStatus
 from neural.db.repositories import EmployeeRepository, ProjectRepository, TaskRepository
 from neural.exceptions import InvalidTaskStateTransitionError, TaskDependencyError
+from neural.evaluation.verifier import IndependentVerifier
 from neural.tasks.dependencies import TaskGraph
 from neural.tasks.scheduler import TaskScheduler
 from neural.tasks.state_machine import TaskStateMachine
@@ -203,7 +204,7 @@ def test_task_graph_cycle_detection_varieties():
 # =========================================================================
 
 @pytest.mark.asyncio
-async def test_scheduler_parallel_branches_and_retries(async_session: AsyncSession):
+async def test_scheduler_parallel_branches_and_retries(async_session: AsyncSession, tmp_path):
     """
     Executes a multi-branch project with one flaky task that retries with backoff
     and transitions through TaskStatus.RETRYING before succeeding.
@@ -263,7 +264,8 @@ async def test_scheduler_parallel_branches_and_retries(async_session: AsyncSessi
         task_repo=task_repo,
         employee_repo=emp_repo,
         max_concurrency=4,
-        recovery_manager=recovery
+        recovery_manager=recovery,
+        verifier=IndependentVerifier(),
     )
 
     call_counts = {"T-B1": 0}
@@ -275,7 +277,9 @@ async def test_scheduler_parallel_branches_and_retries(async_session: AsyncSessi
                 # First run fails with retryable transient error
                 return {"status": "failure", "error": "Transient connection timeout 503"}
         await asyncio.sleep(0.01)
-        return {"status": "success", "task_id": task.task_id}
+        artifact = tmp_path / f"{task.task_id}.txt"
+        artifact.write_text(f"Deliverable for {task.task_id}", encoding="utf-8")
+        return {"status": "success", "task_id": task.task_id, "artifacts": [str(artifact)]}
 
     result = await scheduler.execute_dag(project.id, worker_func=worker_with_retry, poll_interval=0.01)
 
@@ -304,7 +308,7 @@ def test_task_graph_cycle_error_details():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_resets_employee_to_idle_on_completion(async_session: AsyncSession):
+async def test_scheduler_resets_employee_to_idle_on_completion(async_session: AsyncSession, tmp_path):
     """
     Verify that an employee assigned to a task is automatically returned
     to EmployeeStatus.IDLE when the task finishes execution.
@@ -331,10 +335,17 @@ async def test_scheduler_resets_employee_to_idle_on_completion(async_session: As
     scheduler = TaskScheduler(
         task_repo=task_repo,
         employee_repo=emp_repo,
-        max_concurrency=2
+        max_concurrency=2,
+        verifier=IndependentVerifier(),
     )
 
-    result = await scheduler.execute_dag(project.id, poll_interval=0.01)
+    artifact = tmp_path / "employee-result.txt"
+
+    async def worker(task):
+        artifact.write_text("Verified lifecycle fixture", encoding="utf-8")
+        return {"status": "success", "artifacts": [str(artifact)]}
+
+    result = await scheduler.execute_dag(project.id, worker_func=worker, poll_interval=0.01)
     assert result["success"] is True
 
     # Verify employee status is back to IDLE
@@ -343,7 +354,7 @@ async def test_scheduler_resets_employee_to_idle_on_completion(async_session: As
 
 
 @pytest.mark.asyncio
-async def test_scheduler_supports_synchronous_worker_function(async_session: AsyncSession):
+async def test_scheduler_supports_synchronous_worker_function(async_session: AsyncSession, tmp_path):
     """Verify TaskScheduler can run synchronous (non-async) worker functions without crashing."""
     proj_repo = ProjectRepository(async_session)
     task_repo = TaskRepository(async_session)
@@ -359,10 +370,12 @@ async def test_scheduler_supports_synchronous_worker_function(async_session: Asy
         status=TaskStatus.PENDING
     )
 
-    scheduler = TaskScheduler(task_repo=task_repo)
+    scheduler = TaskScheduler(task_repo=task_repo, verifier=IndependentVerifier())
 
+    artifact = tmp_path / "sync-result.txt"
     def sync_worker(task):
-        return {"status": "success", "task_id": task.task_id, "mode": "sync"}
+        artifact.write_text("Synchronous worker deliverable", encoding="utf-8")
+        return {"status": "success", "task_id": task.task_id, "mode": "sync", "artifacts": [str(artifact)]}
 
     result = await scheduler.execute_dag(project.id, worker_func=sync_worker, poll_interval=0.01)
     assert result["success"] is True

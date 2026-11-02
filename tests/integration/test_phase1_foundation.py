@@ -7,7 +7,7 @@ from neural.api.deps import get_db_session
 from neural.api.main import create_app
 from neural.boss.brain import BossBrain
 from neural.constants import ContainerStatus, ProjectStatus, TaskPriority, TaskStatus
-from neural.containers.manager import ContainerManager
+from neural.containers.manager import ContainerManager, DockerBrokerRequestError
 from neural.db.repositories import (
     ContainerRepository,
     EmployeeRepository,
@@ -77,6 +77,10 @@ async def test_boss_brain_hierarchical_planning_and_db_persistence(async_session
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.getenv("ANCOS_TEST_DOCKER") != "1",
+    reason="Requires a dedicated disposable Docker daemon; never provision test desktops on the user's live host.",
+)
 async def test_container_workstation_lifecycle_and_isolation(async_session: AsyncSession):
     """
     FR-4 & Phase 1 Deliverables:
@@ -113,19 +117,15 @@ async def test_container_workstation_lifecycle_and_isolation(async_session: Asyn
     assert os.path.exists(spec1["workspace"])
     assert spec1["status"] == ContainerStatus.RUNNING.value
 
-    # Provision second employee workstation (must receive distinct incremental ports)
-    spec2 = await manager.provision_employee_desktop(
-        employee_id=emp2.employee_id,
-        role_image="employee-qa",
-        container_repo=container_repo,
-        employee_repo=employee_repo
-    )
-
-    assert spec2["vnc_port"] == 5902
-    assert spec2["novnc_port"] == 6082
-    assert "http://localhost:6082/vnc.html" in spec2["desktop_url"]
-    assert spec2["workspace"] != spec1["workspace"]
-    assert os.path.exists(spec2["workspace"])
+    # This setup intentionally has one desktop slot. A second employee cannot
+    # silently receive a workstation that the runtime does not provide.
+    with pytest.raises(DockerBrokerRequestError, match="Only one ANCOS workstation"):
+        await manager.provision_employee_desktop(
+            employee_id=emp2.employee_id,
+            role_image="employee-qa",
+            container_repo=container_repo,
+            employee_repo=employee_repo
+        )
 
     # Verify DB persistence of container records
     db_c1 = await container_repo.get_by_docker_id(spec1["docker_id"])
@@ -144,9 +144,8 @@ async def test_container_workstation_lifecycle_and_isolation(async_session: Asyn
     assert status1["status"] == ContainerStatus.TERMINATED.value
 
     # Clean up created test workspaces
-    for spec in (spec1, spec2):
-        if os.path.exists(spec["workspace"]):
-            shutil.rmtree(spec["workspace"], ignore_errors=True)
+    if os.path.exists(spec1["workspace"]):
+        shutil.rmtree(spec1["workspace"], ignore_errors=True)
 
 
 @pytest.mark.asyncio
@@ -244,7 +243,8 @@ async def test_fastapi_api_endpoints_seamless_integration(async_session: AsyncSe
         res = await client.get("/boss/status")
         assert res.status_code == 200
         boss_data = res.json()
-        assert boss_data["ceo_status"] == "operational"
+        assert boss_data["ceo_status"] in {"ready", "rules_only"}
+        assert boss_data["system_health"] == "degraded"
 
         # 3. Employee Recruitment Endpoint
         res = await client.post(

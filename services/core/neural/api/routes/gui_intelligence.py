@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import hashlib
+import io
+import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+import numpy as np
+from fastapi import APIRouter, Depends, HTTPException, Query
+from PIL import Image
+from neural.api.deps import (
+    get_container_manager,
+    get_container_repo,
+    get_employee_repo,
+    require_owner_identity,
+)
+from neural.containers.manager import ContainerManager
+from neural.db.repositories import ContainerRepository, EmployeeRepository
 from neural.gui_intelligence.action.execution_loop import GUIExecutionLoop
 from neural.gui_intelligence.benchmarks.human_speed import HumanSpeedComparator
 from neural.gui_intelligence.benchmarks.osworld_runner import OSWorldRunner
@@ -89,18 +102,35 @@ async def execute_action_chunk(chunk: list[GUIActionRequest]) -> list[GUIActionR
 
 
 @router.get("/screen/capture", response_model=ScreenCaptureResponse)
-async def capture_screen() -> ScreenCaptureResponse:
-    """Captures a fresh timestamped screen frame from the active desktop."""
-    capture = ScreenCaptureEngine()
+async def capture_screen(
+    employee_id: str = Query(..., min_length=1, max_length=80),
+    _owner: str = Depends(require_owner_identity),
+    container_manager: ContainerManager = Depends(get_container_manager),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+) -> ScreenCaptureResponse:
+    """Captures actual workstation pixels for the requested employee desktop."""
+    started = time.perf_counter()
     try:
-        frame = capture.capture_frame()
-    except ScreenCaptureUnavailableError as err:
+        workstation = await container_manager.get_desktop_by_employee_id(
+            employee_id,
+            container_repo=container_repo,
+            employee_repo=employee_repo,
+        )
+        if not workstation or workstation.get("status") != "running":
+            raise HTTPException(status_code=409, detail="Employee workstation is not running.")
+        png = await container_manager.capture_screenshot(workstation["docker_id"])
+        with Image.open(io.BytesIO(png)) as image:
+            pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    except HTTPException:
+        raise
+    except Exception as err:
         raise HTTPException(status_code=503, detail=str(err)) from err
     return ScreenCaptureResponse(
-        timestamp=frame.timestamp,
-        resolution=frame.resolution,
-        frame_hash=frame.frame_hash,
-        capture_latency_ms=frame.capture_latency_ms,
+        timestamp=time.time(),
+        resolution=(int(pixels.shape[1]), int(pixels.shape[0])),
+        frame_hash=hashlib.sha256(pixels.tobytes()).hexdigest(),
+        capture_latency_ms=(time.perf_counter() - started) * 1000.0,
     )
 
 

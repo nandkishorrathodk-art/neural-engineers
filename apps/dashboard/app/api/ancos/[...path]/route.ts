@@ -29,7 +29,7 @@ function safeTokenMatch(supplied: string | undefined, expected: string | undefin
 
 async function proxyToApi(
   request: NextRequest,
-  context: { params: { path: string[] } | Promise<{ path: string[] }> },
+  context: { params: Promise<{ path: string[] }> },
 ) {
   const configuredToken = process.env.OWNER_API_TOKEN;
   const sessionToken = request.cookies.get(SESSION_COOKIE)?.value;

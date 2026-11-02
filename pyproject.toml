@@ -41,7 +41,8 @@ dev = [
     "ruff>=0.6.9",
     "mypy>=1.11.2",
     "types-pyyaml>=6.0.12.20240917",
-    "types-redis>=4.6.0.20241004"
+    "types-redis>=4.6.0.20241004",
+    "psutil>=6.0.0"
 ]
 
 [build-system]
@@ -62,6 +63,7 @@ packages = ["services/core/neural"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = ["services/core"]
