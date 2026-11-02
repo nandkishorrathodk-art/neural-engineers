@@ -25,6 +25,48 @@ class ProjectResponse(BaseModel):
     updated_at: datetime
 
 
+class BossTaskAttemptReport(BaseModel):
+    attempt_number: int
+    worker_id: str
+    status: str
+    fencing_token: int
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    verifier_id: Optional[str] = None
+    verification_passed: Optional[bool] = None
+    verification_notes: Optional[str] = None
+
+
+class BossTaskReport(BaseModel):
+    task_id: str
+    title: str
+    objective: str
+    acceptance_criteria: str
+    status: TaskStatus
+    priority: str
+    assigned_employee_id: Optional[str] = None
+    assigned_employee_name: Optional[str] = None
+    deadline: Optional[datetime] = None
+    overdue: bool = False
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    verified: bool = False
+    verification_notes: Optional[str] = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    attempts: list[BossTaskAttemptReport] = Field(default_factory=list)
+
+
+class BossProjectReport(BaseModel):
+    project_id: str
+    project_name: str
+    objective: str
+    project_status: ProjectStatus
+    generated_at: datetime
+    task_counts: dict[str, int]
+    tasks: list[BossTaskReport]
+
+
 class TaskResponse(BaseModel):
     id: str
     task_id: str

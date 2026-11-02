@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from neural.boss.delegator import TaskDelegator
@@ -286,6 +287,132 @@ class BossBrain:
         """
         sched = self.get_scheduler()
         return await sched.execute_dag(project_id=project_id, worker_func=worker_func)
+
+    async def build_project_report(self, project_id: str) -> Optional[dict[str, Any]]:
+        """Build an owner report solely from persisted project/task/verifier state."""
+        if not self.project_repo or not self.task_repo:
+            raise ValueError("ProjectRepository and TaskRepository are required for a project report")
+
+        project = await self.project_repo.get_by_id(project_id)
+        if not project:
+            return None
+
+        employees = await self.employee_repo.list_all() if self.employee_repo else []
+        employees_by_id = {
+            identity: employee
+            for employee in employees
+            for identity in (employee.id, employee.employee_id)
+        }
+        tasks = await self.task_repo.list_by_project(project.id)
+        attempts = await self.task_repo.list_attempts_by_project(project.id)
+        attempts_by_task: dict[str, list[dict[str, Any]]] = {}
+        for attempt in attempts:
+            receipt = attempt.verification_receipt if isinstance(attempt.verification_receipt, dict) else {}
+            attempts_by_task.setdefault(attempt.task_id, []).append({
+                "attempt_number": attempt.attempt_number,
+                "worker_id": attempt.worker_id,
+                "status": attempt.status,
+                "fencing_token": attempt.fencing_token,
+                "started_at": attempt.started_at,
+                "finished_at": attempt.finished_at,
+                "error_message": attempt.error_message,
+                "verifier_id": attempt.verified_by,
+                "verification_passed": receipt.get("passed"),
+                "verification_notes": receipt.get("notes"),
+            })
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        counts = {
+            "planned": 0,
+            "assigned": 0,
+            "started": 0,
+            "retrying": 0,
+            "blocked": 0,
+            "failed": 0,
+            "completed": 0,
+            "verified": 0,
+            "completed_without_verification": 0,
+            "cancelled": 0,
+            "overdue": 0,
+            "failed_attempts": 0,
+            "rejected_attempts": 0,
+        }
+        counts["failed_attempts"] = sum(
+            1 for attempt in attempts if attempt.status == "failed"
+        )
+        counts["rejected_attempts"] = sum(
+            1 for attempt in attempts if attempt.status == "rejected"
+        )
+        task_reports: list[dict[str, Any]] = []
+
+        for task in sorted(tasks, key=lambda row: row.task_id):
+            status = task.status.value if hasattr(task.status, "value") else str(task.status)
+            receipt = task.verification_result if isinstance(task.verification_result, dict) else {}
+            verified = status == TaskStatus.COMPLETED.value and receipt.get("passed") is True
+            deadline = task.deadline
+            if deadline and deadline.tzinfo:
+                deadline = deadline.astimezone(timezone.utc).replace(tzinfo=None)
+            overdue = bool(
+                deadline
+                and deadline < now
+                and status not in {
+                    TaskStatus.COMPLETED.value,
+                    TaskStatus.FAILED.value,
+                    TaskStatus.CANCELLED.value,
+                }
+            )
+
+            if status == TaskStatus.PENDING.value:
+                counts["planned"] += 1
+            elif status == TaskStatus.ASSIGNED.value:
+                counts["assigned"] += 1
+            elif status == TaskStatus.RUNNING.value:
+                counts["started"] += 1
+            elif status == TaskStatus.RETRYING.value:
+                counts["retrying"] += 1
+            elif status == TaskStatus.BLOCKED.value:
+                counts["blocked"] += 1
+            elif status == TaskStatus.FAILED.value:
+                counts["failed"] += 1
+            elif status == TaskStatus.COMPLETED.value:
+                counts["completed"] += 1
+                if verified:
+                    counts["verified"] += 1
+                else:
+                    counts["completed_without_verification"] += 1
+            elif status == TaskStatus.CANCELLED.value:
+                counts["cancelled"] += 1
+            if overdue:
+                counts["overdue"] += 1
+
+            employee = employees_by_id.get(task.assigned_to) if task.assigned_to else None
+            task_reports.append({
+                "task_id": task.task_id,
+                "title": task.title,
+                "objective": task.objective,
+                "acceptance_criteria": task.acceptance_criteria,
+                "status": task.status,
+                "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+                "assigned_employee_id": employee.employee_id if employee else None,
+                "assigned_employee_name": employee.name if employee else None,
+                "deadline": task.deadline,
+                "overdue": overdue,
+                "started_at": task.started_at,
+                "completed_at": task.completed_at,
+                "verified": verified,
+                "verification_notes": receipt.get("notes") if receipt else None,
+                "evidence_refs": receipt.get("evidence_refs", []) if verified else [],
+                "attempts": attempts_by_task.get(task.id, []),
+            })
+
+        return {
+            "project_id": project.id,
+            "project_name": project.name,
+            "objective": project.objective,
+            "project_status": project.status,
+            "generated_at": now,
+            "task_counts": counts,
+            "tasks": task_reports,
+        }
 
     async def recruit_workforce_for_plan(self, plan: dict[str, Any]) -> list[Any]:
         """Autonomously recruits the workforce required for an execution plan (Requirements 7 & 12)."""

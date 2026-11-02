@@ -25,8 +25,9 @@ The first test invocation failed at collection because the local environment lac
 
 ## NEURO-1 control-plane slice
 
-- Focused authority, staffing, dynamic bootstrap, API, and integration checks: **7 passed**. The production API test rejects absent/worker credentials, accepts the owner token, verifies separate owner/Boss audit actors, and confirms a dynamically recruited roster. An unverified declared skill remains a staffing gap; the same skill stops being a gap only after the test marks it verified.
-- Full regression after this slice: **379 collected; 336 passed, 32 failed, 11 skipped; 5 warnings** (109.76 seconds). Phase-1 objective/recruitment integration tests pass. Remaining failure groups are listed below as observed; the additional full-suite Agentic RAG failure passed when rerun alone and is recorded as intermittent, not fixed.
+- Latest focused authority, staffing, report, and API run: **5 passed**. The production API test rejects absent/worker credentials, accepts the owner token, verifies separate owner/Boss audit actors, and confirms a dynamically recruited roster. The report tests cover owner-only access, passing verifier evidence, unverified completion, and failed attempt details. An unverified declared skill remains a staffing gap; it closes only after the test marks it verified.
+- Owner-facing project report tests verify owner-only access, actual pending/assigned counts, attempt failures, and the rule that only a passing stored verifier receipt contributes to `verified`.
+- Current full regression: **380 collected; 338 passed, 31 failed, 11 skipped; 5 warnings** (113.58 seconds). The 31 remaining failures match the NEURO-0 failure count and subsystem groups. Phase-1 objective/recruitment/report tests pass. Agentic RAG passed in this run.
 - Ruff on changed files: passed. Full Ruff remains at the same 7 baseline findings outside the changed files.
 - Scoped mypy (`--follow-imports=skip --disable-error-code=import-untyped`) passed on the four changed Python source modules; imported dependencies were intentionally not checked by this scoped command. Mypy is not green for the repository (full NEURO-0 baseline: 208 errors in 37 files).
 

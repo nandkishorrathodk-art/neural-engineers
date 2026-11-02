@@ -7,7 +7,7 @@ from neural.api.deps import (
     require_owner_identity,
 )
 from neural.api.schemas.requests import ObjectiveSubmissionRequest
-from neural.api.schemas.responses import ProjectResponse
+from neural.api.schemas.responses import BossProjectReport, ProjectResponse
 from neural.boss.brain import BossBrain
 from neural.db.repositories import (
     AuditRepository,
@@ -97,4 +97,23 @@ async def get_boss_status(
 ):
     brain = BossBrain(project_repo=project_repo, task_repo=task_repo)
     return await brain.get_status()
+
+
+@router.get("/projects/{project_id}/report", response_model=BossProjectReport)
+async def get_project_report(
+    project_id: str,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    _owner: str = Depends(require_owner_identity),
+):
+    brain = BossBrain(
+        project_repo=project_repo,
+        task_repo=task_repo,
+        employee_repo=employee_repo,
+    )
+    report = await brain.build_project_report(project_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return report
 

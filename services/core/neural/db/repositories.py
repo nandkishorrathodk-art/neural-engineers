@@ -496,6 +496,16 @@ class TaskRepository:
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
+    async def list_attempts_by_project(self, project_id: str) -> Sequence[TaskAttempt]:
+        stmt = (
+            select(TaskAttempt)
+            .join(Task, Task.id == TaskAttempt.task_id)
+            .where(Task.project_id == project_id)
+            .order_by(Task.task_id.asc(), TaskAttempt.attempt_number.asc())
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().all()
+
     async def update_status(
         self,
         task_id: str,

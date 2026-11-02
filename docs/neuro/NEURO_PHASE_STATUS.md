@@ -5,7 +5,7 @@ Updated 2026-11-02.
 | Phase | Status | Evidence |
 |---|---|---|
 | NEURO-0 — Audit | BASELINE_RECORDED | This documentation set; full test suite, Ruff, and dashboard build evidence in `NEURO_TEST_EVIDENCE.md`. |
-| NEURO-1 — Control-plane authority | IN_PROGRESS | Boss objective route now requires owner identity, recruits for verified-skill/capacity gaps, and records owner and Boss actions separately; direct `POST /employees` is disabled. Seven focused tests pass; changed-file Ruff and scoped mypy pass. Full suite is 336 passed, 32 failed, 11 skipped. Real worker/verifier execution remains unavailable. |
+| NEURO-1 — Control-plane authority | IN_PROGRESS | Boss objective route requires owner identity, recruits for verified-skill/capacity gaps, and records owner and Boss actions separately; direct `POST /employees` is disabled. Owner-only project report includes task/attempt states and verifier evidence. Current full suite is 338 passed, 31 failed, 11 skipped; scoped mypy and changed-file Ruff pass. Real worker/verifier execution remains unavailable. |
 | NEURO-2 — Durable execution | BLOCKED | No deployed worker consumer; G-01. |
 | NEURO-3 — Independent verification | BLOCKED | No deployed verifier consumer; G-01. |
 | NEURO-4 — Restricted desktop workflow | BLOCKED | Local Docker engine unavailable; G-04. |

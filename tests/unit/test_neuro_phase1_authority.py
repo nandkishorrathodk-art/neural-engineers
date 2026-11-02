@@ -1,10 +1,19 @@
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_db_session, require_owner_identity
 from neural.api.main import create_app
 from neural.boss.brain import BossBrain
-from neural.db.repositories import AuditRepository, EmployeeRepository
+from neural.constants import TaskStatus
+from neural.db.models import TaskAttempt
+from neural.db.repositories import (
+    AuditRepository,
+    EmployeeRepository,
+    ProjectRepository,
+    TaskRepository,
+)
 from neural.employees.factory import EmployeeFactory
 
 
@@ -97,6 +106,18 @@ async def test_production_objective_is_owner_authenticated_and_audited(
             headers={"Authorization": f"Bearer {owner_token}"},
         )
         assert accepted.status_code == 200
+        project_id = accepted.json()["id"]
+
+        assert (await client.get(f"/boss/projects/{project_id}/report")).status_code == 401
+        report_response = await client.get(
+            f"/boss/projects/{project_id}/report",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert report_response.status_code == 200
+        report = report_response.json()
+        assert report["task_counts"]["verified"] == 0
+        assert report["task_counts"]["completed_without_verification"] == 0
+        assert report["task_counts"]["assigned"] >= 1
 
     audit_records = await AuditRepository(async_session).list_all()
     owner_events = [record for record in audit_records if record.action == "SUBMIT_OBJECTIVE"]
@@ -104,3 +125,72 @@ async def test_production_objective_is_owner_authenticated_and_audited(
     assert owner_events and owner_events[0].actor == "human-owner"
     assert staffing_events and staffing_events[0].actor == "BossAI"
     assert staffing_events[0].details["recruited_employee_ids"]
+
+
+@pytest.mark.asyncio
+async def test_project_report_distinguishes_unverified_completion_and_attempt_failure(async_session):
+    project_repo = ProjectRepository(async_session)
+    task_repo = TaskRepository(async_session)
+    project = await project_repo.create(name="Report evidence", objective="Report stored task state")
+    await task_repo.create(
+        task_id="TASK-UNVERIFIED-REPORT",
+        project_id=project.id,
+        title="Legacy completion",
+        objective="Detect a completion missing proof",
+        scope="Reporting",
+        acceptance_criteria="A passing verifier receipt exists",
+        status=TaskStatus.COMPLETED,
+        verification_result=None,
+    )
+    failed_task = await task_repo.create(
+        task_id="TASK-FAILED-REPORT",
+        project_id=project.id,
+        title="Failed execution",
+        objective="Expose an actual failed attempt",
+        scope="Reporting",
+        acceptance_criteria="Failure details are visible",
+        status=TaskStatus.FAILED,
+    )
+    passing_task = await task_repo.create(
+        task_id="TASK-VERIFIED-REPORT",
+        project_id=project.id,
+        title="Verified work",
+        objective="Include a passing independent receipt",
+        scope="Reporting",
+        acceptance_criteria="A passing verifier receipt is stored",
+    )
+    await task_repo.complete_with_receipt(
+        passing_task.task_id,
+        {
+            "passed": True,
+            "notes": "Acceptance checks passed",
+            "evidence_refs": ["sha256:verified-artifact"],
+            "artifacts": ["verified-artifact"],
+            "test_summary": {"passed": 2},
+        },
+    )
+    async_session.add(
+        TaskAttempt(
+            task_id=failed_task.id,
+            attempt_number=1,
+            worker_id="worker-test",
+            fencing_token=1,
+            status="failed",
+            lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            error_message="Process returned exit code 2",
+            execution_receipt={},
+        )
+    )
+    await async_session.commit()
+
+    report = await BossBrain(project_repo=project_repo, task_repo=task_repo).build_project_report(project.id)
+    assert report is not None
+    assert report["task_counts"]["verified"] == 1
+    assert report["task_counts"]["completed_without_verification"] == 1
+    assert report["task_counts"]["failed"] == 1
+    assert report["task_counts"]["failed_attempts"] == 1
+    reported_failure = next(task for task in report["tasks"] if task["task_id"] == "TASK-FAILED-REPORT")
+    assert reported_failure["attempts"][0]["error_message"] == "Process returned exit code 2"
+    reported_success = next(task for task in report["tasks"] if task["task_id"] == "TASK-VERIFIED-REPORT")
+    assert reported_success["verified"] is True
+    assert reported_success["evidence_refs"] == ["sha256:verified-artifact"]

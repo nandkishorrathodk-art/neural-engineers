@@ -7,7 +7,7 @@ No live ANCOS API, worker, verifier, or Docker engine was available during NEURO
 | Metric | NEURO-0 baseline | Evidence / limitation |
 |---|---|---|
 | Full-suite component tests | 334 passed / 31 failed / 11 skipped (376 collected) | Baseline run on 2026-11-02; not a production mission. |
-| Post-NEURO-1-slice regression | 336 passed / 32 failed / 11 skipped (379 collected) | Phase-1 authority/recruitment tests pass. The one additional full-suite failure is Agentic RAG retrieval; it passed when run alone. |
+| Current regression | 338 passed / 31 failed / 11 skipped (380 collected) | Phase-1 authority, recruitment, and report tests pass; remaining failure count matches NEURO-0 baseline. |
 | Objective-to-verified-task success rate | NOT MEASURED | No task consumer/verifier consumer is deployed. |
 | API latency P50/P95/P99 | NOT MEASURED | Core API unavailable on local ports 12000/12003. |
 | Queue wait / tasks per hour | NOT MEASURED | No running worker queue consumer. |

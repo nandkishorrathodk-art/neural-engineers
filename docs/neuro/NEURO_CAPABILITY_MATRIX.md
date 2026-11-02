@@ -16,6 +16,7 @@ Audit baseline: 2026-11-02. Status describes evidence available in the repositor
 | Capability | Status | Evidence / boundary |
 |---|---|---|
 | Boss objective planning and structured plan validation | PARTIALLY_IMPLEMENTED | Planner/DAG persistence exists. The owner-authenticated objective route now enables staffing decisions; lower-level calls default recruitment off. No live deployment plan was run. |
+| Owner-facing project execution report | PARTIALLY_IMPLEMENTED | Read-only report uses persisted task/attempt states and distinguishes passing verifier receipts from legacy unverified completion; API requires owner identity. It has in-process DB tests, not a deployed workflow receipt. |
 | Dynamic employee records and factory | PARTIALLY_IMPLEMENTED | Factory generates dynamic identities; Boss recruits for missing verified skills or idle capacity. Direct `POST /employees` is disabled; explicit local bootstrap is dynamic/idempotent. No live deployed recruitment was run. |
 | Project/task DAG and API state | PARTIALLY_IMPLEMENTED | DAG/scheduler/task APIs exist; phase 2 and API contract failures remain. A running consumer is not established. |
 | Task worker process / durable consumer | MISSING | No worker consumer in `docker-compose.yml`; protocol/API routes are not a deployed executor. |
