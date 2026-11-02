@@ -160,6 +160,27 @@ class TaskRepository:
                 )
             ).scalars().all()
             latest_attempt = attempts[0] if attempts else None
+            if latest_attempt and latest_attempt.status in {"leased", "running"} and latest_attempt.lease_expires_at <= now:
+                latest_attempt.status = "failed"
+                latest_attempt.finished_at = now
+                latest_attempt.error_message = "Worker lease expired before the attempt completed."
+                if task.retry_count >= task.max_retries:
+                    task.status = TaskStatus.FAILED
+                    task.completed_at = now
+                    task.fencing_token += 1
+                    employee = await self.session.get(Employee, task.assigned_to)
+                    if employee:
+                        employee.status = EmployeeStatus.IDLE
+                    await self.session.commit()
+                    continue
+
+                retry_delay_seconds = min(2 ** task.retry_count, 60)
+                latest_attempt.lease_expires_at = now + timedelta(seconds=retry_delay_seconds)
+                task.status = TaskStatus.ASSIGNED
+                task.retry_count += 1
+                task.fencing_token += 1
+                await self.session.commit()
+                continue
             if latest_attempt and latest_attempt.status == "submitted":
                 # A submitted attempt waits for independent verification.
                 continue
