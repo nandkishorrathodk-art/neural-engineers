@@ -293,3 +293,5 @@ async def test_expired_worker_lease_consumes_retry_budget(async_session):
     assert recovered.fencing_token == 2
     await async_session.refresh(expired_attempt)
     assert expired_attempt.status == "failed"
+    assert expired_attempt.lease_expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
+    assert await task_repo.claim_next_task("worker-replacement") is None
