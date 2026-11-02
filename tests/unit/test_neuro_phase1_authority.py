@@ -295,3 +295,48 @@ async def test_expired_worker_lease_consumes_retry_budget(async_session):
     assert expired_attempt.status == "failed"
     assert expired_attempt.lease_expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
     assert await task_repo.claim_next_task("worker-replacement") is None
+
+
+@pytest.mark.asyncio
+async def test_expired_worker_lease_exhaustion_fails_task_and_releases_employee(async_session):
+    project = await ProjectRepository(async_session).create(name="Lease exhaustion", objective="Stop retry loops")
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-LEASE-EXHAUST",
+        name="Exhausted Worker",
+        title="Backend Engineer",
+        system_prompt="test employee",
+        status=EmployeeStatus.WORKING,
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-EXPIRED-LEASE-EXHAUST",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Exhaust worker retries",
+        objective="Stop retrying after the budget",
+        scope="Execution",
+        acceptance_criteria="Task fails and worker is released",
+        status=TaskStatus.RUNNING,
+        fencing_token=4,
+        retry_count=1,
+        max_retries=1,
+    )
+    expired_attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=2,
+        worker_id="worker-lost",
+        fencing_token=4,
+        status="running",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1),
+        execution_receipt={},
+    )
+    async_session.add(expired_attempt)
+    await async_session.commit()
+
+    assert await task_repo.claim_next_task("worker-replacement") is None
+    failed_task = await task_repo.get_by_task_id(task.task_id)
+    released_employee = await employee_repo.get_by_employee_id(employee.employee_id)
+    assert failed_task.status == TaskStatus.FAILED
+    assert failed_task.retry_count == 1
+    assert released_employee.status == EmployeeStatus.IDLE
