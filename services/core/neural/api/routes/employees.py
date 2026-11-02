@@ -10,7 +10,6 @@ from neural.api.deps import (
     get_task_repo,
     require_owner_identity,
 )
-from neural.api.schemas.requests import CreateEmployeeRequest
 from neural.api.schemas.responses import (
     EmployeeResponse,
     TaskResponse,
@@ -25,7 +24,6 @@ from neural.db.repositories import (
     EmployeeRepository,
     TaskRepository,
 )
-from neural.employees.factory import EmployeeFactory
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
@@ -71,31 +69,11 @@ async def list_employees(
 
 @router.post("", response_model=EmployeeResponse)
 @router.post("/", response_model=EmployeeResponse)
-async def create_employee(
-    payload: CreateEmployeeRequest,
-    employee_repo: EmployeeRepository = Depends(get_employee_repo),
-    audit_repo: AuditRepository = Depends(get_audit_repo)
-):
-    factory = EmployeeFactory(employee_repo)
-    employee = await factory.hire_employee(
-        name=payload.name,
-        title=payload.title,
-        department=payload.department,
-        role_id=payload.role_id,
-        personality=payload.personality,
-        communication_style=payload.communication_style,
-        initial_skills=payload.skills
+async def create_employee():
+    raise HTTPException(
+        status_code=405,
+        detail="Employees can only be created by Boss staffing decisions for an owner-submitted objective.",
     )
-
-    await audit_repo.log(
-        actor="BossAI",
-        action="HIRE_EMPLOYEE",
-        resource_type="Employee",
-        resource_id=employee.employee_id,
-        details={"name": employee.name, "title": employee.title}
-    )
-
-    return serialize_employee_model(employee)
 
 
 @router.get("/{employee_id}", response_model=EmployeeResponse)

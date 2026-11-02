@@ -9,6 +9,7 @@ from neural.boss.planner import TaskPlanner
 from neural.constants import ContainerStatus, SkillLevel
 from neural.containers.manager import ContainerManager
 from neural.db.repositories import (
+    AuditRepository,
     ContainerRepository,
     EmployeeRepository,
     ProjectRepository,
@@ -226,14 +227,17 @@ async def test_employee_factory_idempotent_bootstrap(async_session: AsyncSession
     # First bootstrap creates the 2 initial employees
     workforce1 = await factory.bootstrap_initial_workforce()
     assert len(workforce1) == 2
-    alex1 = workforce1[0]
-    maya1 = workforce1[1]
+    first_backend = workforce1[0]
+    first_qa = workforce1[1]
+    assert len({employee.employee_id for employee in workforce1}) == 2
+    assert len({employee.name for employee in workforce1}) == 2
+    assert all(employee.name not in {"Alex Morgan", "Maya Chen"} for employee in workforce1)
 
     # Second bootstrap returns the existing employees without duplicating rows
     workforce2 = await factory.bootstrap_initial_workforce()
     assert len(workforce2) == 2
-    assert workforce2[0].id == alex1.id
-    assert workforce2[1].id == maya1.id
+    assert workforce2[0].id == first_backend.id
+    assert workforce2[1].id == first_qa.id
 
     all_employees = await repo.list_all()
     assert len(all_employees) == 2
@@ -405,11 +409,28 @@ async def test_fastapi_phase1_comprehensive_api(async_session: AsyncSession):
         assert res_single_task.status_code == 200
         assert res_single_task.json()["task_id"] == first_task_id
 
-        # Objective submission must not fabricate or bootstrap employees.
+        # Boss dynamically recruits only because the empty roster lacks verified skills.
         res_emps = await client.get("/employees")
         assert res_emps.status_code == 200
         emp_list = res_emps.json()
-        assert emp_list == []
+        assert emp_list
+        assert all(employee["employee_id"].startswith("ANC-EMP-") for employee in emp_list)
+        assert all(employee["name"] not in {"Alex Morgan", "Maya Chen"} for employee in emp_list)
+        assert any(task["status"] == "assigned" for task in tasks)
+
+        audit_records = await AuditRepository(async_session).list_all()
+        assert any(record.action == "SUBMIT_OBJECTIVE" for record in audit_records)
+        staffing_decisions = [record for record in audit_records if record.action == "STAFFING_DECISION"]
+        assert staffing_decisions
+        assert staffing_decisions[0].actor == "BossAI"
+        assert staffing_decisions[0].details["recruited_employee_ids"]
+
+        # The owner cannot bypass Boss staffing by directly creating a staff record.
+        direct_hire = await client.post(
+            "/employees",
+            json={"name": "Unauthorized Fictional Worker", "title": "Engineer"},
+        )
+        assert direct_hire.status_code == 405
 
         # 404 on non-existent employee
         res_404 = await client.get("/employees/ANC-EMP-NONEXISTENT")

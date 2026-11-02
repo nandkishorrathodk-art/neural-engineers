@@ -1,0 +1,22 @@
+# ANCOS NEURO gap register
+
+Baseline: 2026-11-02. Priorities reflect safety and ability to prove delivered work, not feature count.
+
+| ID | Priority | Gap | Evidence / risk | Exit evidence |
+|---|---|---|---|---|
+| G-01 | P0 | No deployed task consumer and verifier consumer | Compose has no worker/verifier services; protocol and queue routes are not execution. Company cannot autonomously finish a task. | Separate least-privilege processes, health/heartbeat, lease/fencing, bounded retries, clean shutdown, and integration receipts in disposable environment. |
+| G-02 | P0 | No real employee task end-to-end proof | Prior audits explicitly record no real task completion. | Owner objective → authorized dynamic recruitment → assigned task → visible/approved execution → artifact → independently generated verifier receipt → owner-visible result. |
+| G-03 | P0 | Boss recruitment and employee-creation authority partially established | Objective endpoint now requires owner identity, asks Boss to recruit for missing verified capabilities/capacity, and logs owner and Boss decisions separately. Direct hire returns 405; legacy bootstrap identities are dynamic/idempotent. Focused production-token/API tests pass; no live deployment receipt yet. | Full regression evidence plus clean-DB proof that only the owner objective path recruits; continue to verify policies in a deployed runtime. |
+| G-04 | P0 | Docker provisioning not verifiable locally | Docker Linux engine unavailable; restricted broker tests fail without broker. | Disposable isolated broker CI job passes security invariants and lifecycle tests; broker failure remains closed. |
+| G-05 | P1 | Resource capacity mismatch | Scheduler suite has 10 failures; configuration/profile expects one slot while tests expect four. | One canonical capacity source; profile-specific tests assert configured capacity; no oversubscription under lease races. |
+| G-06 | P1 | Python suite remains red | NEURO-0 baseline: 31 failures. Post NEURO-1 slice: 336 passed, 32 failed, 11 skipped; failures remain across broker, phases 2/5/6/7, cognitive-fabric loops, methods, and resource scheduler. One Agentic RAG test failed in full suite but passed alone. | Categorized fixes; full suite green or explicitly quarantined environment-dependent tests with CI evidence. |
+| G-07 | P1 | Ruff findings | Seven lint findings (six import-order, one unused import). | Ruff check clean and run as CI gate. |
+| G-08 | P1 | Laya actual inference unavailable | Optional weights/runtime are not exercised; fallback can be mistaken for model capability. | Separate integration job verifies checkpoint digest, loaded model identity, inference receipt, and deterministic fallback path. |
+| G-09 | P1 | No performance/SLO baseline | Core API/worker unavailable; no valid latency or throughput measurements. | Reproducible isolated benchmark with hardware/runtime/config, P50/P95/P99, task success rate, queue latency, cost and memory. |
+| G-10 | P2 | Dashboard operational events partly inferred/locally assigned | Desk mapping is local; meeting speaker event absent; polling only. | Persist workstation assignment and meeting activity; UI presents only backend events and unavailable state; evidence-backed browser walkthrough. |
+| G-11 | P2 | Memory and learning not proven across real task lifecycle | Services exist, but no provenance-preserving live learning/promotion receipt. | End-to-end source attribution, consent/retention controls, evaluation, approval, rollback, and no unverified skill promotion. |
+| G-12 | P2 | Backup/restore and operational recovery lack current clean-room receipt | Modules/tests exist but no restore exercise in this run. | Scheduled backup, manifest verification, isolated restore, DB integrity check, RTO/RPO evidence, documented operator procedure. |
+
+## Dependencies and sequencing
+
+G-01 through G-04 are prerequisites for a safe first autonomous task. Resolve G-05 through G-09 before claiming predictable capacity or performance. UI, memory/evolution, and disaster recovery work builds on stable persisted lifecycle evidence. Track each exit artifact in `NEURO_PHASE_STATUS.md` and `NEURO_TEST_EVIDENCE.md`.

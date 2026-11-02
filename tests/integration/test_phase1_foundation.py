@@ -165,9 +165,9 @@ async def test_workforce_recruitment_and_skill_certification(async_session: Asyn
     assert len(workforce) == 2
 
     backend_dev, qa_dev = workforce[0], workforce[1]
-    assert backend_dev.name == "Alex Morgan"
+    assert backend_dev.name not in {"Alex Morgan", "Maya Chen"}
     assert backend_dev.title == "Senior Backend Engineer"
-    assert qa_dev.name == "Maya Chen"
+    assert qa_dev.name not in {"Alex Morgan", "Maya Chen"}
     assert qa_dev.title == "Quality Assurance & Verification Engineer"
 
     # 2. Check base skills loaded from configs/role-definitions.yaml
@@ -246,29 +246,18 @@ async def test_fastapi_api_endpoints_seamless_integration(async_session: AsyncSe
         assert boss_data["ceo_status"] in {"ready", "rules_only"}
         assert boss_data["system_health"] == "degraded"
 
-        # 3. Employee Recruitment Endpoint
-        res = await client.post(
+        # 3. A direct employee-create request cannot bypass Boss staffing.
+        direct_hire = await client.post(
             "/employees/",
-            json={
-                "name": "Devin Torres",
-                "title": "Senior Backend Engineer",
-                "department": "Engineering",
-                "role_id": "senior-backend-engineer",
-                "skills": ["Python", "FastAPI", "Docker"]
-            }
+            json={"name": "Fake Worker", "title": "Senior Backend Engineer"},
         )
-        assert res.status_code == 200
-        emp_data = res.json()
-        assert emp_data["name"] == "Devin Torres"
-        assert emp_data["employee_id"].startswith("ANC-EMP-")
-        assert len(emp_data["skills"]) == 3
+        assert direct_hire.status_code == 405
 
-        # 4. List Employees Endpoint
+        # 4. The company begins with a genuine empty workforce.
         res = await client.get("/employees/")
         assert res.status_code == 200
         employees_list = res.json()
-        assert len(employees_list) >= 1
-        assert any(e["name"] == "Devin Torres" for e in employees_list)
+        assert employees_list == []
 
         # 5. Submit Objective Endpoint (Creates project, plans DAG, creates tasks, assigns first task)
         res = await client.post(
@@ -304,6 +293,13 @@ async def test_fastapi_api_endpoints_seamless_integration(async_session: AsyncSe
         # First task should be assigned
         assert tasks_list[0]["status"] == "assigned"
         assert tasks_list[0]["assigned_to"] is not None
+
+        # Boss recruits dynamically because the empty workforce lacks verified skills.
+        employees_list = (await client.get("/employees/")).json()
+        assert employees_list
+        assert all(employee["employee_id"].startswith("ANC-EMP-") for employee in employees_list)
+        assert all(employee["name"] != "Fake Worker" for employee in employees_list)
+        emp_data = employees_list[0]
 
         # 9. Schedule Boardroom Meeting
         res = await client.post(

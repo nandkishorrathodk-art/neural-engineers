@@ -63,14 +63,15 @@ class EmployeeFactory:
         role_id: Optional[str] = None,
         personality: Optional[str] = None,
         communication_style: Optional[str] = None,
-        initial_skills: Optional[list[str]] = None
+        initial_skills: Optional[list[str]] = None,
+        recruitment_origin: Optional[str] = None,
     ) -> Employee:
         role_cfg = self._load_role_config(role_id) if role_id else None
 
-        effective_title = title or (role_cfg.get("title") if role_cfg else "Software Engineer")
-        effective_dept = department or (role_cfg.get("department") if role_cfg else "Engineering")
+        effective_title = title or (role_cfg.get("title") if role_cfg else None) or "Software Engineer"
+        effective_dept = department or (role_cfg.get("department") if role_cfg else None) or "Engineering"
 
-        employee_id = f"ANC-EMP-{uuid.uuid4().hex[:4].upper()}"
+        employee_id = f"ANC-EMP-{uuid.uuid4().hex[:12].upper()}"
         system_prompt = (
             f"You are {name}, a {effective_title} at Autonomous Neural Company (ANCOS).\n"
             f"Department: {effective_dept}.\n"
@@ -92,6 +93,8 @@ class EmployeeFactory:
                 "preferred_model_tier": role_cfg.get("preferred_model_tier", "coding"),
                 "container_template": role_cfg.get("container_template", "employee-swe")
             }
+        if recruitment_origin:
+            model_config_data["recruitment_origin"] = recruitment_origin
 
         # Ensure workspace directory exists on host
         workspace_base = os.path.abspath(self.settings.EMPLOYEE_WORKSPACE_BASE)
@@ -262,11 +265,18 @@ class EmployeeFactory:
         department: str = "Engineering",
         role_id: Optional[str] = None,
         initial_skills: Optional[list[str]] = None,
+        recruitment_origin: Optional[str] = None,
     ) -> Employee:
         """
         Recruits an employee with a fully dynamic, unique identity (Requirement 7).
         """
         persona = self.generate_dynamic_identity(role_title=role_title, department=department)
+        existing_names = {
+            employee.name.strip().casefold()
+            for employee in await self.repo.list_all()
+        }
+        if persona["name"].strip().casefold() in existing_names:
+            persona["name"] = f"{persona['name']} {uuid.uuid4().hex[:4].upper()}"
         return await self.hire_employee(
             name=persona["name"],
             title=persona["title"],
@@ -275,9 +285,14 @@ class EmployeeFactory:
             personality=persona["personality"],
             communication_style=persona["communication_style"],
             initial_skills=initial_skills,
+            recruitment_origin=recruitment_origin,
         )
 
-    async def recruit_workforce_for_plan(self, plan: dict[str, Any]) -> list[Employee]:
+    async def recruit_workforce_for_plan(
+        self,
+        plan: dict[str, Any],
+        skill_gaps: Optional[dict[str, list[str]]] = None,
+    ) -> list[Employee]:
         """
         Analyzes an execution plan and dynamically recruits the necessary specialists
         for all phases and required skills (Requirement 7 & 12).
@@ -296,7 +311,9 @@ class EmployeeFactory:
                     if s not in needed_roles[req_role]:
                         needed_roles[req_role].append(s)
 
-        if not needed_roles:
+        if skill_gaps is not None:
+            needed_roles = skill_gaps
+        elif not needed_roles:
             needed_roles = {
                 "senior-backend-engineer": ["Python", "FastAPI", "System Design"],
                 "qa-engineer": ["pytest", "Security Auditing", "Verification"],
@@ -318,37 +335,30 @@ class EmployeeFactory:
 
     async def bootstrap_initial_workforce(self) -> list[Employee]:
         """
-        Recruits initial Phase 1 workforce as defined in PLAN.md:
-        1. Senior Backend Engineer (Alex Morgan)
-        2. QA & Verification Engineer (Maya Chen)
-        Idempotent: returns existing employees if already created.
+        Creates a dynamic backend/QA starting team for explicit local bootstrap.
+        Names and employee identities are generated; no fictional staff profiles
+        are pre-populated. Repeated calls reuse only records created by this helper.
         """
         existing = await self.repo.list_all()
-        existing_names = {e.name: e for e in existing}
+        bootstrapped = {
+            employee.model_config_data.get("recruitment_origin"): employee
+            for employee in existing
+            if employee.model_config_data
+            and employee.model_config_data.get("recruitment_origin", "").startswith("local-bootstrap:")
+        }
 
-        senior_backend = existing_names.get("Alex Morgan")
-        if not senior_backend:
-            senior_backend = await self.hire_employee(
-                name="Alex Morgan",
-                title="Senior Backend Engineer",
-                department="Engineering",
-                role_id="senior-backend-engineer",
-                personality="Rigorous, architecture-focused, and highly pragmatic",
-                communication_style="Direct, concise, and code-grounded",
-                initial_skills=["Python", "FastAPI", "PostgreSQL", "Redis", "Docker", "System Design"]
-            )
-
-        qa_engineer = existing_names.get("Maya Chen")
-        if not qa_engineer:
-            qa_engineer = await self.hire_employee(
-                name="Maya Chen",
-                title="Quality Assurance & Verification Engineer",
-                department="Quality & Reliability",
-                role_id="qa-engineer",
-                personality="Adversarial, skeptical, thorough, and precision-driven",
-                communication_style="Evidence-based, receipt-driven, and unambiguous",
-                initial_skills=["Python", "pytest", "Playwright", "API Testing", "Security Auditing"]
-            )
-
-        return [senior_backend, qa_engineer]
+        workforce: list[Employee] = []
+        for role_id in ("senior-backend-engineer", "qa-engineer"):
+            origin = f"local-bootstrap:{role_id}"
+            employee = bootstrapped.get(origin)
+            if employee is None:
+                role_config = self._load_role_config(role_id) or {}
+                employee = await self.recruit_dynamic_employee(
+                    role_title=role_config.get("title", role_id.replace("-", " ").title()),
+                    department=role_config.get("department", "Engineering"),
+                    role_id=role_id,
+                    recruitment_origin=origin,
+                )
+            workforce.append(employee)
+        return workforce
 

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 from neural.boss.delegator import TaskDelegator
 from neural.boss.planner import TaskPlanner
 from neural.boss.recovery import FailureRecoveryManager
-from neural.constants import TaskPriority, TaskStatus
+from neural.constants import EmployeeStatus, TaskPriority, TaskStatus
 from neural.db.models import Project, Task
 from neural.db.repositories import EmployeeRepository, ProjectRepository, TaskRepository
 from neural.llm.gateway import LLMGateway
@@ -186,10 +186,35 @@ class BossBrain:
             # Auto-assign first task if requested
             if auto_assign_first_task and created_tasks and e_repo:
                 employees = await e_repo.list_all()
-                if not employees and auto_recruit_workforce:
+                skill_gaps = self._get_verified_skill_gaps(plan, list(employees))
+                if not any(employee.status == EmployeeStatus.IDLE for employee in employees):
+                    first_task_info = next(
+                        (
+                            task
+                            for phase in plan.get("phases", [])
+                            for task in phase.get("tasks", [])
+                        ),
+                        None,
+                    )
+                    if first_task_info:
+                        role_id = str(first_task_info.get("role_required") or "software-engineer")
+                        skills = [
+                            str(skill).strip()
+                            for skill in first_task_info.get("skills_required", [])
+                            if str(skill).strip()
+                        ] or ["Software Engineering"]
+                        current = skill_gaps.setdefault(role_id, [])
+                        for skill in skills:
+                            if all(existing.casefold() != skill.casefold() for existing in current):
+                                current.append(skill)
+                if auto_recruit_workforce and skill_gaps:
                     from neural.employees.factory import EmployeeFactory
                     factory = EmployeeFactory(e_repo)
-                    employees = await factory.recruit_workforce_for_plan(plan)
+                    recruited = await factory.recruit_workforce_for_plan(
+                        plan,
+                        skill_gaps=skill_gaps,
+                    )
+                    employees = [*employees, *recruited]
 
                 if employees:
                     first_task = created_tasks[0]
@@ -225,6 +250,30 @@ class BossBrain:
                 logger.warning("Could not emit broadcast for new project", error=str(e))
 
         return project, created_tasks
+
+    @staticmethod
+    def _get_verified_skill_gaps(
+        plan: dict[str, Any],
+        employees: list[Any],
+    ) -> dict[str, list[str]]:
+        """Return role-grouped skills no current employee has empirically verified."""
+        verified_skills = {
+            skill.skill_name.strip().casefold()
+            for employee in employees
+            for skill in (employee.skills or [])
+            if skill.verified and skill.skill_name.strip()
+        }
+        skill_gaps: dict[str, list[str]] = {}
+        for phase in plan.get("phases", []):
+            for task in phase.get("tasks", []):
+                role_id = str(task.get("role_required") or "software-engineer").strip()
+                role_gaps = skill_gaps.setdefault(role_id, [])
+                for raw_skill in task.get("skills_required", []):
+                    skill = str(raw_skill).strip()
+                    if skill and skill.casefold() not in verified_skills:
+                        if all(existing.casefold() != skill.casefold() for existing in role_gaps):
+                            role_gaps.append(skill)
+        return {role_id: skills for role_id, skills in skill_gaps.items() if skills}
 
     async def execute_project_dag(
         self,
