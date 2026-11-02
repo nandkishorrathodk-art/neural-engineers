@@ -9,16 +9,16 @@ import { findPath } from './MovementEngine';
 export function generateCharacterTheme(role: CharacterRole, seed: string): CharacterVisualTheme {
   const hash = seed.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
 
-  const skinTones = ['#f8fafc', '#fed7aa', '#fde68a', '#fbcfe8', '#f5d0fe'];
+  const skinTones = ['#f1c79f', '#c98f6d', '#e8b995', '#a9684b', '#f2d5b9'];
   const skinTone = skinTones[hash % skinTones.length];
 
   switch (role) {
     case 'boss':
       return {
-        hairColor: '#38bdf8',
-        suitColor: '#0b1329',
-        accentColor: '#38bdf8',
-        skinTone: '#f8fafc',
+        hairColor: '#4d5c70',
+        suitColor: '#394e47',
+        accentColor: '#efcc87',
+        skinTone: '#e8b995',
         hairStyle: 'spiky',
         hasVisor: true,
         hasHeadphones: false,
@@ -26,9 +26,9 @@ export function generateCharacterTheme(role: CharacterRole, seed: string): Chara
       };
     case 'swe':
       return {
-        hairColor: (hash % 2 === 0) ? '#3b82f6' : '#2563eb',
-        suitColor: '#1e293b',
-        accentColor: '#60a5fa',
+        hairColor: (hash % 2 === 0) ? '#72533f' : '#46566c',
+        suitColor: '#384d4a',
+        accentColor: '#d8b974',
         skinTone,
         hairStyle: 'spiky',
         hasVisor: false,
@@ -37,9 +37,9 @@ export function generateCharacterTheme(role: CharacterRole, seed: string): Chara
       };
     case 'frontend':
       return {
-        hairColor: '#8b5cf6',
-        suitColor: '#1e1b4b',
-        accentColor: '#a78bfa',
+        hairColor: '#6c4e41',
+        suitColor: '#465b65',
+        accentColor: '#e1b273',
         skinTone,
         hairStyle: 'bob',
         hasVisor: false,
@@ -48,9 +48,9 @@ export function generateCharacterTheme(role: CharacterRole, seed: string): Chara
       };
     case 'research':
       return {
-        hairColor: '#ec4899',
-        suitColor: '#371435',
-        accentColor: '#f472b6',
+        hairColor: '#55443b',
+        suitColor: '#63576a',
+        accentColor: '#c4a5d5',
         skinTone,
         hairStyle: 'long',
         hasVisor: false,
@@ -59,9 +59,9 @@ export function generateCharacterTheme(role: CharacterRole, seed: string): Chara
       };
     case 'creative':
       return {
-        hairColor: '#d946ef',
-        suitColor: '#2e1065',
-        accentColor: '#e879f9',
+        hairColor: '#80543c',
+        suitColor: '#76604e',
+        accentColor: '#e1b273',
         skinTone,
         hairStyle: 'bob',
         hasVisor: false,
@@ -70,9 +70,9 @@ export function generateCharacterTheme(role: CharacterRole, seed: string): Chara
       };
     case 'qa':
       return {
-        hairColor: '#eab308',
-        suitColor: '#3b2505',
-        accentColor: '#fbbf24',
+        hairColor: '#544134',
+        suitColor: '#4d515b',
+        accentColor: '#e4bc70',
         skinTone,
         hairStyle: 'spiky',
         hasVisor: true,
@@ -81,9 +81,9 @@ export function generateCharacterTheme(role: CharacterRole, seed: string): Chara
       };
     case 'devops':
       return {
-        hairColor: '#06b6d4',
-        suitColor: '#083344',
-        accentColor: '#22d3ee',
+        hairColor: '#3c4c50',
+        suitColor: '#39545d',
+        accentColor: '#8bc5c3',
         skinTone,
         hairStyle: 'spiky',
         hasVisor: false,
@@ -92,9 +92,9 @@ export function generateCharacterTheme(role: CharacterRole, seed: string): Chara
       };
     default:
       return {
-        hairColor: '#38bdf8',
-        suitColor: '#0f172a',
-        accentColor: '#38bdf8',
+        hairColor: '#5d493c',
+        suitColor: '#435358',
+        accentColor: '#d7b57b',
         skinTone,
         hairStyle: 'bob',
         hasVisor: false,
@@ -171,21 +171,18 @@ export function syncEmployeesToCharacters(
       existing.name = emp.name;
       existing.title = emp.title;
       existing.department = emp.department;
-      existing.status = (emp.status as any) || existing.status;
+      existing.status = (emp.status as GameCharacter['status']) || 'unknown';
+      existing.currentTask = typeof (emp as any).current_task === 'string'
+        ? (emp as any).current_task
+        : 'No task reported by backend';
       existing.skills = Array.isArray(emp.skills)
         ? emp.skills.map((s) => (typeof s === 'string' ? s : s.name))
         : existing.skills;
       existing.desktopUrl = emp.desktop_url;
-      // If status says 'working' and not currently walking, set state to working
-      if (emp.status === 'working' && existing.path.length === 0 && existing.assignedDeskId) {
-        if (
-          existing.currentMeetingSeatIndex === null &&
-          existing.animState !== 'celebrating' &&
-          existing.animState !== 'warning' &&
-          existing.animState !== 'speaking' &&
-          existing.animState !== 'listening'
-        ) {
-          existing.animState = 'working';
+      if (existing.path.length === 0 && existing.currentMeetingSeatIndex === null) {
+        if (emp.status === 'working') existing.animState = 'working';
+        else if (emp.status === 'idle' || emp.status === 'suspended' || emp.status === 'terminated') {
+          existing.animState = 'idle';
         }
       }
     } else {
@@ -202,10 +199,13 @@ export function syncEmployeesToCharacters(
       const spawnPoint = ELEVATOR_SPAWN;
       const initialSkills = Array.isArray(emp.skills)
         ? emp.skills.map((s) => (typeof s === 'string' ? s : s.name))
-        : ['Full-Stack', 'Async Python', 'Docker'];
+        : [];
+      const employeeStatus = (emp.status as GameCharacter['status']) || 'unknown';
+      const currentTask = typeof (emp as any).current_task === 'string'
+        ? (emp as any).current_task
+        : 'No task reported by backend';
 
-      // If initial bootstrap, place directly at workstation in working state.
-      // Otherwise, spawn at elevator and walk to workstation.
+      // Bootstrap at the assigned desk; later recruits walk in from the entry.
       const startAtDesk = isInitialBootstrap && ws;
       const startX = startAtDesk ? ws.seatGridX : spawnPoint.x;
       const startY = startAtDesk ? ws.seatGridY : spawnPoint.y;
@@ -216,9 +216,9 @@ export function syncEmployeesToCharacters(
         title: emp.title,
         department: emp.department,
         role,
-        status: (emp.status as any) || 'online',
+        status: employeeStatus,
         skills: initialSkills,
-        currentTask: startAtDesk ? 'Active task execution' : 'Initial workstation provisioning & setup',
+        currentTask,
         vncPort: 6080 + updatedMap.size,
         desktopUrl: emp.desktop_url,
         avatarInitials: emp.name
@@ -236,15 +236,17 @@ export function syncEmployeesToCharacters(
           : (ws ? findPath(spawnPoint, { x: ws.seatGridX, y: ws.seatGridY }) : []),
         speed: 2.2, // grid units / sec
         heading: startAtDesk ? 'down' : 'right',
-        animState: startAtDesk ? 'working' : (ws ? 'walking' : 'idle'),
+        animState: startAtDesk
+          ? (employeeStatus === 'working' ? 'working' : 'idle')
+          : (ws ? 'walking' : 'idle'),
         animTime: Math.random() * 5,
         blinkTimer: 2.0,
         isBlinking: false,
         assignedDeskId,
         currentMeetingSeatIndex: null,
         theme,
-        speechText: startAtDesk ? null : `Hello ANCOS! Excited to join ${emp.department}.`,
-        speechRemainingMs: startAtDesk ? 0 : 5000,
+        speechText: null,
+        speechRemainingMs: 0,
       };
 
       updatedMap.set(emp.employee_id, newChar);

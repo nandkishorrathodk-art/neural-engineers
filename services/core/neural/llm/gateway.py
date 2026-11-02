@@ -227,9 +227,11 @@ class LLMGateway:
                 self.settings.OPENAI_API_KEY,
                 self.settings.ANTHROPIC_API_KEY,
                 self.settings.GEMINI_API_KEY,
+                self.settings.NVIDIA_API_KEY,
                 os.getenv("OPENAI_API_KEY"),
                 os.getenv("ANTHROPIC_API_KEY"),
-                os.getenv("GEMINI_API_KEY")
+                os.getenv("GEMINI_API_KEY"),
+                os.getenv("NVIDIA_API_KEY")
             ])
 
             if not has_keys:
@@ -243,12 +245,39 @@ class LLMGateway:
                     "provider": model.split("-")[0]
                 }
 
-            response = await litellm.acompletion(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            response = None
+            if model.startswith("nim/"):
+                nvidia_api_key = self.settings.NVIDIA_API_KEY or os.getenv("NVIDIA_API_KEY")
+                if not nvidia_api_key:
+                    raise ModelProviderError("NVIDIA_API_KEY is required for NVIDIA NIM models.")
+                # ``nim/`` is an internal routing prefix; NVIDIA expects its
+                # catalog model ID without that prefix.
+                nim_model = model[len("nim/"):]
+                from openai import AsyncOpenAI
+
+                extra_body: dict[str, Any] = {}
+                if "nemotron-3" in nim_model:
+                    # Keep reasoning models from spending a small completion
+                    # budget only on hidden reasoning and returning no answer.
+                    extra_body = {"chat_template_kwargs": {"enable_thinking": False}}
+                async with AsyncOpenAI(
+                    api_key=nvidia_api_key,
+                    base_url=self.settings.NVIDIA_API_BASE,
+                ) as client:
+                    response = await client.chat.completions.create(
+                        model=nim_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **({"extra_body": extra_body} if extra_body else {}),
+                    )
+            else:
+                response = await litellm.acompletion(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
             content = response.choices[0].message.content or ""
             usage = getattr(response, "usage", None)
             in_tok = usage.prompt_tokens if usage else len(prompt.split())
@@ -259,7 +288,7 @@ class LLMGateway:
                 "content": content,
                 "input_tokens": in_tok,
                 "output_tokens": out_tok,
-                "provider": provider
+                "provider": "nvidia" if model.startswith("nim/") else provider
             }
         except Exception as e:
             if self._is_rate_limit(e):

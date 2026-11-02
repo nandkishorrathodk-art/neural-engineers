@@ -5,5 +5,5 @@ unset DBUS_SESSION_BUS_ADDRESS
 [ -r $HOME/.Xresources ] && xrdb $HOME/.Xresources
 xsetroot -solid grey
 vncconfig -iconic &
-startxfce4 &
+exec dbus-run-session -- startxfce4
 

@@ -1,21 +1,20 @@
 tiers:
   reasoning:
-    primary: "claude-3-7-sonnet"
+    primary: "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
     fallbacks:
-      - "gpt-4o"
-      - "gemini-1.5-pro"
+      - "nim/nvidia/nemotron-3-super-120b-a12b"
+      - "nim/openai/gpt-oss-20b"
   
   coding:
-    primary: "claude-3-5-sonnet-20241022"
+    primary: "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
     fallbacks:
-      - "gpt-4o"
-      - "qwen-2.5-coder-32b"
+      - "nim/nvidia/nemotron-3-super-120b-a12b"
+      - "nim/openai/gpt-oss-20b"
 
   fast:
-    primary: "gpt-4o-mini"
+    primary: "nim/openai/gpt-oss-20b"
     fallbacks:
-      - "claude-3-5-haiku"
-      - "gemini-1.5-flash"
+      - "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
 
 routes:
   boss_brain: "reasoning"

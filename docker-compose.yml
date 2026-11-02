@@ -11,6 +11,9 @@ services:
       - ancos-network
     cap_drop:
       - ALL
+    cap_add:
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
 
@@ -36,7 +39,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -H 'Authorization: Bearer $$DOCKER_BROKER_TOKEN' http://127.0.0.1:12002/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS -H \"Authorization: Bearer $$DOCKER_BROKER_TOKEN\" http://127.0.0.1:12002/health || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -60,6 +63,8 @@ services:
       - WORKER_API_TOKEN=${WORKER_API_TOKEN:-}
       - WORKER_API_TOKENS=${WORKER_API_TOKENS:-{}}
       - VERIFIER_API_TOKEN=${VERIFIER_API_TOKEN:-}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - NVIDIA_API_BASE=${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
       - DOCKER_BROKER_URL=http://docker-broker:12002
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
     volumes:

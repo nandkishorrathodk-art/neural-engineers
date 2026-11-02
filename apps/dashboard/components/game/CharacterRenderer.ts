@@ -82,9 +82,7 @@ export function drawCharacter(
   const isFacingUp = char.heading === 'up';
 
   ctx.translate(screenX, baseY);
-  if (isFacingLeft) {
-    ctx.scale(-1, 1);
-  }
+  ctx.scale(isFacingLeft ? -1.6 : 1.6, 1);
 
   // ─── LEGS & SHOES ───
   ctx.save();

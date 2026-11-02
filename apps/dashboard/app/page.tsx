@@ -104,13 +104,13 @@ export default function DashboardOverview() {
   const cpuVal = telemetry?.cpu?.percent == null ? null : Math.round(telemetry.cpu.percent);
   const memVal = telemetry?.memory?.percent == null ? null : Math.round(telemetry.memory.percent);
   const diskVal = telemetry?.disk?.percent == null ? null : Math.round(telemetry.disk.percent);
-  const netVal = telemetry?.network?.bytes_recv == null ? null : Math.round(telemetry.network.bytes_recv / 1000);
+  const netVal = telemetry?.network?.bytes_recv == null ? null : Math.round(telemetry.network.bytes_recv / 1024);
 
   const gauges = [
     { label: 'CPU', val: cpuVal, color: '#38bdf8', stroke: 'stroke-sky-400' },
     { label: 'Memory', val: memVal, color: '#10b981', stroke: 'stroke-emerald-400' },
     { label: 'Disk', val: diskVal, color: '#f59e0b', stroke: 'stroke-amber-500' },
-    { label: 'Network', val: netVal, color: '#c084fc', stroke: 'stroke-purple-400' },
+    { label: 'RX', val: netVal, color: '#c084fc', stroke: 'stroke-purple-400' },
   ];
 
 
@@ -198,14 +198,14 @@ export default function DashboardOverview() {
                       <div className="relative w-14 h-14 flex items-center justify-center">
                         <svg className="w-14 h-14 transform -rotate-90" viewBox="0 0 54 54">
                           {/* Background Track */}
-                          <circle
+                          {g.label !== 'RX' && <circle
                             cx="27"
                             cy="27"
                             r={radius}
                             className="stroke-[#0e1c36]"
                             strokeWidth="4.5"
                             fill="transparent"
-                          />
+                          />}
                           {/* Progress Circle */}
                           <circle
                             cx="27"
@@ -221,7 +221,7 @@ export default function DashboardOverview() {
                           />
                         </svg>
                         <span className="absolute font-mono font-bold text-xs text-white">
-                          {g.val === null ? '—' : `${g.val}${g.label === 'Network' ? 'k' : '%'}`}
+                          {g.val === null ? '—' : `${g.val}${g.label === 'RX' ? 'kB' : '%'}`}
                         </span>
                       </div>
                       <span className="text-[11px] text-slate-400 mt-1 font-semibold">{g.label}</span>

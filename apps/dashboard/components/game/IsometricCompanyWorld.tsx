@@ -21,14 +21,18 @@ import {
   WORKSTATIONS,
   MEETING_SEATS,
   ELEVATOR_SPAWN,
+  GRID_SIZE_X,
+  GRID_SIZE_Y,
   ROOM_ZONES,
   RoomZoneDef,
 } from './OfficeLayout';
 import {
   gridToScreen,
   screenToGrid,
-  getIsometricDepth,
+  getRenderDepth,
   gridDistance,
+  TILE_WIDTH,
+  TILE_HEIGHT,
 } from './IsometricMath';
 import {
   drawFloorAndArchitecture,
@@ -60,7 +64,6 @@ import {
 export const IsometricCompanyWorld: React.FC = () => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const ecgCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Core World State
   const [workstations, setWorkstations] = useState<WorkstationDef[]>(() =>
@@ -89,15 +92,22 @@ export const IsometricCompanyWorld: React.FC = () => {
   // Floating HUD metrics
   const [showOverviewCard, setShowOverviewCard] = useState(true);
   const [showDevPanel, setShowDevPanel] = useState(false);
+  const [developerToolsEnabled, setDeveloperToolsEnabled] = useState(false);
   const [metrics, setMetrics] = useState({
-    employeeCount: 0,
-    activeProjects: 0,
-    systemHealth: 'unknown',
+    employeeCount: null as number | null,
+    activeProjects: null as number | null,
   });
 
   const isInitialSyncRef = useRef(true);
   const hasSelectedInitialRef = useRef(false);
   const lastProcessedMsgIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    setDeveloperToolsEnabled(
+      process.env.NODE_ENV === 'development' &&
+      new URLSearchParams(window.location.search).get('worldTools') === '1'
+    );
+  }, []);
 
   // Keep references for animation loop without closure staleness
   const stateRef = useRef({
@@ -149,15 +159,9 @@ export const IsometricCompanyWorld: React.FC = () => {
     try {
       // 1. Fetch Boss Status
       const bossData = await fetchBossStatus().catch(() => null);
-      if (bossData) {
-        setMetrics((prev) => ({
-          ...prev,
-          systemHealth: bossData.system_health || 'nominal',
-        }));
-      }
 
       // 2. Fetch Projects
-      const projects = await fetchProjects().catch(() => []);
+      const projects = await fetchProjects().catch(() => null);
       if (Array.isArray(projects)) {
         setMetrics((prev) => ({
           ...prev,
@@ -166,62 +170,71 @@ export const IsometricCompanyWorld: React.FC = () => {
       }
 
       // 3. Fetch Real Employees from DB
-      const employees = await fetchEmployees().catch(() => []);
+      const employees = await fetchEmployees().catch(() => null);
       if (Array.isArray(employees)) {
         // Real count of recruited employees
         setMetrics((prev) => ({
           ...prev,
           employeeCount: employees.length,
         }));
+      }
 
-        setCharacters((prevChars) => {
-          const nextChars = new Map(prevChars);
+      setCharacters((prevChars) => {
+        const nextChars = new Map(prevChars);
+        const bossWs = workstations.find((w) => w.id === 'WS-BOSS');
+        const bossStatus = bossData?.ceo_status === 'operational' ? 'online' : 'unknown';
+        const bossTask = bossData?.active_mode
+          ? `Mode: ${bossData.active_mode}`
+          : 'No status reported by backend';
 
-          // Instantiate Boss AI in CEO Office
-          if (!nextChars.has('ANC-BOSS')) {
-            const bossWs = workstations.find((w) => w.id === 'WS-BOSS');
-            const bossTheme = generateCharacterTheme('boss', 'ANC-BOSS');
-            const bossChar: GameCharacter = {
-              id: 'ANC-BOSS',
-              name: 'Boss AI',
-              title: 'Executive Orchestrator (CEO)',
-              department: 'Executive Office',
-              role: 'boss',
-              status: 'online',
-              skills: ['Executive Governance', 'Strategic Planning', 'Autonomous Delegation'],
-              currentTask: bossData?.active_mode
-                ? `Mode: ${bossData.active_mode}`
-                : 'Directing ANCOS AI organizational objectives',
-              vncPort: 6080,
-              avatarInitials: 'B',
-              gridX: 4,
-              gridY: 3.5,
-              targetGridX: 4,
-              targetGridY: 3.5,
-              path: [],
-              speed: 2.2,
-              heading: 'down',
-              animState: 'working',
-              animTime: 0,
-              blinkTimer: 2.5,
-              isBlinking: false,
-              assignedDeskId: 'WS-BOSS',
-              currentMeetingSeatIndex: null,
-              theme: bossTheme,
-              speechText: null,
-              speechRemainingMs: 0,
-            };
-            if (bossWs) bossWs.occupantId = 'ANC-BOSS';
-            nextChars.set('ANC-BOSS', bossChar);
+        const boss = nextChars.get('ANC-BOSS');
+        if (boss) {
+          boss.status = bossStatus;
+          boss.currentTask = bossTask;
+          if (boss.path.length === 0 && boss.currentMeetingSeatIndex === null) {
+            boss.animState = bossStatus === 'online' ? 'thinking' : 'idle';
           }
+        } else {
+          const bossTheme = generateCharacterTheme('boss', 'ANC-BOSS');
+          const bossChar: GameCharacter = {
+            id: 'ANC-BOSS',
+            name: 'Boss AI',
+            title: 'Executive Orchestrator (CEO)',
+            department: 'Executive Office',
+            role: 'boss',
+            status: bossStatus,
+            skills: [],
+            currentTask: bossTask,
+            vncPort: 0,
+            avatarInitials: 'B',
+            gridX: bossWs?.seatGridX ?? 19,
+            gridY: bossWs?.seatGridY ?? 3.5,
+            targetGridX: bossWs?.seatGridX ?? 19,
+            targetGridY: bossWs?.seatGridY ?? 3.5,
+            path: [],
+            speed: 2.2,
+            heading: 'down',
+            animState: bossStatus === 'online' ? 'thinking' : 'idle',
+            animTime: 0,
+            blinkTimer: 2.5,
+            isBlinking: false,
+            assignedDeskId: 'WS-BOSS',
+            currentMeetingSeatIndex: null,
+            theme: bossTheme,
+            speechText: null,
+            speechRemainingMs: 0,
+          };
+          if (bossWs) bossWs.occupantId = 'ANC-BOSS';
+          nextChars.set('ANC-BOSS', bossChar);
+        }
 
+        if (Array.isArray(employees)) {
           const isBootstrap = isInitialSyncRef.current;
           isInitialSyncRef.current = false;
-
-          // Sync database employees
           return syncEmployeesToCharacters(employees, nextChars, workstations, isBootstrap);
-        });
-      }
+        }
+        return nextChars;
+      });
 
       // 4. Fetch Comms Messages
       const msgs = await fetchMessages(20).catch(() => []);
@@ -282,9 +295,7 @@ export const IsometricCompanyWorld: React.FC = () => {
         const inProgress = meetings.find((m: any) => m.status === 'in_progress');
         if (inProgress) {
           if (!stateRef.current.activeMeeting || stateRef.current.activeMeeting.id !== inProgress.meeting_id) {
-            const pIds = Array.isArray(inProgress.participants) && inProgress.participants.length > 0
-              ? inProgress.participants
-              : Array.from(stateRef.current.characters.keys()).slice(0, 5);
+            const pIds = Array.isArray(inProgress.participants) ? inProgress.participants : [];
 
             const session = callCharactersToMeeting(
               inProgress.meeting_id,
@@ -329,65 +340,7 @@ export const IsometricCompanyWorld: React.FC = () => {
   }, [characters]);
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // 2. ECG MONITOR ANIMATION
-  // ─────────────────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const canvas = ecgCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    let animId: number;
-    let t = 0;
-    const W = canvas.width;
-    const H = canvas.height;
-
-    const renderECG = () => {
-      t += 0.05;
-      ctx.fillStyle = '#060f1c';
-      ctx.fillRect(0, 0, W, H);
-
-      ctx.strokeStyle = '#0d1d36';
-      ctx.lineWidth = 1;
-      for (let x = 0; x < W; x += 12) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, H);
-        ctx.stroke();
-      }
-
-      ctx.strokeStyle = '#10b981';
-      ctx.lineWidth = 2;
-      ctx.shadowColor = '#10b981';
-      ctx.shadowBlur = 6;
-      ctx.beginPath();
-
-      const midY = H / 2;
-      for (let x = 0; x < W; x++) {
-        const offset = (x + t * 45) % W;
-        let y = midY;
-        const cycle = offset % 70;
-        if (cycle > 25 && cycle < 28) y = midY - 3;
-        else if (cycle >= 28 && cycle < 32) y = midY + 5;
-        else if (cycle >= 32 && cycle < 36) y = midY - 14;
-        else if (cycle >= 36 && cycle < 40) y = midY + 8;
-        else if (cycle >= 40 && cycle < 43) y = midY - 2;
-
-        if (x === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-
-      animId = requestAnimationFrame(renderECG);
-    };
-
-    renderECG();
-    return () => cancelAnimationFrame(animId);
-  }, []);
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // 3. MASTER 60-FPS CANVAS RENDER LOOP (Pure Layered Isometric Architecture)
+  // 3. MASTER CANVAS RENDER LOOP (Layered top-down office world)
   // ─────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -402,7 +355,11 @@ export const IsometricCompanyWorld: React.FC = () => {
       if (!canvas.parentElement) return;
       canvas.width = canvas.parentElement.clientWidth;
       canvas.height = canvas.parentElement.clientHeight || 680;
-      fitZoomRef.current = Math.min(1.05, (canvas.width - 48) / 1536, (canvas.height - 48) / 768);
+      fitZoomRef.current = Math.min(
+        1.05,
+        (canvas.width - 48) / (GRID_SIZE_X * TILE_WIDTH),
+        (canvas.height - 92) / (GRID_SIZE_Y * TILE_HEIGHT)
+      );
       setCamera((current) => ({ ...current, x: 0, y: 0, zoom: fitZoomRef.current }));
     };
     resize();
@@ -441,8 +398,8 @@ export const IsometricCompanyWorld: React.FC = () => {
 
       ctx.save();
       // Apply Camera Transform
-      const originX = canvas.width / 2 + current.camera.x;
-      const originY = canvas.height / 2 - 384 + current.camera.y;
+      const originX = canvas.width / 2 - ((GRID_SIZE_X - 1) * TILE_WIDTH) / 2 + current.camera.x;
+      const originY = canvas.height / 2 - ((GRID_SIZE_Y - 1) * TILE_HEIGHT) / 2 + current.camera.y;
 
       ctx.translate(canvas.width / 2, canvas.height / 2);
       ctx.scale(current.camera.zoom, current.camera.zoom);
@@ -487,12 +444,13 @@ export const IsometricCompanyWorld: React.FC = () => {
         originX,
         originY,
         time,
-        current.activeMeeting !== null
+        current.activeMeeting !== null,
+        current.activeMeeting?.title ?? ''
       );
 
       // Highlight boardroom when clicked
       if (current.isBoardroomSelected) {
-        const p = gridToScreen(11, 17, 0, originX, originY);
+        const p = gridToScreen(12, 5, 0, originX, originY);
         ctx.save();
         ctx.strokeStyle = '#e879f9';
         ctx.lineWidth = 2.5;
@@ -528,7 +486,7 @@ export const IsometricCompanyWorld: React.FC = () => {
 
       // ─── LAYER 6: INDEPENDENT ANIMATED CHARACTERS (Isometric Depth Sorted) ───
       const sortedCharacters = Array.from(current.characters.values()).sort(
-        (a, b) => getIsometricDepth(a.gridX, a.gridY) - getIsometricDepth(b.gridX, b.gridY)
+        (a, b) => getRenderDepth(a.gridX, a.gridY) - getRenderDepth(b.gridX, b.gridY)
       );
 
       for (const char of sortedCharacters) {
@@ -616,8 +574,8 @@ export const IsometricCompanyWorld: React.FC = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const { x: mouseX, y: mouseY } = getCanvasMousePos(e);
-    const originX = canvas.width / 2 + camera.x;
-    const originY = canvas.height / 2 - 384 + camera.y;
+    const originX = canvas.width / 2 - ((GRID_SIZE_X - 1) * TILE_WIDTH) / 2 + camera.x;
+    const originY = canvas.height / 2 - ((GRID_SIZE_Y - 1) * TILE_HEIGHT) / 2 + camera.y;
 
     // Hit test characters for hover rings
     let hitChar: string | null = null;
@@ -638,8 +596,8 @@ export const IsometricCompanyWorld: React.FC = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const { x: mouseX, y: mouseY } = getCanvasMousePos(e);
-    const originX = canvas.width / 2 + camera.x;
-    const originY = canvas.height / 2 - 384 + camera.y;
+    const originX = canvas.width / 2 - ((GRID_SIZE_X - 1) * TILE_WIDTH) / 2 + camera.x;
+    const originY = canvas.height / 2 - ((GRID_SIZE_Y - 1) * TILE_HEIGHT) / 2 + camera.y;
 
     // 1. Check Character Click (highest priority)
     for (const char of characters.values()) {
@@ -668,7 +626,7 @@ export const IsometricCompanyWorld: React.FC = () => {
     }
 
     // 3. Check Boardroom Table Click (third priority)
-    const boardroomScreen = gridToScreen(11, 17, 0, originX, originY);
+    const boardroomScreen = gridToScreen(12, 5, 0, originX, originY);
     if (Math.hypot(mouseX - boardroomScreen.screenX, mouseY - boardroomScreen.screenY) < 65) {
       setIsBoardroomSelected(true);
       setSelectedCharId(null);
@@ -972,7 +930,7 @@ export const IsometricCompanyWorld: React.FC = () => {
           1. TOP-LEFT OVERLAY: COMPANY OVERVIEW & LIVE ACTIVITY ECG
       ───────────────────────────────────────────────────────────────────────────── */}
       {showOverviewCard && (
-        <div className="absolute top-4 left-4 z-20 flex flex-col space-y-3 w-64 pointer-events-auto">
+        <div className="absolute left-4 top-4 z-20 w-56 pointer-events-auto">
           {/* Company Overview Card */}
           <div className="bg-[#091122]/90 backdrop-blur-md border border-[#162540] rounded-2xl p-4 shadow-2xl text-slate-200">
             <div className="flex items-center justify-between border-b border-[#132038] pb-2 mb-3">
@@ -993,47 +951,20 @@ export const IsometricCompanyWorld: React.FC = () => {
                   <span>Employees</span>
                 </div>
                 <span className="font-mono font-bold text-white text-sm">
-                  {metrics.employeeCount}
+                  {metrics.employeeCount ?? '—'}
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2 text-slate-300">
                   <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-[10px]">📁</span>
-                  <span>Active Projects</span>
+                  <span>Projects</span>
                 </div>
                 <span className="font-mono font-bold text-white text-sm">
-                  {metrics.activeProjects}
+                  {metrics.activeProjects ?? '—'}
                 </span>
               </div>
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2 text-slate-300">
-                  <span className="w-5 h-5 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center text-[10px]">❤️</span>
-                  <span>System Health</span>
-                </div>
-                <span className="font-mono font-bold text-rose-300 text-sm uppercase">
-                  {metrics.systemHealth}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Live Activity ECG Pulse Card */}
-          <div className="bg-[#091122]/90 backdrop-blur-md border border-[#162540] rounded-2xl p-3.5 shadow-2xl">
-            <div className="text-xs font-bold text-white mb-2 flex items-center justify-between">
-              <span>Live Activity</span>
-              <span className="text-[10px] font-mono text-slate-500">Visual loop</span>
-            </div>
-            <canvas
-              ref={ecgCanvasRef}
-              width={220}
-              height={42}
-              className="w-full h-10 rounded-lg border border-[#101f38]"
-            />
-            <div className="flex items-center space-x-2 text-[11px] font-mono text-emerald-400 mt-2 font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>World animation active</span>
             </div>
           </div>
         </div>
@@ -1233,7 +1164,7 @@ export const IsometricCompanyWorld: React.FC = () => {
             <span>Conference Suite</span>
             <span className="text-slate-500">•</span>
             <span className="text-slate-400 font-mono text-[11px]">
-              {activeMeeting ? '● STANDUP ACTIVE' : '○ AVAILABLE'}
+              {activeMeeting ? `● ${activeMeeting.title}` : '○ AVAILABLE'}
             </span>
           </div>
 
@@ -1244,7 +1175,7 @@ export const IsometricCompanyWorld: React.FC = () => {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-400 font-mono text-[11px]">3D Hologram:</span>
-              <span className="text-fuchsia-300 font-mono">Standup Milestone Table</span>
+              <span className="text-fuchsia-300 font-mono">{activeMeeting?.title || 'Meeting table'}</span>
             </div>
           </div>
 
@@ -1276,9 +1207,9 @@ export const IsometricCompanyWorld: React.FC = () => {
             onClick={async () => {
               try {
                 await triggerDailyStandup();
-                test4_callBoardroomMeeting();
+                await syncBackendData();
               } catch (e) {
-                test4_callBoardroomMeeting();
+                // Meeting visualization only follows backend meeting records.
               }
             }}
             className="w-full py-2 bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-500 hover:to-fuchsia-500 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-[0_0_15px_rgba(192,132,252,0.35)] transition-all cursor-pointer"
@@ -1354,7 +1285,7 @@ export const IsometricCompanyWorld: React.FC = () => {
       )}
 
       {/* ─────────────────────────────────────────────────────────────────────────────
-          3. MAIN ISOMETRIC CANVAS (Pure Living 2D Game Simulation)
+          3. MAIN TOP-DOWN CANVAS (Layered living office world)
       ───────────────────────────────────────────────────────────────────────────── */}
       <canvas
         ref={canvasRef}
@@ -1369,18 +1300,20 @@ export const IsometricCompanyWorld: React.FC = () => {
       {/* ─────────────────────────────────────────────────────────────────────────────
           4. BOTTOM CONTROLS & DEV VERIFICATION SUITE TOGGLE
       ───────────────────────────────────────────────────────────────────────────── */}
-      <div className="absolute bottom-4 left-4 z-20 flex items-center space-x-2 pointer-events-auto">
-        <button
-          onClick={() => setShowDevPanel((prev) => !prev)}
-          className={`px-3 py-1.5 rounded-xl border text-xs font-bold font-mono transition-all flex items-center space-x-1.5 shadow-lg ${
-            showDevPanel
-              ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
-              : 'bg-[#091122]/80 text-sky-300 border-[#162540] hover:border-sky-500/40'
-          }`}
-        >
-          <span>🧪</span>
-          <span>Dev Simulation Suite</span>
-        </button>
+      <div className="absolute bottom-14 left-4 z-20 flex items-center space-x-2 pointer-events-auto">
+        {developerToolsEnabled && (
+          <button
+            onClick={() => setShowDevPanel((prev) => !prev)}
+            className={`px-3 py-1.5 rounded-md border-2 text-xs font-bold font-mono transition-all flex items-center space-x-1.5 shadow-lg ${
+              showDevPanel
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                : 'bg-[#34383b]/95 text-[#e0d4bc] border-[#716958] hover:bg-[#484d4e]'
+            }`}
+          >
+            <span>🧪</span>
+            <span>Dev Simulation Suite</span>
+          </button>
+        )}
 
         {!showOverviewCard && (
           <button
@@ -1392,7 +1325,7 @@ export const IsometricCompanyWorld: React.FC = () => {
         )}
       </div>
 
-      <div className="absolute bottom-4 right-4 z-20 flex items-center space-x-2 bg-[#091122]/80 backdrop-blur border border-[#162540] p-1.5 rounded-xl text-slate-300 pointer-events-auto">
+      <div className="absolute bottom-14 right-4 z-20 flex items-center space-x-2 bg-[#252b30]/95 backdrop-blur border border-[#746b5d] p-1.5 rounded-xl text-slate-200 pointer-events-auto">
         <button
           onClick={() => setCamera((prev) => ({ ...prev, zoom: Math.min(prev.zoom + 0.15, 2.0) }))}
           className="w-7 h-7 rounded-lg hover:bg-slate-800 flex items-center justify-center font-bold text-xs"
@@ -1416,11 +1349,23 @@ export const IsometricCompanyWorld: React.FC = () => {
         </button>
       </div>
 
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex h-11 items-center justify-between border-t-2 border-[#8a806f] bg-[#34383b]/95 px-4 text-[10px] font-mono uppercase tracking-[0.12em] text-[#e0d4bc] sm:px-6 sm:text-[11px]">
+        <div className="flex items-center gap-3 sm:gap-6">
+          <span className="font-bold text-white">ANCOS HQ</span>
+          <span className="hidden text-[#c2b49b] sm:inline">Team <b className="text-white">{metrics.employeeCount ?? '—'}</b></span>
+          <span className="hidden text-[#c2b49b] sm:inline">Projects <b className="text-white">{metrics.activeProjects ?? '—'}</b></span>
+        </div>
+        <div className="flex items-center gap-2 text-[#c2b49b]">
+          <span className={`h-2 w-2 ${activeMeeting ? 'bg-amber-300' : 'bg-emerald-300'}`} />
+          {activeMeeting ? 'Meeting in progress' : 'Company floor'}
+        </div>
+      </div>
+
       {/* ─────────────────────────────────────────────────────────────────────────────
           5. DEV VERIFICATION SUITE PANEL (Requirement #9)
           Provides interactive buttons for testing the 7 required behaviors
       ───────────────────────────────────────────────────────────────────────────── */}
-      {showDevPanel && (
+      {showDevPanel && developerToolsEnabled && (
         <div className="absolute bottom-16 left-4 z-30 w-80 bg-[#091122]/95 backdrop-blur-md border border-amber-500/40 rounded-2xl p-4 shadow-2xl text-slate-200 pointer-events-auto animate-in fade-in duration-150">
           <div className="flex items-center justify-between border-b border-[#162540] pb-2 mb-3">
             <span className="text-xs font-bold text-amber-400 flex items-center space-x-1.5">

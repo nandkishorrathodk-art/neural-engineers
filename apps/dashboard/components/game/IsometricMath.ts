@@ -1,12 +1,12 @@
-import { Point2D, IsoPoint } from './types';
+import { Point2D, ScreenPoint } from './types';
 
 export const TILE_WIDTH = 64;
 export const TILE_HEIGHT = 32;
-export const TILE_HALF_W = TILE_WIDTH / 2; // 32
-export const TILE_HALF_H = TILE_HEIGHT / 2; // 16
+export const TILE_HALF_W = TILE_WIDTH / 2;
+export const TILE_HALF_H = TILE_HEIGHT / 2;
 
 /**
- * Converts continuous grid coordinate (gx, gy, gz) into 2D canvas pixel coordinates
+ * Converts top-down world coordinates into canvas pixels.
  */
 export function gridToScreen(
   gx: number,
@@ -14,14 +14,14 @@ export function gridToScreen(
   gz: number = 0,
   originX: number = 0,
   originY: number = 0
-): IsoPoint {
-  const screenX = (gx - gy) * TILE_HALF_W + originX;
-  const screenY = (gx + gy) * TILE_HALF_H - gz * (TILE_HEIGHT * 0.8) + originY;
+): ScreenPoint {
+  const screenX = gx * TILE_WIDTH + originX;
+  const screenY = gy * TILE_HEIGHT - gz * 8 + originY;
   return { screenX, screenY };
 }
 
 /**
- * Converts screen pixel coordinate to 2D continuous grid coordinate (gx, gy)
+ * Converts canvas pixels back into top-down world coordinates.
  */
 export function screenToGrid(
   screenX: number,
@@ -29,18 +29,17 @@ export function screenToGrid(
   originX: number = 0,
   originY: number = 0
 ): Point2D {
-  const dx = (screenX - originX) / TILE_HALF_W;
-  const dy = (screenY - originY) / TILE_HALF_H;
-  const gx = (dx + dy) / 2;
-  const gy = (dy - dx) / 2;
-  return { x: gx, y: gy };
+  return {
+    x: (screenX - originX) / TILE_WIDTH,
+    y: (screenY - originY) / TILE_HEIGHT,
+  };
 }
 
 /**
- * Calculates rendering depth for isometric z-sorting (objects closer to camera render in front)
+ * Sorts top-down sprites by row so objects lower on screen render in front.
  */
-export function getIsometricDepth(gx: number, gy: number, extraOffset: number = 0): number {
-  return (gx + gy) * 100 + extraOffset;
+export function getRenderDepth(gx: number, gy: number, extraOffset: number = 0): number {
+  return gy * 1000 + gx + extraOffset;
 }
 
 /**
@@ -67,9 +66,9 @@ export function gridDistance(p1: Point2D, p2: Point2D): number {
 }
 
 /**
- * Draws an isometric diamond tile on a 2D Canvas context
+ * Draws one rectangular pixel-art floor tile.
  */
-export function drawIsometricTile(
+export function drawPixelFloorTile(
   ctx: CanvasRenderingContext2D,
   screenX: number,
   screenY: number,
@@ -79,12 +78,7 @@ export function drawIsometricTile(
 ): void {
   ctx.save();
   ctx.beginPath();
-  ctx.moveTo(screenX, screenY - TILE_HALF_H); // Top vertex
-  ctx.lineTo(screenX + TILE_HALF_W, screenY); // Right vertex
-  ctx.lineTo(screenX, screenY + TILE_HALF_H); // Bottom vertex
-  ctx.lineTo(screenX - TILE_HALF_W, screenY); // Left vertex
-  ctx.closePath();
-
+  ctx.rect(screenX - TILE_HALF_W, screenY - TILE_HALF_H, TILE_WIDTH, TILE_HEIGHT);
   ctx.fillStyle = fillColor;
   ctx.fill();
 
@@ -97,9 +91,9 @@ export function drawIsometricTile(
 }
 
 /**
- * Draws a 3D isometric extruded block (useful for desks, server cabinets, walls)
+ * Draws a shaded top-down furniture tile with a stepped edge.
  */
-export function drawIsometricBlock(
+export function drawPixelFurnitureBlock(
   ctx: CanvasRenderingContext2D,
   screenX: number,
   screenY: number,
@@ -111,51 +105,24 @@ export function drawIsometricBlock(
   rightColor: string = '#141e33',
   strokeColor?: string
 ): void {
-  const hw = TILE_HALF_W * widthRatio;
-  const hh = TILE_HALF_H * depthRatio;
+  const width = TILE_WIDTH * widthRatio;
+  const depth = TILE_HEIGHT * depthRatio;
 
   ctx.save();
 
-  // 1. Left Face (from left corner to bottom corner, extruded down)
+  // Pixel-art furniture block: a compact drop shadow, cabinet body, and bright top edge.
   ctx.fillStyle = leftColor;
-  ctx.beginPath();
-  ctx.moveTo(screenX - hw, screenY);
-  ctx.lineTo(screenX, screenY + hh);
-  ctx.lineTo(screenX, screenY + hh + heightPx);
-  ctx.lineTo(screenX - hw, screenY + heightPx);
-  ctx.closePath();
-  ctx.fill();
-  if (strokeColor) {
-    ctx.strokeStyle = strokeColor;
-    ctx.stroke();
-  }
-
-  // 2. Right Face (from bottom corner to right corner, extruded down)
+  ctx.fillRect(screenX - width / 2 + 3, screenY - depth / 2 + heightPx * 0.35, width, depth);
   ctx.fillStyle = rightColor;
-  ctx.beginPath();
-  ctx.moveTo(screenX, screenY + hh);
-  ctx.lineTo(screenX + hw, screenY);
-  ctx.lineTo(screenX + hw, screenY + heightPx);
-  ctx.lineTo(screenX, screenY + hh + heightPx);
-  ctx.closePath();
-  ctx.fill();
-  if (strokeColor) {
-    ctx.strokeStyle = strokeColor;
-    ctx.stroke();
-  }
-
-  // 3. Top Face (horizontal isometric diamond)
+  ctx.fillRect(screenX - width / 2, screenY - depth / 2 + 2, width, depth);
   ctx.fillStyle = topColor;
-  ctx.beginPath();
-  ctx.moveTo(screenX, screenY - hh);
-  ctx.lineTo(screenX + hw, screenY);
-  ctx.lineTo(screenX, screenY + hh);
-  ctx.lineTo(screenX - hw, screenY);
-  ctx.closePath();
-  ctx.fill();
+  ctx.fillRect(screenX - width / 2, screenY - depth / 2, width, Math.max(4, depth * 0.68));
   if (strokeColor) {
     ctx.strokeStyle = strokeColor;
-    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.strokeRect(screenX - width / 2, screenY - depth / 2, width, depth);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(screenX - width / 2 + 2, screenY - depth / 2 + 2, Math.max(4, width - 4), 2);
   }
 
   ctx.restore();

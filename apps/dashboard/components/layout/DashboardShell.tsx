@@ -36,17 +36,17 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   ];
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#050912] text-slate-100 font-sans selection:bg-sky-500 selection:text-white">
+    <div className="min-h-screen flex flex-col bg-[#171c25] text-slate-100 font-sans selection:bg-emerald-700 selection:text-white">
       {/* ─────────────────────────────────────────────────────────────────────────────
           TOP NAVIGATION BAR (Exact Reference Styling)
       ───────────────────────────────────────────────────────────────────────────── */}
-      <header className="border-b border-[#132038] bg-[#070e1c]/95 backdrop-blur-md px-6 py-2.5 flex items-center justify-between sticky top-0 z-50 shadow-lg">
+      <header className="border-b-2 border-[#716958] bg-[#252a30]/95 px-4 py-2.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 sticky top-0 z-50 shadow-lg shadow-black/20 sm:px-6">
         {/* Left: ANCOS Branding */}
         <div className="flex items-center space-x-3.5">
           {/* Glowing Geometric Logo */}
           <Link href="/" className="flex items-center space-x-3 group">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-900 via-sky-900 to-indigo-950 border border-sky-400/50 flex items-center justify-center shadow-[0_0_20px_rgba(56,189,248,0.45)] group-hover:shadow-[0_0_25px_rgba(56,189,248,0.7)] transition-all">
-              <svg className="w-6 h-6 text-sky-300 drop-shadow-[0_0_8px_rgba(56,189,248,0.8)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <div className="w-10 h-10 rounded-md bg-[#3e5b59] border-2 border-[#a8c8b3] flex items-center justify-center shadow-[3px_3px_0_#171c25] group-hover:bg-[#4d706c] transition-colors">
+              <svg className="w-6 h-6 text-[#e6d8b8]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square" strokeLinejoin="miter">
                 <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2" />
                 <path d="M12 22V12" />
                 <path d="M12 12L22 8.5" />
@@ -54,10 +54,10 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
               </svg>
             </div>
             <div>
-              <div className="text-xl font-black tracking-wider text-white flex items-center space-x-1.5 font-mono">
-                <span className="bg-gradient-to-r from-sky-400 via-cyan-200 to-white bg-clip-text text-transparent">ANCOS</span>
+              <div className="text-xl font-black tracking-wider text-[#f1e4c8] flex items-center space-x-1.5 font-mono">
+                <span>ANCOS</span>
               </div>
-              <div className="text-[10px] text-sky-400/80 font-medium tracking-wide">
+              <div className="text-[10px] text-[#c2b49b] font-medium tracking-wide">
                 Autonomous AI Company
               </div>
             </div>
@@ -65,17 +65,17 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* Center: Main Navigation Tabs */}
-        <nav className="flex items-center space-x-1 bg-[#0b1426] border border-[#182847] p-1 rounded-xl shadow-inner">
+        <nav className="order-3 flex w-full max-w-full items-center space-x-1 overflow-x-auto bg-[#34383b] border-2 border-[#716958] p-1 rounded-md shadow-inner md:order-none md:w-auto md:max-w-[62vw]">
           {navItems.map((item) => {
             const isActive = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
             return (
               <Link
                 key={item.label}
                 href={item.href}
-                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-2 transition-all ${
+                className={`shrink-0 px-3.5 py-1.5 rounded-md text-xs font-semibold flex items-center space-x-2 transition-all ${
                   isActive
-                    ? 'bg-gradient-to-r from-blue-600 to-sky-600 text-white shadow-[0_0_15px_rgba(14,165,233,0.45)] border border-sky-400/40'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
+                    ? 'bg-[#60796b] text-white shadow-[2px_2px_0_#22272a] border border-[#aec5ae]'
+                    : 'text-[#d4cbb8] hover:text-white hover:bg-[#484d4e]'
                 }`}
               >
                 <span className="text-sm">{item.icon}</span>
@@ -88,9 +88,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         {/* Right: System Status & Live Clock */}
         <div className="flex items-center space-x-5">
           {/* System Online Badge */}
-          <div className="flex items-center space-x-2 bg-[#091e1d] border border-emerald-500/40 px-3 py-1 rounded-full shadow-[0_0_12px_rgba(16,185,129,0.2)]">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span className="text-xs font-mono font-bold text-emerald-400">System Online</span>
+          <div className="flex items-center space-x-2 bg-[#34383b] border border-[#716958] px-3 py-1 rounded-md">
+            <span className="w-2 h-2 bg-[#e0bd72]"></span>
+            <span className="text-xs font-mono font-bold text-[#e0d4bc]">ANCOS OS</span>
           </div>
 
           {/* Time & Date */}

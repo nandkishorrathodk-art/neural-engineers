@@ -3,7 +3,7 @@ export interface Point2D {
   y: number;
 }
 
-export interface IsoPoint {
+export interface ScreenPoint {
   screenX: number;
   screenY: number;
 }
@@ -92,7 +92,7 @@ export interface GameCharacter {
   title: string;
   department: string;
   role: CharacterRole;
-  status: 'online' | 'busy' | 'working' | 'offline';
+  status: 'online' | 'busy' | 'working' | 'offline' | 'idle' | 'suspended' | 'terminated' | 'unknown';
   skills: string[];
   currentTask: string;
   vncPort: number;

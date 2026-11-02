@@ -128,7 +128,7 @@ export function updateCharacterMovement(char: GameCharacter, dt: number): void {
         } else if (char.currentMeetingSeatIndex !== null) {
           char.animState = 'meeting';
         } else if (char.assignedDeskId) {
-          char.animState = 'working';
+          char.animState = char.status === 'working' || char.status === 'online' ? 'working' : 'idle';
         } else {
           char.animState = 'idle';
         }
@@ -176,7 +176,7 @@ export function updateCharacterMovement(char: GameCharacter, dt: number): void {
         char.animState = 'meeting';
         char.heading = char.currentMeetingSeatIndex % 2 === 0 ? 'right' : 'left';
       } else if (char.assignedDeskId) {
-        char.animState = 'working';
+        char.animState = char.status === 'working' || char.status === 'online' ? 'working' : 'idle';
         char.heading = 'down';
       } else {
         char.animState = 'idle';

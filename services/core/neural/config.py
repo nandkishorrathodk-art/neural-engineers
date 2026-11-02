@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
+    NVIDIA_API_KEY: Optional[str] = None
+    NVIDIA_API_BASE: str = "https://integrate.api.nvidia.com/v1"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
     # Model Defaults
