@@ -7,7 +7,7 @@
 ## Python tests
 
 Command: `uv run --no-sync pytest`
-Result: **376 collected; 334 passed, 31 failed, 11 skipped; 5 warnings** (187.69 seconds).
+NEURO-0 baseline result: **376 collected; 334 passed, 31 failed, 11 skipped; 5 warnings** (187.69 seconds).
 
 Failure clusters:
 
@@ -23,12 +23,15 @@ Laya runtime-dependent cases were skipped because the optional inference runtime
 
 The first test invocation failed at collection because the local environment lacked `alembic`; declared dev test packages were installed only in the ignored `.venv`, and the full run was retried. No tracked source or dependency manifests were changed for test setup.
 
-## NEURO-1 control-plane slice
+## Current NEURO-1 / NEURO-2 execution-protocol slices
 
-- Latest focused authority, staffing, report, and API run: **5 passed**. The production API test rejects absent/worker credentials, accepts the owner token, verifies separate owner/Boss audit actors, and confirms a dynamically recruited roster. The report tests cover owner-only access, passing verifier evidence, unverified completion, and failed attempt details. An unverified declared skill remains a staffing gap; it closes only after the test marks it verified.
+- Latest focused authority, staffing, report, and API run before execution-protocol additions: **5 passed**. The production API test rejects absent/worker credentials, accepts the owner token, verifies separate owner/Boss audit actors, and confirms a dynamically recruited roster. The report tests cover owner-only access, passing verifier evidence, unverified completion, and failed attempt details. An unverified declared skill remains a staffing gap; it closes only after the test marks it verified.
 - Owner-facing project report tests verify owner-only access, actual pending/assigned counts, attempt failures, and the rule that only a passing stored verifier receipt contributes to `verified`.
-- Current full regression: **380 collected; 338 passed, 31 failed, 11 skipped; 5 warnings** (113.58 seconds). The 31 remaining failures match the NEURO-0 failure count and subsystem groups. Phase-1 objective/recruitment/report tests pass. Agentic RAG passed in this run.
-- Ruff on changed files: passed. Full Ruff remains at the same 7 baseline findings outside the changed files.
+- Task plans now persist an enumerated execution mode (`gui`, `terminal`, `hybrid`, `authorized_tools`) through task storage, worker claim payload, and task APIs. A migration adds a legacy-safe `terminal` default; the approval and task-mode migration branches have a single merge head. The complete Alembic chain upgraded a disposable SQLite database successfully.
+- Worker failure protocol now supports bounded retry for classified retryable errors, persists exponential backoff, increments fencing tokens, and returns exhausted/nonretryable work to terminal failure. Expired worker leases also consume the retry budget; focused coverage confirms retry backoff prevents immediate reclaim. This is repository/API behavior, not a deployed worker consumer.
+- Latest focused authority and recovery tests: **6 passed**. Focused planner/API/recruitment/report plus authority tests: **17 passed, 2 skipped**. Changed-file Ruff passed.
+- Latest full regression: **382 collected; 339 passed, 32 failed, 11 skipped; 5 warnings** (5,424.76 seconds). This is one additional failure versus NEURO-0 (31); do not claim the baseline failure count is unchanged. Failure clusters remain in Docker, phase integrations, cognitive loops, methods/meta-learning, and resource scheduler. Agentic RAG status varied across runs.
+- Full Ruff baseline remains 7 findings outside the changed files.
 - Scoped mypy (`--follow-imports=skip --disable-error-code=import-untyped`) passed on the four changed Python source modules; imported dependencies were intentionally not checked by this scoped command. Mypy is not green for the repository (full NEURO-0 baseline: 208 errors in 37 files).
 
 ## Static checks and builds
@@ -45,6 +48,7 @@ The first test invocation failed at collection because the local environment lac
 - Docker Desktop Linux engine was unavailable (Docker engine named pipe absent).
 - No core API listener was found on ports 12000 or 12003. Ports 12001 and 12002 were already occupied by separate processes and were not changed.
 - Compose defines Redis, restricted Docker broker, core API, and dashboard only; it does not define a task worker or verifier consumer.
+- Docker lease, retry, backoff, and fencing logic has focused in-process DB coverage, but no deployed consumer or live crash-recovery receipt exists.
 - No real task, live GUI action, independent verifier receipt, throughput measurement, latency percentile, or cost benchmark was captured.
 - Therefore P50/P95/P99, queue delay, throughput, failure recovery, and cost per verified task are **NOT MEASURED**. Do not use synthetic tests as a performance baseline.
 
