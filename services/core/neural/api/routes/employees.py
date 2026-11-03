@@ -7,6 +7,7 @@ from neural.api.deps import (
     get_container_manager,
     get_container_repo,
     get_employee_repo,
+    get_resource_lease_repo,
     get_task_repo,
     require_owner_identity,
 )
@@ -22,7 +23,13 @@ from neural.db.repositories import (
     AuditRepository,
     ContainerRepository,
     EmployeeRepository,
+    ResourceLeaseRepository,
     TaskRepository,
+)
+from neural.resource_scheduler.workstation_lease import (
+    claim_workstation_lease,
+    release_workstation_lease,
+    renew_workstation_lease,
 )
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
@@ -101,7 +108,8 @@ async def get_employee_workstation(
     employee_id: str,
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     container_repo: ContainerRepository = Depends(get_container_repo),
-    container_mgr: ContainerManager = Depends(get_container_manager)
+    container_mgr: ContainerManager = Depends(get_container_manager),
+    resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
 ):
     employee = await employee_repo.get_by_employee_id(employee_id)
     if not employee:
@@ -114,6 +122,17 @@ async def get_employee_workstation(
     )
     if not desktop_spec:
         raise HTTPException(status_code=404, detail=f"No active workstation found for employee '{employee_id}'")
+    if desktop_spec.get("status") == "running":
+        lease = await renew_workstation_lease(
+            resource_lease_repo,
+            employee.employee_id,
+            desktop_spec["docker_id"],
+        )
+        if lease is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Workstation resource lease is expired, quarantined, or held by another session.",
+            )
 
     return WorkstationResponse(
         docker_id=desktop_spec["docker_id"],
@@ -139,11 +158,24 @@ async def provision_employee_workstation(
     audit_repo: AuditRepository = Depends(get_audit_repo),
     approval_repo: ApprovalRepository = Depends(get_approval_repo),
     container_mgr: ContainerManager = Depends(get_container_manager),
+    resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
     actor: str = Depends(require_owner_identity),
 ):
     employee = await employee_repo.get_by_employee_id(employee_id)
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
+
+    docker_id = f"ancos-desktop-{employee.employee_id.lower()}"
+    lease = await claim_workstation_lease(
+        resource_lease_repo,
+        employee.employee_id,
+        docker_id,
+    )
+    if lease is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Desktop slot is already leased or quarantined pending cleanup.",
+        )
 
     approval = await approval_repo.consume_once(
         approval_id,
@@ -152,6 +184,7 @@ async def provision_employee_workstation(
         actor,
     )
     if not approval:
+        await resource_lease_repo.release(lease["lease_id"], lease["fencing_token"])
         raise HTTPException(status_code=409, detail="A current, approved, unused workstation-provision approval is required.")
 
     role_image = "employee-base"
@@ -166,7 +199,21 @@ async def provision_employee_workstation(
             employee_repo=employee_repo
         )
     except DockerBrokerRequestError as exc:
+        # A broker rejection can race with a successful create. Release only if
+        # inspection confirms that the managed container is absent; otherwise
+        # leave the durable lease active for TTL quarantine and reaper cleanup.
+        try:
+            await container_mgr._broker_request("GET", f"/v1/containers/{docker_id}")
+        except DockerBrokerRequestError as inspect_error:
+            if inspect_error.status_code == 404:
+                await resource_lease_repo.release(lease["lease_id"], lease["fencing_token"])
+        except Exception:
+            pass
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except Exception:
+        # Network errors leave outcome uncertain. Keep the lease so a second
+        # provision cannot overlap a workstation the broker may have started.
+        raise
 
     await audit_repo.log(
         actor=actor,
@@ -205,6 +252,7 @@ async def rotate_employee_vnc_password(
     audit_repo: AuditRepository = Depends(get_audit_repo),
     approval_repo: ApprovalRepository = Depends(get_approval_repo),
     container_mgr: ContainerManager = Depends(get_container_manager),
+    resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
     actor: str = Depends(require_owner_identity),
 ):
     employee = await employee_repo.get_by_employee_id(employee_id)
@@ -220,6 +268,12 @@ async def rotate_employee_vnc_password(
         raise HTTPException(status_code=404, detail=f"No workstation found for employee '{employee_id}'")
     if workstation.get("status") != "running":
         raise HTTPException(status_code=409, detail="Workstation must be running before rotating its VNC password")
+    if await renew_workstation_lease(
+        resource_lease_repo,
+        employee.employee_id,
+        workstation["docker_id"],
+    ) is None:
+        raise HTTPException(status_code=409, detail="Workstation resource lease is expired or quarantined.")
 
     approval = await approval_repo.consume_once(
         approval_id,
@@ -254,6 +308,7 @@ async def terminate_employee_workstation(
     audit_repo: AuditRepository = Depends(get_audit_repo),
     approval_repo: ApprovalRepository = Depends(get_approval_repo),
     container_mgr: ContainerManager = Depends(get_container_manager),
+    resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
     actor: str = Depends(require_owner_identity),
 ):
     employee = await employee_repo.get_by_employee_id(employee_id)
@@ -278,6 +333,11 @@ async def terminate_employee_workstation(
     if not approval:
         raise HTTPException(status_code=409, detail="A current, approved, unused workstation-termination approval is required.")
     await container_mgr.terminate_desktop(docker_id, container_repo=container_repo)
+    if not await release_workstation_lease(resource_lease_repo, docker_id):
+        raise HTTPException(
+            status_code=503,
+            detail="Workstation was terminated, but its durable resource lease could not be released.",
+        )
 
     await audit_repo.log(
         actor=actor,

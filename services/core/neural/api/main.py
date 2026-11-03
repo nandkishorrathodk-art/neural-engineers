@@ -1,3 +1,4 @@
+import asyncio
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     logger.info("Initializing ANCOS Core Operating System...")
     message_bus = None
+    resource_lease_reaper_task: asyncio.Task[None] | None = None
     try:
         await init_db()
         if settings.APP_ENV == "production":
@@ -52,8 +54,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await message_bus.connect()
         if settings.DOCKER_BROKER_URL:
             from neural.api.deps import get_container_manager
+            from neural.resource_scheduler.lease_reaper import (
+                lease_reaper_interval_seconds,
+                resource_lease_reaper_loop,
+            )
 
-            await get_container_manager()._broker_request("GET", "/health")
+            container_manager = get_container_manager()
+            await container_manager._broker_request("GET", "/health")
+            reaper_interval = lease_reaper_interval_seconds()
+            resource_lease_reaper_task = asyncio.create_task(
+                resource_lease_reaper_loop(container_manager, interval_seconds=reaper_interval),
+                name="ancos-resource-lease-reaper",
+            )
         elif settings.APP_ENV == "production":
             raise RuntimeError("Production startup requires the restricted Docker broker.")
         os.makedirs(os.path.abspath(settings.EMPLOYEE_WORKSPACE_BASE), exist_ok=True)
@@ -62,6 +74,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Database and workspace directories initialized successfully.")
         yield
     finally:
+        if resource_lease_reaper_task is not None:
+            resource_lease_reaper_task.cancel()
+            try:
+                await resource_lease_reaper_task
+            except asyncio.CancelledError:
+                pass
         if message_bus is not None:
             await message_bus.close()
     logger.info("Shutting down ANCOS Core Operating System.")

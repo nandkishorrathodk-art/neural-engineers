@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import socket
 from typing import Any, Optional
 
 from neural.constants import TaskPriority
@@ -11,6 +9,7 @@ from neural.resource_scheduler.checkpoint_manager import CheckpointManager
 from neural.resource_scheduler.desktop_pool import DesktopSlotPool
 from neural.resource_scheduler.employee_queue import EmployeeExecutionQueue
 from neural.resource_scheduler.hardware_profiler import HardwareProfile, HardwareProfiler
+from neural.resource_scheduler.identity import desktop_slot_resource_key, resolve_resource_pool_id
 from neural.resource_scheduler.resource_monitor import ResourceMonitor
 from neural.resource_scheduler.session_lease import SessionLeaseManager
 
@@ -48,11 +47,7 @@ class DesktopResourceScheduler:
         self.queue = queue or EmployeeExecutionQueue()
         self.resource_lease_repo = resource_lease_repo
         self.resource_lease_seconds = max(5, min(resource_lease_seconds, 3600))
-        self.resource_pool_id = (
-            resource_pool_id or os.environ.get("ANCOS_RESOURCE_POOL_ID") or socket.gethostname()
-        ).strip()
-        if not self.resource_pool_id or len(self.resource_pool_id) > 96:
-            raise ValueError("Resource pool ID must contain between 1 and 96 characters.")
+        self.resource_pool_id = resolve_resource_pool_id(resource_pool_id)
         self._resource_leases: dict[int, dict[str, Any]] = {}
 
         self._active_employees: dict[str, int] = {}  # employee_id -> slot_id
@@ -397,7 +392,7 @@ class DesktopResourceScheduler:
             return None
         profile = self.profiler.active_profile
         return await self.resource_lease_repo.claim(
-            resource_key=f"desktop:{self.resource_pool_id}:slot-{slot_id}",
+            resource_key=desktop_slot_resource_key(slot_id, self.resource_pool_id),
             employee_id=employee_id,
             task_id=task_id,
             session_id=f"desktop-slot-{slot_id}:{employee_id}",

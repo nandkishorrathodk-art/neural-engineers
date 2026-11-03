@@ -4,10 +4,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from neural.constants import TaskPriority
+from neural.containers.manager import DockerBrokerRequestError
 from neural.db.models import ResourceLease
 from neural.db.repositories import ResourceLeaseRepository
 from neural.resource_scheduler.checkpoint_manager import CheckpointManager
 from neural.resource_scheduler.hardware_profiler import PROFILE_16GB, HardwareProfiler
+from neural.resource_scheduler.lease_reaper import reconcile_quarantined_desktop_leases
 from neural.resource_scheduler.resource_monitor import ResourceMonitor
 from neural.resource_scheduler.scheduler import DesktopResourceScheduler
 from sqlalchemy import select
@@ -36,6 +38,26 @@ class FakeContainerManager:
 
     async def terminate_desktop(self, _docker_id: str) -> bool:
         return self.terminate_result
+
+
+class FakeBrokerManager:
+    def __init__(self, *, remains_after_terminate: bool = False, unavailable: bool = False):
+        self.present = True
+        self.remains_after_terminate = remains_after_terminate
+        self.unavailable = unavailable
+
+    async def _broker_request(self, method: str, path: str, **_kwargs):
+        if self.unavailable:
+            raise RuntimeError("broker unavailable")
+        if method == "GET":
+            if not self.present:
+                raise DockerBrokerRequestError("not found", 404)
+            return {"status": "running"}
+        if method == "POST" and path.endswith("/terminate"):
+            if not self.remains_after_terminate:
+                self.present = False
+            return {"status": "terminated"}
+        raise AssertionError(f"Unexpected broker request {method} {path}")
 
 
 def make_scheduler(repo, container_manager, tmp_path):
@@ -182,3 +204,69 @@ async def test_scheduler_terminates_its_expired_session_before_releasing_quarant
     row = await async_session.get(ResourceLease, grant["resource_lease"]["lease_id"])
     assert row is not None
     assert row.status == "released"
+
+
+async def expired_lease(repository, employee_id: str, resource_key: str):
+    lease = await repository.claim(
+        resource_key=resource_key,
+        employee_id=employee_id,
+        session_id=f"desktop-slot-1:{employee_id}",
+        lease_seconds=5,
+    )
+    assert lease is not None
+    row = await repository.session.get(ResourceLease, lease["lease_id"])
+    assert row is not None
+    row.lease_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+    await repository.session.commit()
+    return lease
+
+
+@pytest.mark.asyncio
+async def test_lease_reaper_verifies_broker_absence_before_releasing(async_session):
+    repository = ResourceLeaseRepository(async_session)
+    lease = await expired_lease(repository, "ANC-EMP-REAP", "desktop:test-host:slot-1")
+
+    released_count = await reconcile_quarantined_desktop_leases(
+        repository, FakeBrokerManager(), resource_pool_id="test-host"
+    )
+
+    row = await async_session.get(ResourceLease, lease["lease_id"])
+    assert released_count == 1
+    assert row is not None
+    assert row.status == "released"
+
+
+@pytest.mark.asyncio
+async def test_lease_reaper_retains_quarantine_when_broker_still_sees_container(async_session):
+    repository = ResourceLeaseRepository(async_session)
+    lease = await expired_lease(repository, "ANC-EMP-REAP-LIVE", "desktop:test-host:slot-1")
+
+    released_count = await reconcile_quarantined_desktop_leases(
+        repository,
+        FakeBrokerManager(remains_after_terminate=True),
+        resource_pool_id="test-host",
+    )
+
+    row = await async_session.get(ResourceLease, lease["lease_id"])
+    assert released_count == 0
+    assert row is not None
+    assert row.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_lease_reaper_keeps_other_pool_and_broker_errors_quarantined(async_session):
+    repository = ResourceLeaseRepository(async_session)
+    other_pool = await expired_lease(repository, "ANC-EMP-OTHER-POOL", "desktop:other-host:slot-1")
+    unavailable = await expired_lease(repository, "ANC-EMP-REAP-ERR", "desktop:test-host:slot-1")
+
+    released_count = await reconcile_quarantined_desktop_leases(
+        repository,
+        FakeBrokerManager(unavailable=True),
+        resource_pool_id="test-host",
+    )
+
+    other_row = await async_session.get(ResourceLease, other_pool["lease_id"])
+    unavailable_row = await async_session.get(ResourceLease, unavailable["lease_id"])
+    assert released_count == 0
+    assert other_row is not None and other_row.status == "expired"
+    assert unavailable_row is not None and unavailable_row.status == "expired"

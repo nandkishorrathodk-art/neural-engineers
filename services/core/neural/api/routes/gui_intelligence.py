@@ -11,10 +11,11 @@ from neural.api.deps import (
     get_container_manager,
     get_container_repo,
     get_employee_repo,
+    get_resource_lease_repo,
     require_owner_identity,
 )
 from neural.containers.manager import ContainerManager
-from neural.db.repositories import ContainerRepository, EmployeeRepository
+from neural.db.repositories import ContainerRepository, EmployeeRepository, ResourceLeaseRepository
 from neural.gui_intelligence.action.execution_loop import GUIExecutionLoop
 from neural.gui_intelligence.benchmarks.human_speed import HumanSpeedComparator
 from neural.gui_intelligence.benchmarks.osworld_runner import OSWorldRunner
@@ -30,6 +31,7 @@ from neural.gui_intelligence.perception.screen_capture import (
 from neural.gui_intelligence.skills.skill_compiler import GUISkillCompiler
 from neural.gui_intelligence.skills.skill_registry import get_gui_skill_registry
 from neural.gui_intelligence.skills.skill_validator import SkillValidator
+from neural.resource_scheduler.workstation_lease import renew_workstation_lease
 from PIL import Image
 from pydantic import BaseModel
 
@@ -107,6 +109,7 @@ async def capture_screen(
     container_manager: ContainerManager = Depends(get_container_manager),
     container_repo: ContainerRepository = Depends(get_container_repo),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
 ) -> ScreenCaptureResponse:
     """Captures actual workstation pixels for the requested employee desktop."""
     started = time.perf_counter()
@@ -118,6 +121,16 @@ async def capture_screen(
         )
         if not workstation or workstation.get("status") != "running":
             raise HTTPException(status_code=409, detail="Employee workstation is not running.")
+        lease = await renew_workstation_lease(
+            resource_lease_repo,
+            employee_id,
+            workstation["docker_id"],
+        )
+        if lease is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Workstation resource lease is expired, quarantined, or held by another session.",
+            )
         png = await container_manager.capture_screenshot(workstation["docker_id"])
         with Image.open(io.BytesIO(png)) as image:
             pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)

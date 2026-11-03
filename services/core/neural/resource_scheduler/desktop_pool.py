@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from neural.containers.manager import ContainerManager
+from neural.containers.manager import ContainerManager, DockerBrokerRequestError
 from neural.logger import get_logger
 
 logger = get_logger("ancos.resource_scheduler.desktop_pool")
@@ -174,6 +174,11 @@ class DesktopSlotPool:
                     logger.error("Workstation termination was not confirmed; retaining occupied slot", slot_id=slot_id)
                     return False
             except Exception as e:
+                if isinstance(e, DockerBrokerRequestError) and e.status_code == 404:
+                    # Another authorized cleanup path already removed this exact
+                    # managed desktop; the broker's 404 confirms absence.
+                    slot.release()
+                    return True
                 logger.warning("Error terminating desktop container during slot release", error=str(e))
                 return False
 

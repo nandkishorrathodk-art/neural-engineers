@@ -7,6 +7,7 @@ from neural.api.deps import (
     get_container_repo,
     get_db_session,
     get_employee_repo,
+    get_resource_lease_repo,
     require_owner_identity,
 )
 from neural.api.main import create_app
@@ -63,10 +64,26 @@ async def test_phase7_gui_intelligence_api_endpoints(async_session: AsyncSession
             Image.fromarray(np.zeros((800, 1280, 3), dtype=np.uint8), mode="RGB").save(buffer, format="PNG")
             return buffer.getvalue()
 
+    class FakeResourceLeaseRepository:
+        async def get_by_session_id(self, _session_id):
+            return None
+
+        async def claim(self, **kwargs):
+            return {
+                "lease_id": "lease-gui-test",
+                "resource_key": "desktop:test-host:slot-1",
+                "employee_id": kwargs["employee_id"],
+                "session_id": kwargs["session_id"],
+                "fencing_token": 1,
+                "status": "active",
+                "lease_expires_at": "2099-01-01T00:00:00",
+            }
+
     app.dependency_overrides[require_owner_identity] = lambda: "test-owner"
     app.dependency_overrides[get_container_manager] = lambda: FakeContainerManager()
     app.dependency_overrides[get_container_repo] = lambda: object()
     app.dependency_overrides[get_employee_repo] = lambda: object()
+    app.dependency_overrides[get_resource_lease_repo] = lambda: FakeResourceLeaseRepository()
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

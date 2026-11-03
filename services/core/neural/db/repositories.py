@@ -944,6 +944,16 @@ class ResourceLeaseRepository:
             await self.session.refresh(lease)
             return self._as_dict(lease)
 
+    async def get_by_session_id(self, session_id: str) -> Optional[dict[str, Any]]:
+        result = await self.session.execute(
+            select(ResourceLease)
+            .where(ResourceLease.session_id == session_id)
+            .order_by(ResourceLease.fencing_token.desc())
+            .limit(1)
+        )
+        lease = result.scalar_one_or_none()
+        return self._as_dict(lease) if lease else None
+
     async def heartbeat(self, lease_id: str, fencing_token: int, lease_seconds: int = 60) -> Optional[str]:
         now = utc_now()
         expires = now + timedelta(seconds=max(5, min(lease_seconds, 3600)))
