@@ -46,6 +46,8 @@ class BossTaskReport(BaseModel):
     acceptance_criteria: str
     execution_mode: ExecutionMode
     status: TaskStatus
+    retry_count: int = 0
+    max_retries: int = 3
     priority: str
     assigned_employee_id: Optional[str] = None
     assigned_employee_name: Optional[str] = None

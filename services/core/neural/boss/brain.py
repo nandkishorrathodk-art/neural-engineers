@@ -366,6 +366,8 @@ class BossBrain:
                 counts["planned"] += 1
             elif status == TaskStatus.ASSIGNED.value:
                 counts["assigned"] += 1
+                if task.retry_count > 0:
+                    counts["retrying"] += 1
             elif status == TaskStatus.RUNNING.value:
                 counts["started"] += 1
             elif status == TaskStatus.RETRYING.value:
@@ -393,6 +395,8 @@ class BossBrain:
                 "acceptance_criteria": task.acceptance_criteria,
                 "execution_mode": task.execution_mode.value,
                 "status": task.status,
+                "retry_count": task.retry_count,
+                "max_retries": task.max_retries,
                 "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
                 "assigned_employee_id": employee.employee_id if employee else None,
                 "assigned_employee_name": employee.name if employee else None,

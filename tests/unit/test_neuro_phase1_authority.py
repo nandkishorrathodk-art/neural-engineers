@@ -291,6 +291,12 @@ async def test_expired_worker_lease_consumes_retry_budget(async_session):
     assert recovered.status == TaskStatus.ASSIGNED
     assert recovered.retry_count == 1
     assert recovered.fencing_token == 2
+    report = await BossBrain(project_repo=ProjectRepository(async_session), task_repo=task_repo).build_project_report(project.id)
+    assert report is not None
+    assert report["task_counts"]["retrying"] == 1
+    retried_report = report["tasks"][0]
+    assert retried_report["retry_count"] == 1
+    assert retried_report["max_retries"] == 1
     await async_session.refresh(expired_attempt)
     assert expired_attempt.status == "failed"
     assert expired_attempt.lease_expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
