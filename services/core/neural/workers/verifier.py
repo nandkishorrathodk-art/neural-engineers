@@ -49,6 +49,38 @@ def worker_test_exit_code(receipt: dict[str, Any], command: list[str]) -> int | 
     return None
 
 
+def valid_workspace_manifest(value: Any) -> bool:
+    if not isinstance(value, dict) or value.get("complete") is not True:
+        return False
+    files = value.get("files")
+    if not isinstance(files, list) or not files or len(files) > 2000:
+        return False
+    if value.get("file_count") != len(files):
+        return False
+    total = 0
+    for item in files:
+        if not isinstance(item, dict):
+            return False
+        path = item.get("path")
+        size = item.get("size_bytes")
+        digest = item.get("sha256")
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or not isinstance(size, int)
+            or size < 0
+            or size > 10 * 1024 * 1024
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            return False
+        total += size
+    return total <= 100 * 1024 * 1024 and value.get("total_size_bytes") == total
+
+
 class VerificationWorker:
     """Re-run only declared test commands under a separate verifier identity."""
 
@@ -109,6 +141,17 @@ class VerificationWorker:
                 }
             )
 
+        try:
+            manifest = await self._post(
+                f"/internal/verifier/tasks/{task_id}/attempts/{attempt_id}/manifest",
+                {"fencing_token": fence},
+            )
+        except httpx.HTTPError:
+            manifest = {}
+        manifest_valid = valid_workspace_manifest(manifest)
+        manifest_files = manifest.get("files", []) if isinstance(manifest, dict) else []
+        manifest_refs = [f"workspace:sha256:{entry['sha256']}" for entry in manifest_files] if manifest_valid else []
+
         criteria = str(item.get("acceptance_criteria", "")).lower()
         normalized_criteria = " ".join(re.findall(r"[a-z0-9]+", criteria))
         criteria_is_testable = normalized_criteria in TEST_ONLY_ACCEPTANCE
@@ -133,16 +176,28 @@ class VerificationWorker:
                     for run in test_runs
                 ],
             },
+            {
+                "name": "complete_nonempty_workspace_hash_snapshot_captured",
+                "passed": manifest_valid,
+                "evidence": {
+                    "file_count": manifest.get("file_count") if isinstance(manifest, dict) else None,
+                    "complete": manifest.get("complete") if isinstance(manifest, dict) else False,
+                    "scope": "verification-time workspace snapshot; no task-start diff",
+                },
+            },
         ]
-        passed = criteria_is_testable and tests_passed
+        passed = criteria_is_testable and tests_passed and manifest_valid
         notes = (
             "Declared automated tests passed in the worker receipt and an independent verifier rerun. "
-            "This verifier does not evaluate requirements outside the declared test and artifact checks."
+            "A complete verification-time workspace hash snapshot was recorded; it does not establish "
+            "which files changed during the attempt or whether their contents are correct."
             if passed
             else "Independent verification failed closed: "
-            "no replayable test, a test failure, or acceptance criteria outside the supported test-only contracts."
+            "no replayable test, a test failure, an incomplete/empty workspace hash snapshot, or "
+            "acceptance criteria outside the supported test-only contracts."
         )
         evidence_refs = [run["evidence_ref"] for run in test_runs] or [f"verifier:{attempt_id}:no-replayable-test"]
+        evidence_refs.extend(manifest_refs)
         return await self._post(
             f"/internal/verifier/tasks/{task_id}/attempts/{attempt_id}/review",
             {
@@ -150,7 +205,15 @@ class VerificationWorker:
                 "notes": notes,
                 "evidence_refs": evidence_refs,
                 "checks": checks,
-                "test_summary": {"independent_test_runs": test_runs},
+                "test_summary": {
+                    "independent_test_runs": test_runs,
+                    "workspace_manifest": manifest if manifest_valid else {
+                        "complete": False,
+                        "file_count": len(manifest_files) if isinstance(manifest_files, list) else 0,
+                        "errors": manifest.get("errors", []) if isinstance(manifest, dict) else ["manifest unavailable"],
+                        "scope": "verification-time workspace snapshot; no task-start diff",
+                    },
+                },
             },
         )
 

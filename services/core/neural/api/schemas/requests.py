@@ -152,6 +152,10 @@ class VerifierCommandRequest(WorkerLeaseRequest):
         return command
 
 
+class VerifierManifestRequest(WorkerLeaseRequest):
+    """Fence-only request for a read-only verifier workspace snapshot."""
+
+
 class ResourceLeaseClaimRequest(BaseModel):
     resource_key: str = Field(..., min_length=1, max_length=128)
     employee_id: str = Field(..., min_length=1, max_length=128)

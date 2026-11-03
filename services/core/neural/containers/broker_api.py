@@ -80,6 +80,10 @@ class VerificationExecRequest(BaseModel):
         return command
 
 
+class VerificationManifestRequest(BaseModel):
+    employee_id: str = Field(pattern=EMPLOYEE_ID_PATTERN)
+
+
 class ImageBuildRequest(BaseModel):
     tag: Literal[
         "ancos/employee-base:latest",
@@ -374,32 +378,118 @@ def execute_in_container(container_id: str, payload: ExecRequest) -> dict[str, A
 @app.post("/v1/verifier/exec")
 def execute_verifier_test(payload: VerificationExecRequest) -> dict[str, Any]:
     """Run a test command in a disposable, offline container with a read-only employee workspace."""
+    verifier_container = create_verification_sandbox(payload.employee_id)
+    try:
+        result = verifier_container.exec_run(
+            cmd=["/usr/bin/timeout", "300s", *payload.command],
+            user="1000:1000",
+            workdir="/home/employee/workspace",
+            environment={
+                "HOME": "/tmp",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTEST_ADDOPTS": "-p no:cacheprovider",
+                "TMPDIR": "/tmp",
+            },
+        )
+        output = result.output.decode("utf-8", errors="replace") if result.output else ""
+        return {"exit_code": result.exit_code, "stdout": output, "stderr": ""}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Isolated verifier execution failed.") from exc
+    finally:
+        remove_verification_sandbox(verifier_container)
+
+
+@app.post("/v1/verifier/manifest")
+def capture_verification_manifest(payload: VerificationManifestRequest) -> dict[str, Any]:
+    """Hash workspace files without exposing file contents or allowing workspace writes."""
+    verifier_container = create_verification_sandbox(payload.employee_id)
+    manifest_script = (
+        "import hashlib,json,os,stat,time\n"
+        "root='/home/employee/workspace'\n"
+        "skip={'.git','.venv','node_modules','__pycache__','.pytest_cache'}\n"
+        "files=[]; errors=[]; total=0; max_files=2000; max_file=10485760; max_total=104857600\n"
+        "for current,dirs,names in os.walk(root,followlinks=False):\n"
+        " if errors: break\n"
+        " dirs[:]=sorted(d for d in dirs if d not in skip and not os.path.islink(os.path.join(current,d)))\n"
+        " for name in sorted(names):\n"
+        "  path=os.path.join(current,name)\n"
+        "  try:\n"
+        "   info=os.stat(path,follow_symlinks=False)\n"
+        "   if not stat.S_ISREG(info.st_mode): continue\n"
+        "   rel=os.path.relpath(path,root).replace(os.sep,'/')\n"
+        "   if len(rel)>2048: errors.append('path length limit exceeded'); dirs[:]=[]; break\n"
+        "   if len(files)>=max_files or info.st_size>max_file or total+info.st_size>max_total:\n"
+        "    errors.append('manifest size limit exceeded'); dirs[:]=[]; break\n"
+        "   digest=hashlib.sha256()\n"
+        "   fd=os.open(path,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))\n"
+        "   with os.fdopen(fd,'rb') as stream:\n"
+        "    before=os.fstat(stream.fileno()); read_size=0\n"
+        "    if not stat.S_ISREG(before.st_mode): raise OSError('not regular')\n"
+        "    for chunk in iter(lambda:stream.read(1048576),b''):\n"
+        "     read_size+=len(chunk)\n"
+        "     if read_size>max_file: raise OSError('file grew beyond limit')\n"
+        "     digest.update(chunk)\n"
+        "    after=os.fstat(stream.fileno())\n"
+        "    if read_size!=before.st_size or after.st_size!=before.st_size or after.st_mtime_ns!=before.st_mtime_ns: raise OSError('file changed while hashing')\n"
+        "   if read_size!=info.st_size: raise OSError('file changed before hashing')\n"
+        "   files.append({'path':rel,'size_bytes':info.st_size,'sha256':digest.hexdigest()})\n"
+        "   total+=info.st_size\n"
+        "  except OSError: errors.append('unreadable file'); dirs[:]=[]; break\n"
+        "manifest={'captured_at_unix':time.time(),'files':files,'file_count':len(files),"
+        "'total_size_bytes':total,'complete':not errors,'errors':errors,"
+        "'scope':'verification-time workspace snapshot; no task-start diff'}\n"
+        "print(json.dumps(manifest,separators=(',',':')))\n"
+    )
+    try:
+        result = verifier_container.exec_run(
+            cmd=["/usr/bin/timeout", "300s", "python3", "-c", manifest_script],
+            user="1000:1000",
+            workdir="/home/employee/workspace",
+            environment={
+                "HOME": "/tmp",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "TMPDIR": "/tmp",
+            },
+        )
+        output = result.output.decode("utf-8", errors="replace") if result.output else ""
+        if result.exit_code != 0:
+            raise HTTPException(status_code=503, detail="Workspace manifest command failed.")
+        import json
+
+        manifest = json.loads(output)
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list):
+            raise HTTPException(status_code=503, detail="Workspace manifest output is invalid.")
+        return manifest
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=503, detail="Workspace manifest capture failed.") from exc
+    finally:
+        remove_verification_sandbox(verifier_container)
+
+
+def create_verification_sandbox(employee_id: str) -> Any:
     client = docker_client()
-    workstation = get_managed_container(employee_container_id(payload.employee_id))
+    workstation = get_managed_container(employee_container_id(employee_id))
     labels = workstation.labels or {}
-    workspace = workspace_volume_name(payload.employee_id)
-    if (
-        labels.get("ancos.employee_id") != payload.employee_id
-        or labels.get("ancos.workspace_volume") != workspace
-    ):
+    workspace = workspace_volume_name(employee_id)
+    if labels.get("ancos.employee_id") != employee_id or labels.get("ancos.workspace_volume") != workspace:
         raise HTTPException(status_code=409, detail="Employee workspace ownership could not be verified.")
     try:
         volume = client.volumes.get(workspace)
     except NotFound as exc:
         raise HTTPException(status_code=404, detail="Employee workspace volume not found.") from exc
     volume_labels = volume.attrs.get("Labels") or {}
-    if volume_labels.get("ancos.managed") != "true" or volume_labels.get("ancos.employee_id") != payload.employee_id:
+    if volume_labels.get("ancos.managed") != "true" or volume_labels.get("ancos.employee_id") != employee_id:
         raise HTTPException(status_code=409, detail="Employee workspace volume ownership check failed.")
-
     image_tags = workstation.image.tags or []
     image = next((tag for tag in image_tags if tag in ALLOWED_IMAGES), None)
     if not image:
         raise HTTPException(status_code=409, detail="Employee workstation image is not allowlisted.")
-
-    verifier_name = f"ancos-verifier-{payload.employee_id.lower()}-{uuid.uuid4().hex[:12]}"
-    verifier_container: Any = None
+    workspace = workspace_volume_name(employee_id)
+    verifier_name = f"ancos-verifier-{employee_id.lower()}-{uuid.uuid4().hex[:12]}"
     try:
-        verifier_container = client.containers.run(
+        return client.containers.run(
             image=image,
             entrypoint=["/bin/sleep"],
             command=["3600"],
@@ -408,7 +498,7 @@ def execute_verifier_test(payload: VerificationExecRequest) -> dict[str, Any]:
             labels={
                 "ancos.managed": "true",
                 "ancos.verifier": "true",
-                "ancos.employee_id": payload.employee_id,
+                "ancos.employee_id": employee_id,
                 "ancos.workspace_volume": workspace,
             },
             user="1000:1000",
@@ -424,29 +514,15 @@ def execute_verifier_test(payload: VerificationExecRequest) -> dict[str, Any]:
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
         )
-        result = verifier_container.exec_run(
-            cmd=["/usr/bin/timeout", "300s", *payload.command],
-            user="1000:1000",
-            workdir="/home/employee/workspace",
-            environment={
-                "HOME": "/tmp",
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "PYTEST_ADDOPTS": "-p no:cacheprovider",
-                "TMPDIR": "/tmp",
-            },
-        )
-        output = result.output.decode("utf-8", errors="replace") if result.output else ""
-        return {"exit_code": result.exit_code, "stdout": output, "stderr": ""}
-    except HTTPException:
-        raise
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Isolated verifier execution failed.") from exc
-    finally:
-        if verifier_container is not None:
-            try:
-                verifier_container.remove(force=True)
-            except Exception as exc:
-                raise HTTPException(status_code=503, detail="Verifier sandbox cleanup failed.") from exc
+        raise HTTPException(status_code=503, detail="Could not provision isolated verifier sandbox.") from exc
+
+
+def remove_verification_sandbox(verifier_container: Any) -> None:
+    try:
+        verifier_container.remove(force=True)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Verifier sandbox cleanup failed.") from exc
 
 
 @app.post("/v1/containers/{container_id}/vnc-password")

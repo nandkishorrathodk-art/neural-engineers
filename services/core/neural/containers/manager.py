@@ -580,6 +580,15 @@ class ContainerManager:
             json={"employee_id": employee_id, "command": command},
         )
 
+    async def capture_verifier_manifest(self, employee_id: str) -> dict[str, Any]:
+        """Capture path, size, and SHA-256 metadata through the restricted broker."""
+        return await self._broker_request(
+            "POST",
+            "/v1/verifier/manifest",
+            timeout=310.0,
+            json={"employee_id": employee_id},
+        )
+
     async def capture_screenshot(self, docker_id: str) -> bytes:
         """Capture real workstation pixels through the restricted broker."""
         self.broker.validate_container_id(docker_id)

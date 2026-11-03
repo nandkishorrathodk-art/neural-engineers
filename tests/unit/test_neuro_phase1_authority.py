@@ -5,9 +5,13 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_db_session, require_owner_identity
 from neural.api.main import create_app
-from neural.api.routes.verifier import execute_verifier_test
+from neural.api.routes.verifier import capture_verifier_manifest, execute_verifier_test
 from neural.api.routes.worker import execute_terminal_command
-from neural.api.schemas.requests import VerifierCommandRequest, WorkerCommandRequest
+from neural.api.schemas.requests import (
+    VerifierCommandRequest,
+    VerifierManifestRequest,
+    WorkerCommandRequest,
+)
 from neural.boss.brain import BossBrain
 from neural.constants import EmployeeStatus, ExecutionMode, TaskStatus
 from neural.db.models import TaskAttempt
@@ -567,6 +571,10 @@ def test_verifier_command_contract_allows_only_test_runners():
         VerifierCommandRequest.model_validate({"fencing_token": 3, "command": ["npm", "install", "pkg"]})
 
 
+def test_verifier_manifest_contract_requires_only_fencing_token():
+    assert VerifierManifestRequest.model_validate({"fencing_token": 4}).fencing_token == 4
+
+
 @pytest.mark.asyncio
 async def test_worker_lease_validation_requires_active_fence(async_session):
     project = await ProjectRepository(async_session).create(name="Lease validation", objective="Fence execution")
@@ -713,6 +721,10 @@ async def test_verifier_exec_requires_current_submitted_attempt(async_session):
             assert command == ["pytest", "-q"]
             return {"exit_code": 0, "stdout": "2 passed", "stderr": ""}
 
+        async def capture_verifier_manifest(self, employee_id):
+            assert employee_id == "ANC-EMP-VERIFY-EXEC"
+            return {"complete": True, "files": []}
+
     result = await execute_verifier_test(
         task_id=task.task_id,
         attempt_id=attempt.id,
@@ -725,6 +737,17 @@ async def test_verifier_exec_requires_current_submitted_attempt(async_session):
     assert result["exit_code"] == 0
     assert result["stdout"] == "2 passed"
 
+    manifest = await capture_verifier_manifest(
+        task_id=task.task_id,
+        attempt_id=attempt.id,
+        request=VerifierManifestRequest(fencing_token=8),
+        task_repo=task_repo,
+        employee_repo=employee_repo,
+        container_repo=None,
+        container_manager=StubContainerManager(),
+    )
+    assert manifest["complete"] is True
+
     with pytest.raises(HTTPException) as stale:
         await execute_verifier_test(
             task_id=task.task_id,
@@ -736,3 +759,15 @@ async def test_verifier_exec_requires_current_submitted_attempt(async_session):
             container_manager=StubContainerManager(),
         )
     assert stale.value.status_code == 409
+
+    with pytest.raises(HTTPException) as stale_manifest:
+        await capture_verifier_manifest(
+            task_id=task.task_id,
+            attempt_id=attempt.id,
+            request=VerifierManifestRequest(fencing_token=7),
+            task_repo=task_repo,
+            employee_repo=employee_repo,
+            container_repo=None,
+            container_manager=StubContainerManager(),
+        )
+    assert stale_manifest.value.status_code == 409
