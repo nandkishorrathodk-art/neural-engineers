@@ -249,6 +249,7 @@ class TaskRepository:
                 "scope": task.scope,
                 "acceptance_criteria": task.acceptance_criteria,
                 "execution_mode": task.execution_mode.value,
+                "resource_budget": task.resource_budget or {},
                 "attempt_id": attempt.id,
                 "attempt_number": attempt_number,
                 "fencing_token": new_fencing_token,
@@ -291,6 +292,22 @@ class TaskRepository:
                 return False
             await self.session.commit()
         return True
+
+    async def worker_lease_is_current(self, task_id: str, worker_id: str, fencing_token: int) -> bool:
+        now = utc_now()
+        task = await self._get_task_for_worker(task_id)
+        if not task or task.status != TaskStatus.RUNNING or task.fencing_token != fencing_token:
+            return False
+        attempt = await self.session.scalar(
+            select(TaskAttempt.id).where(
+                TaskAttempt.task_id == task.id,
+                TaskAttempt.worker_id == worker_id,
+                TaskAttempt.fencing_token == fencing_token,
+                TaskAttempt.status == "running",
+                TaskAttempt.lease_expires_at > now,
+            )
+        )
+        return attempt is not None
 
     async def release_task_claim(
         self,

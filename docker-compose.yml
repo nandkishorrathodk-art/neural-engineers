@@ -84,6 +84,41 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  terminal-worker:
+    profiles: ["workers"]
+    image: ancos-core-api:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.core
+    container_name: ancos-terminal-worker
+    restart: unless-stopped
+    command: ["python", "-m", "neural.workers.terminal"]
+    environment:
+      - ANCOS_CORE_API_URL=http://core-api:12000
+      - ANCOS_WORKER_ID=${ANCOS_WORKER_ID:-terminal-worker}
+      - ANCOS_WORKER_POLL_SECONDS=${ANCOS_WORKER_POLL_SECONDS:-3}
+      - WORKER_API_TOKEN=${WORKER_API_TOKEN:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - NVIDIA_API_BASE=${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
+    depends_on:
+      core-api:
+        condition: service_started
+    networks:
+      - ancos-network
+    read_only: true
+    cpus: 1.0
+    mem_limit: 2g
+    pids_limit: 128
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   dashboard:
     build:
       context: ./apps/dashboard

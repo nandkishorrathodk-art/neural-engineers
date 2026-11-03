@@ -5,6 +5,8 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_db_session, require_owner_identity
 from neural.api.main import create_app
+from neural.api.routes.worker import execute_terminal_command
+from neural.api.schemas.requests import WorkerCommandRequest
 from neural.boss.brain import BossBrain
 from neural.constants import EmployeeStatus, ExecutionMode, TaskStatus
 from neural.db.models import TaskAttempt
@@ -411,3 +413,112 @@ async def test_worker_claim_filters_execution_modes_before_leasing(async_session
     assert await task_repo.list_attempts_by_project(project.id) == []
     persisted = await task_repo.get_by_task_id(task.task_id)
     assert persisted.fencing_token == 0
+
+
+def test_worker_terminal_command_contract_rejects_shells_and_unapproved_executables():
+    assert WorkerCommandRequest.model_validate(
+        {"fencing_token": 3, "command": ["pytest", "-q", "tests"]}
+    ).command[0] == "pytest"
+    with pytest.raises(ValueError):
+        WorkerCommandRequest.model_validate({"fencing_token": 3, "command": ["sh", "-c", "id"]})
+
+
+@pytest.mark.asyncio
+async def test_worker_lease_validation_requires_active_fence(async_session):
+    project = await ProjectRepository(async_session).create(name="Lease validation", objective="Fence execution")
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-LEASE-VALIDATION",
+        project_id=project.id,
+        title="Validate current worker",
+        objective="Allow execution only for active lease",
+        scope="Execution",
+        acceptance_criteria="Current attempt and fence match",
+        status=TaskStatus.RUNNING,
+        fencing_token=5,
+    )
+    attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="worker-current",
+        fencing_token=5,
+        status="running",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=1),
+        execution_receipt={},
+    )
+    async_session.add(attempt)
+    await async_session.commit()
+
+    assert await task_repo.worker_lease_is_current(task.task_id, "worker-current", 5)
+    assert not await task_repo.worker_lease_is_current(task.task_id, "worker-other", 5)
+    assert not await task_repo.worker_lease_is_current(task.task_id, "worker-current", 4)
+
+
+@pytest.mark.asyncio
+async def test_worker_command_route_requires_current_terminal_lease(async_session):
+    project = await ProjectRepository(async_session).create(name="Terminal execution", objective="Execute under fence")
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-EXEC-TEST",
+        name="Terminal Executor",
+        title="Backend Engineer",
+        system_prompt="test employee",
+        status=EmployeeStatus.WORKING,
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-EXEC-GATE",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Execute safe argv",
+        objective="Run a command in the employee workspace",
+        scope="Terminal command execution",
+        acceptance_criteria="Broker returns an exit code",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        fencing_token=5,
+    )
+    async_session.add(TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="worker-current",
+        fencing_token=5,
+        status="running",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=1),
+        execution_receipt={},
+    ))
+    await async_session.commit()
+
+    class StubContainerManager:
+        async def get_desktop_by_employee_id(self, *_args, **_kwargs):
+            return {"status": "running", "docker_id": "ancos-desktop-anc-emp-exec-test"}
+
+        async def execute_command(self, docker_id, command, workdir=None):
+            assert docker_id == "ancos-desktop-anc-emp-exec-test"
+            assert command == ["pytest", "-q"]
+            assert workdir == "/home/employee/workspace"
+            return {"exit_code": 0, "stdout": "1 passed", "stderr": ""}
+
+    result = await execute_terminal_command(
+        task_id=task.task_id,
+        request=WorkerCommandRequest(fencing_token=5, command=["pytest", "-q"]),
+        worker_id="worker-current",
+        task_repo=task_repo,
+        employee_repo=employee_repo,
+        container_repo=None,
+        container_manager=StubContainerManager(),
+    )
+    assert result["exit_code"] == 0
+    assert result["stdout"] == "1 passed"
+
+    with pytest.raises(HTTPException) as rejected:
+        await execute_terminal_command(
+            task_id=task.task_id,
+            request=WorkerCommandRequest(fencing_token=4, command=["pytest", "-q"]),
+            worker_id="worker-current",
+            task_repo=task_repo,
+            employee_repo=employee_repo,
+            container_repo=None,
+            container_manager=StubContainerManager(),
+        )
+    assert rejected.value.status_code == 409

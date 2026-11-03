@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Any, Optional
 
 from neural.constants import ActionItemStatus, ExecutionMode, MeetingType, ProposalType, VoteChoice
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ObjectiveSubmissionRequest(BaseModel):
@@ -105,7 +105,16 @@ class WorkerClaimRequest(BaseModel):
 
 
 class WorkerCommandRequest(WorkerLeaseRequest):
-    command: list[str] = Field(..., min_length=1, max_length=64)
+    command: list[Annotated[str, Field(min_length=1, max_length=8192)]] = Field(
+        ..., min_length=1, max_length=64
+    )
+
+    @field_validator("command")
+    @classmethod
+    def allowlisted_executable(cls, command: list[str]) -> list[str]:
+        if command[0] not in {"python", "python3", "pytest", "npm", "npx"}:
+            raise ValueError("Command executable is not allowed for terminal task execution.")
+        return command
 
 
 class WorkerSubmitRequest(WorkerLeaseRequest):

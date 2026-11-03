@@ -1,0 +1,225 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+from typing import Annotated, Any
+
+import httpx
+from pydantic import BaseModel, Field, field_validator
+
+from neural.llm.gateway import LLMGateway
+
+
+class TerminalCommandPlan(BaseModel):
+    commands: list[list[Annotated[str, Field(min_length=1, max_length=8192)]]] = Field(
+        ..., min_length=1, max_length=12
+    )
+
+    @field_validator("commands")
+    @classmethod
+    def restrict_commands(cls, commands: list[list[str]]) -> list[list[str]]:
+        allowed = {"python", "python3", "pytest", "npm", "npx"}
+        for command in commands:
+            if not command or len(command) > 64 or command[0] not in allowed:
+                raise ValueError("Plan contains an unsupported terminal command.")
+        return commands
+
+
+class TerminalWorker:
+    def __init__(
+        self,
+        api_url: str,
+        worker_id: str,
+        token: str,
+        llm: LLMGateway | None = None,
+        poll_interval: float = 3.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if not api_url or not worker_id or len(token) < 32:
+            raise ValueError("Core API URL, worker identity, and a 32-character worker token are required.")
+        self.api_url = api_url.rstrip("/")
+        self.worker_id = worker_id
+        self.client = client or httpx.AsyncClient(
+            base_url=self.api_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=httpx.Timeout(75.0, connect=5.0),
+        )
+        self.llm = llm or LLMGateway()
+        self.poll_interval = max(0.2, min(poll_interval, 60.0))
+        self._stopping = asyncio.Event()
+
+    async def close(self) -> None:
+        self._stopping.set()
+        await self.client.aclose()
+
+    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        response = await self.client.post(path, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        if not isinstance(result, dict):
+            raise RuntimeError("Core API returned an invalid worker response.")
+        return result
+
+    async def _heartbeat_loop(self, task_id: str, fencing_token: int, lease_lost: asyncio.Event) -> None:
+        while not self._stopping.is_set():
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=20.0)
+                lease_lost.set()
+                return
+            except TimeoutError:
+                pass
+            try:
+                await self._post(
+                    f"/internal/worker/tasks/{task_id}/heartbeat",
+                    {"fencing_token": fencing_token},
+                )
+            except httpx.HTTPStatusError:
+                lease_lost.set()
+                return
+            except httpx.HTTPError:
+                lease_lost.set()
+                return
+
+    async def _plan_commands(self, task: dict[str, Any]) -> tuple[TerminalCommandPlan, dict[str, Any]]:
+        budget = task.get("resource_budget") or {}
+        max_tokens = min(6000, int(budget.get("max_tokens", 6000)))
+        if max_tokens < 1:
+            raise ValueError("Task token budget must be at least one token.")
+        plan, response = await self.llm.generate_structured(
+            prompt=(
+                "Produce a short, bounded sequence of terminal argv commands to complete this task "
+                "inside the employee workspace. Commands run directly without a shell in a disposable, "
+                "non-root employee container. Do not access secrets, the host, Docker, or external services. "
+                "Do not use destructive commands. Use only python, python3, pytest, npm, or npx. "
+                "Include a relevant test or validation command when feasible. Commands must not claim "
+                "success unless their exit codes are zero.\n\n"
+                f"Title: {task['title']}\nObjective: {task['objective']}\nScope: {task['scope']}\n"
+                f"Acceptance criteria: {task['acceptance_criteria']}"
+            ),
+            response_model=TerminalCommandPlan,
+            route="code_generation",
+            system_prompt="You are a terminal-mode software engineering employee. Return only executable argv arrays.",
+            employee_id=task["employee_id"],
+            task_id=task["task_id"],
+            project_id=task["project_id"],
+            temperature=0.1,
+            max_tokens=max_tokens,
+        )
+        metadata = {
+            "provider": response.provider,
+            "model": response.model,
+            "input_tokens": response.input_tokens,
+            "output_tokens": response.output_tokens,
+            "cost_usd": response.cost_usd,
+        }
+        return plan, metadata
+
+    async def execute_claim(self, task: dict[str, Any]) -> None:
+        task_id = task["task_id"]
+        fence = int(task["fencing_token"])
+        started = False
+        heartbeat: asyncio.Task[None] | None = None
+        lease_lost = asyncio.Event()
+        try:
+            await self._post(f"/internal/worker/tasks/{task_id}/start", {"fencing_token": fence})
+            started = True
+            heartbeat = asyncio.create_task(self._heartbeat_loop(task_id, fence, lease_lost))
+            plan, model_receipt = await self._plan_commands(task)
+            command_receipts: list[dict[str, Any]] = []
+            for command in plan.commands:
+                if lease_lost.is_set():
+                    return
+                result = await self._post(
+                    f"/internal/worker/tasks/{task_id}/exec",
+                    {"fencing_token": fence, "command": command},
+                )
+                command_receipts.append(result)
+                if result.get("exit_code") != 0:
+                    raise RuntimeError(
+                        f"Terminal command exited with code {result.get('exit_code')}: "
+                        f"{str(result.get('stderr', ''))[-1000:]}"
+                    )
+            if lease_lost.is_set():
+                return
+            await self._post(
+                f"/internal/worker/tasks/{task_id}/submit",
+                {
+                    "fencing_token": fence,
+                    "execution_receipt": {
+                        "executor": "terminal-worker",
+                        "execution_mode": "terminal",
+                        "model": model_receipt,
+                        "commands": command_receipts,
+                        "verification_status": "awaiting_independent_verifier",
+                        "passed": False,
+                    },
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                return
+            if started:
+                await self._report_failure(task_id, fence, str(exc))
+            else:
+                raise
+        except Exception as exc:
+            if started:
+                await self._report_failure(task_id, fence, str(exc))
+            else:
+                raise
+        finally:
+            if heartbeat:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _report_failure(self, task_id: str, fencing_token: int, message: str) -> None:
+        try:
+            await self._post(
+                f"/internal/worker/tasks/{task_id}/fail",
+                {"fencing_token": fencing_token, "error_message": message[:4000]},
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 409:
+                raise
+
+    async def run(self) -> None:
+        while not self._stopping.is_set():
+            try:
+                response = await self._post(
+                    "/internal/worker/tasks/claim",
+                    {"execution_modes": ["terminal"]},
+                )
+                task = response.get("task")
+                if task:
+                    await self.execute_claim(task)
+                    continue
+            except httpx.HTTPError:
+                pass
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=self.poll_interval)
+            except TimeoutError:
+                continue
+
+
+async def main() -> None:
+    worker = TerminalWorker(
+        api_url=os.environ.get("ANCOS_CORE_API_URL", "http://127.0.0.1:12000"),
+        worker_id=os.environ.get("ANCOS_WORKER_ID", "terminal-worker"),
+        token=os.environ.get("WORKER_API_TOKEN", ""),
+        poll_interval=float(os.environ.get("ANCOS_WORKER_POLL_SECONDS", "3")),
+    )
+    loop = asyncio.get_running_loop()
+    for stop_signal in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(stop_signal, worker._stopping.set)
+        except NotImplementedError:
+            pass
+    try:
+        await worker.run()
+    finally:
+        await worker.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

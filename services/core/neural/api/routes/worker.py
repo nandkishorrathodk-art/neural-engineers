@@ -8,11 +8,12 @@ from neural.api.deps import (
 )
 from neural.api.schemas.requests import (
     WorkerClaimRequest,
+    WorkerCommandRequest,
     WorkerFailureRequest,
     WorkerLeaseRequest,
     WorkerSubmitRequest,
 )
-from neural.constants import EmployeeStatus
+from neural.constants import EmployeeStatus, ExecutionMode
 from neural.containers.manager import ContainerManager
 from neural.db.repositories import ContainerRepository, EmployeeRepository, TaskRepository
 
@@ -100,6 +101,45 @@ async def heartbeat_task_attempt(
     if lease_expires_at is None:
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     return {"task_id": task_id, "status": "running", "lease_expires_at": lease_expires_at}
+
+
+@router.post("/tasks/{task_id}/exec")
+async def execute_terminal_command(
+    task_id: str,
+    request: WorkerCommandRequest,
+    worker_id: str = Depends(require_worker_token),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_manager: ContainerManager = Depends(get_container_manager),
+):
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.execution_mode != ExecutionMode.TERMINAL:
+        raise HTTPException(status_code=409, detail="This worker execution endpoint accepts terminal-mode tasks only.")
+    if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
+        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    if not employee:
+        raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
+    workstation = await container_manager.get_desktop_by_employee_id(
+        employee.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    if not workstation or workstation.get("status") != "running":
+        raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
+    result = await container_manager.execute_command(
+        workstation["docker_id"], request.command, workdir="/home/employee/workspace"
+    )
+    return {
+        "task_id": task_id,
+        "fencing_token": request.fencing_token,
+        "exit_code": result.get("exit_code"),
+        "stdout": str(result.get("stdout", ""))[-16000:],
+        "stderr": str(result.get("stderr", ""))[-4000:],
+    }
 
 
 @router.post("/tasks/{task_id}/submit")
