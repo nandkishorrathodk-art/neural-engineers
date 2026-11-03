@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import secrets
 import shutil
@@ -246,11 +245,13 @@ def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
         filters={"label": "ancos.managed=true"},
     )
     try:
-        workstation_limit = int(os.environ.get("ANCOS_MAX_ACTIVE_DESKTOPS", "1"))
+        # Import lazily because resource_scheduler exports DesktopSlotPool,
+        # which depends on ContainerManager.
+        from neural.resource_scheduler.workstation_lease import workstation_slot_limit
+
+        workstation_limit = workstation_slot_limit()
     except ValueError as exc:
         raise HTTPException(status_code=503, detail="Desktop capacity setting is invalid.") from exc
-    if workstation_limit < 0:
-        raise HTTPException(status_code=503, detail="Desktop capacity setting is invalid.")
     existing_workstations = [
         container for container in existing_workstations
         if container.name != employee_container_id(payload.employee_id)

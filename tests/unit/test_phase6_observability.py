@@ -102,8 +102,8 @@ async def test_audit_log_cryptographic_hash_chain_verification(async_session: As
 
     # Also verify via AuditLogChainVerifier
     records = await repo.list_all(limit=10)
-    sorted_recs = sorted(records, key=lambda r: r.timestamp)
-    valid_chain, chain_issues = AuditLogChainVerifier.verify_records(sorted_recs)
+    ordered_recs = AuditLogChainVerifier.order_chain(records)
+    valid_chain, chain_issues = AuditLogChainVerifier.verify_records(ordered_recs)
     assert valid_chain is True
     assert len(chain_issues) == 0
 

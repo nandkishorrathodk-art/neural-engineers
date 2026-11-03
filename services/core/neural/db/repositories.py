@@ -1584,6 +1584,11 @@ class AuditRepository:
         last_res = await self.session.execute(last_stmt)
         last_entry = last_res.scalars().first()
         prev_hash = last_entry.signature if (last_entry and last_entry.signature) else "GENESIS_AUDIT_BLOCK"
+        timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
+        if last_entry and last_entry.timestamp and timestamp <= last_entry.timestamp:
+            # Keep append order deterministic when the database clock has
+            # equal or lower precision than rapid consecutive audit writes.
+            timestamp = last_entry.timestamp + timedelta(microseconds=1)
 
         # Compute cryptographic signature
         sig_raw = f"{prev_hash}:{actor}:{action}:{resource_type}:{resource_id}:{actual_request_hash}"
@@ -1600,6 +1605,7 @@ class AuditRepository:
             payload=actual_payload,
             signature=signature,
             previous_hash=prev_hash,
+            timestamp=timestamp,
         )
         self.session.add(entry)
         await self.session.commit()
