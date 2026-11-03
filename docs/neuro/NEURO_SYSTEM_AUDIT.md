@@ -1,7 +1,7 @@
 # ANCOS NEURO-0 system audit
 
-**Audit snapshot:** 2026-11-02
-**Latest reviewed commit:** isolated verifier-consumer slice, 2026-11-03.
+**Audit snapshot:** 2026-11-03
+**Latest reviewed sources:** verifier snapshot at `c3979c9`, followed by the resource-capacity and lint changes in this update.
 
 **Repository:** local `neural-company` workspace
 **Acceptance:** NEURO-0 evidence baseline recorded; production end-to-end acceptance is **not met**.
@@ -10,23 +10,23 @@
 
 This is a repository and local-environment audit, not a claim that ANCOS is operating as an autonomous company. It combines source/document inspection, the full Python test suite, Ruff, and a dashboard production build. A passing unit or component test is evidence for that component contract only; it is not evidence of a live employee completing work.
 
-The current dashboard edits and pre-existing removed screenshot assets were preserved. No source implementation was changed as part of this audit. Tests were explicitly requested in the NEURO brief. Python test support packages were installed into the ignored local virtual environment only; tracked dependency manifests were not changed.
+The current dashboard edits and pre-existing removed screenshot assets were preserved. Tests were explicitly requested in the NEURO brief. Python test support packages were installed into the ignored local virtual environment only; tracked dependency manifests were not changed.
 
 ## Findings
 
 1. ANCOS has substantial implemented subsystems: Boss planning, dynamic employee records, task/DAG APIs, model routing, GUI perception/action/recovery/verification modules, resource leases, retrieval/memory, governance, meetings, evolution, backup, and audit modules.
-2. The strongest acceptance gap is still the live execution chain. Existing audit evidence says there is no deployed task consumer or verifier consumer in Compose, no live GUI action adapter, and no successful owner objective → recruitment → task execution → independent verification receipt. The task-worker protocol and verifier APIs do not prove a running worker/verifier.
-3. A clean-database Boss objective does not recruit by default: `BossBrain.plan_and_create_project()` defaults `auto_recruit_workforce=False`, and the objective route does not enable it. The direct employee creation route and legacy fixed-profile bootstrap helper also need an explicit policy review before claiming Boss-only dynamic recruitment.
+2. The strongest acceptance gap is still the live execution chain. Opt-in terminal worker and verifier consumers are declared in Compose, but neither has a live runtime receipt. A live GUI action adapter and successful owner objective → recruitment → task execution → independent verification receipt remain unproven.
+3. Owner-authenticated objective/staffing and owner-only project reporting now have focused API/DB tests, with separate owner/Boss audit actors. This does not prove a live mission, complete recruitment lifecycle, or employee reuse after session teardown. Direct employee creation and legacy bootstrap authority still need release-level policy review.
 4. The live company view is code-rendered and maps backend records, but polls APIs. Desk placement is local role-based placement rather than persisted workstation assignment; persisted meeting speaker activity is not wired. The backend was unavailable during this audit.
-5. Resource scheduler tests disagree with the currently configured one-desktop capacity and assume additional sessions. Container tests need a configured isolated restricted broker; the local Docker Linux engine was unavailable.
+5. Resource scheduler/profile mismatch was due to a hardcoded one-slot cap overriding declared 4/8/16 hardware profiles. The cap is now an explicit lowerable deployment setting (`ANCOS_MAX_ACTIVE_DESKTOPS`, Compose default 1); mocked scheduler/integration tests pass. No live multi-session resource capacity has been measured. Container tests still require a configured restricted broker; Docker Linux is unavailable locally.
 6. Laya is intentionally optional and checkpoint integrity has been documented, but real model inference was not demonstrated in this runtime. Optional/offline fallback should remain clearly distinguished from a successful neural inference.
 
 ## Environment snapshot
 
 | Check | Result | Limits |
 |---|---|---|
-| Python suite | 376 collected; 334 passed, 31 failed, 11 skipped; 5 warnings | Failures span Docker broker provisioning, phase 2/5/6/7 contracts, cognitive-fabric loops, and one-vs-four resource capacity assumptions. See `NEURO_TEST_EVIDENCE.md`. |
-| Ruff | 7 findings | 6 import-order findings and 1 unused import; details recorded in evidence report. |
+| Python suite | Current worktree: 405 collected; 393 passed, 12 skipped, zero failed; 5 warnings | P0 live broker provisioning skips when broker credentials are absent; optional model/runtime tests also skip. Scheduler integrations use mocked provisioning. See `NEURO_TEST_EVIDENCE.md`. |
+| Ruff | Pass | `uv run --no-sync ruff check services tests` passes after fixing six findings. |
 | Dashboard production build | See `NEURO_TEST_EVIDENCE.md` | Build runs Next.js compile, lint/type validation, and static generation. |
 | Python mypy | See `NEURO_TEST_EVIDENCE.md` | A run was attempted; only claim a result if a completed process result is captured there. |
 | Docker engine | Unavailable | Docker Desktop Linux engine named pipe was absent. No broker-backed execution can be verified locally. |
@@ -47,4 +47,4 @@ The control-plane slice now requires an owner identity on `POST /boss/objective`
 - **NEURO-1:** The dated follow-up above supersedes the initial audit-time recruitment finding; current objective-route staffing is owner-authenticated and focused-tested. No live objective-to-verified-report mission exists.
 - **NEURO-2/3:** `455f752` adds an opt-in terminal-only worker, supported-mode claim filter, start/heartbeat/submit/fail protocol, lease-checked Core API command endpoint, and restricted-broker execution. `395f53d` fixes verifier rejection lifecycle: preserve the rejected receipt, consume bounded retry budget with persisted backoff, increment fencing, and fail terminally on exhaustion. The verifier replays only declared pytest/npm-test commands and now records a bounded path/size/SHA-256 workspace snapshot through an attempt-fenced endpoint. The snapshot is verification-time metadata only, not a task-start diff or correctness review. Latest focused regression passes (36 tests). Ruff, scoped mypy, Compose parsing, and Docker runtime validation are pending for this change; the Linux Docker engine was previously unavailable, so no live consumer receipt exists.
 - **Roadmap fidelity:** The phase plan/status now preserve the user's full NEURO-0–NEURO-13 objectives. This corrects the prior shortened 0–9 plan, which did not represent the complete master mission.
-- **Validation freshness:** the last full-suite result is still the older `c979cb2` run (339 passed, 32 failed, 11 skipped). Current `main` has focused checks only; do not treat historical full-suite results as current-source regression proof.
+- **Validation freshness:** the full current-worktree suite passed on 2026-11-03: 393 passed, 12 skipped, zero failed. Ruff passes. The audit snapshot includes uncommitted dashboard edits that were not staged with this implementation; live Docker/runtime acceptance remains outstanding.

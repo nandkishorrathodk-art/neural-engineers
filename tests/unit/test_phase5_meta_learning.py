@@ -90,8 +90,10 @@ def test_prompt_optimizer():
     base_prompt = "You are an ANCOS engineer."
     result = optimizer.optimize_prompt(base_prompt, pat, target_role="Senior Backend Engineer")
 
-    assert result["optimized_quality_score"] > result["baseline_quality_score"]
-    assert result["improvement_pct"] > 0
+    assert result["candidate_status"] == "not_evaluated"
+    assert result["baseline_quality_score"] is None
+    assert result["optimized_quality_score"] is None
+    assert result["improvement_pct"] is None
     assert any("async with session.begin()" in rule for rule in result["rules_injected"])
     assert "You are an ANCOS engineer." in result["optimized_prompt"]
 

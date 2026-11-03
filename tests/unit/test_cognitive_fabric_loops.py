@@ -146,7 +146,7 @@ async def test_controlled_skill_loop_benchmark_and_certification():
     store = SixTierMemoryStore()
     loop = ControlledSkillLoop(memory_store=store, benchmark_pass_threshold=0.8)
 
-    # Trace with all successful steps (score = 1.0 >= 0.8)
+    # A successful trace is not a benchmark or independent certification receipt.
     trace = [
         {"cmd": "git fetch", "exit_code": 0},
         {"cmd": "pytest", "exit_code": 0},
@@ -158,10 +158,18 @@ async def test_controlled_skill_loop_benchmark_and_certification():
         execution_trace=trace,
     )
 
-    assert res["status"] == "certified"
-    assert res["is_certified"] is True
-    assert res["benchmark_score"] == 1.0
-    assert res["certified_record_id"] is not None
+    assert res["status"] == "not_evaluated"
+    assert res["is_certified"] is False
+    assert res["benchmark_score"] is None
+    assert res["certified_record_id"] is None
+
+    reviewed = await loop.execute(
+        procedure_name="SafeRepoPushProcedure",
+        execution_trace=trace,
+        benchmark_fn=lambda _trace: 1.0,
+    )
+    assert reviewed["status"] == "awaiting_independent_certification"
+    assert reviewed["is_certified"] is False
 
 
 @pytest.mark.asyncio
@@ -175,9 +183,10 @@ async def test_controlled_evolution_loop_promotion():
         experiment_runner_fn=lambda p: 0.94,  # Benchmark score exceeds 0.85
     )
 
-    assert res["status"] == "promoted"
-    assert res["is_promoted"] is True
+    assert res["status"] == "awaiting_human_approval"
+    assert res["is_promoted"] is False
     assert res["benchmark_score"] == 0.94
+    assert res["proposal_for_review"] is not None
 
 
 @pytest.mark.asyncio

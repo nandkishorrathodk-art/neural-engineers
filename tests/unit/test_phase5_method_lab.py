@@ -1,6 +1,6 @@
 import pytest
 from neural.db.repositories import MethodBenchmarkRepository, MethodRepository
-from neural.methods.benchmarks import MethodBenchmarkHarness
+from neural.methods.benchmarks import BenchmarkUnavailableError, MethodBenchmarkHarness
 from neural.methods.catalog import MethodologyCatalog
 from neural.methods.lab import MethodLabEngine
 from neural.methods.strategies import StrategyType, get_standard_strategy_blueprint
@@ -40,18 +40,10 @@ async def test_method_lab_synthesis_and_benchmarking(async_session: AsyncSession
     assert len(method.steps) == 4
 
     # 2. Benchmark candidate method
-    record, scorecard = await engine.benchmark_method(method.method_id)
-    assert scorecard.total_scenarios == 4
-    assert scorecard.passed_scenarios >= 3
-    assert scorecard.accuracy >= 0.75
-    assert scorecard.token_efficiency > 0.0
-    assert scorecard.reproduction_rate >= 0.90
-    assert scorecard.composite_score > 0.0
-    assert scorecard.recommendation in ("promote", "iterate")
-
-    assert record is not None
-    assert record.accuracy == scorecard.accuracy
-    assert record.composite_score == scorecard.composite_score
+    with pytest.raises(BenchmarkUnavailableError, match="No method execution adapter"):
+        await engine.benchmark_method(method.method_id)
+    assert method.status == "candidate"
+    assert await bmk_repo.list_for_method(method.method_id) == []
 
 
 @pytest.mark.asyncio
@@ -71,17 +63,16 @@ async def test_method_promotion_lifecycle(async_session: AsyncSession):
     active_before = await catalog.list_active_methods()
     assert not any(m.method_id == method.method_id for m in active_before)
 
-    # Benchmark method
-    await engine.benchmark_method(method.method_id)
+    # Without executor-backed benchmark evidence, even force cannot promote it.
+    with pytest.raises(BenchmarkUnavailableError):
+        await engine.benchmark_method(method.method_id)
+    with pytest.raises(BenchmarkUnavailableError, match="approval receipt"):
+        await engine.promote_method(method.method_id, force=True)
+    assert method.status == "candidate"
 
-    # Promote to active catalog
-    promoted = await engine.promote_method(method.method_id, force=True)
-    assert promoted.status == "promoted"
-    assert promoted.promoted_at is not None
-
-    # Now should appear in active catalog
+    # Candidate remains unavailable to the active catalog without evidence and approval.
     active_after = await catalog.list_active_methods()
-    assert any(m.method_id == method.method_id for m in active_after)
+    assert not any(m.method_id == method.method_id for m in active_after)
 
     # Execution plan retrieval
     plan = await catalog.get_execution_plan(method.method_id)
@@ -95,36 +86,29 @@ async def test_method_benchmark_harness_metrics():
     harness = MethodBenchmarkHarness()
     cov_steps = get_standard_strategy_blueprint(StrategyType.CHAIN_OF_VERIFICATION)
 
-    scorecard = await harness.evaluate_method(
-        method_id="MTH-TEST-HARNESS",
-        steps=cov_steps,
-        strategy_type="chain_of_verification",
-        baseline_metrics={"accuracy": 0.65, "avg_latency_ms": 300.0, "token_efficiency": 0.70},
-    )
-
-    assert scorecard.accuracy >= 0.75
-    assert scorecard.avg_latency_ms > 0.0
-    assert scorecard.reproduction_rate >= 0.90
-    assert len(scorecard.scenario_results) == 4
-    assert scorecard.recommendation == "promote"
+    with pytest.raises(BenchmarkUnavailableError, match="No method execution adapter"):
+        await harness.evaluate_method(
+            method_id="MTH-TEST-HARNESS",
+            steps=cov_steps,
+            strategy_type="chain_of_verification",
+            baseline_metrics={"accuracy": 0.65, "avg_latency_ms": 300.0, "token_efficiency": 0.70},
+        )
 
 
 @pytest.mark.asyncio
 async def test_method_benchmark_edge_cases_zero_scenarios_and_degenerate_steps():
-    # 1. Zero scenarios should return 0 metrics without ZeroDivisionError
+    # Empty suites still need an execution adapter; structural scoring is not evidence.
     empty_harness = MethodBenchmarkHarness(scenarios=[])
-    card = await empty_harness.evaluate_method("MTH-EMPTY", steps=[], strategy_type="iterative_refinement")
-    assert card.total_scenarios == 0
-    assert card.accuracy == 0.0
-    assert card.composite_score == 0.0
-    assert card.recommendation == "reject"
+    with pytest.raises(BenchmarkUnavailableError):
+        await empty_harness.evaluate_method("MTH-EMPTY", steps=[], strategy_type="iterative_refinement")
 
     # 2. Degenerate steps (empty dict, non-dict, or missing keys)
     standard_harness = MethodBenchmarkHarness()
     degenerate_steps = [{}, {"name": "EmptyStep"}, "invalid_step_format"]
-    card_deg = await standard_harness.evaluate_method("MTH-DEG", steps=degenerate_steps, strategy_type="iterative_refinement")
-    assert card_deg.total_scenarios == 4
-    assert card_deg.recommendation in ("iterate", "reject")
+    with pytest.raises(BenchmarkUnavailableError):
+        await standard_harness.evaluate_method(
+            "MTH-DEG", steps=degenerate_steps, strategy_type="iterative_refinement"
+        )
 
 
 @pytest.mark.asyncio
@@ -147,11 +131,10 @@ async def test_method_catalog_and_benchmark_repo_id_resolution(async_session: As
     assert found.method_id == method.method_id
 
     # Benchmark method
-    record, _ = await engine.benchmark_method("lookup_candidate_test")
-    assert record is not None
+    with pytest.raises(BenchmarkUnavailableError):
+        await engine.benchmark_method("lookup_candidate_test")
 
     # Benchmark repository should resolve benchmarks by human-readable method_id string as well
     benchmarks = await bmk_repo.list_for_method(method.method_id)
-    assert len(benchmarks) >= 1
-    assert benchmarks[0].method_id == method.id
+    assert benchmarks == []
 

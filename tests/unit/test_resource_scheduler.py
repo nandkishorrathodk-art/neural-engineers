@@ -6,11 +6,13 @@ import tempfile
 
 import pytest
 from neural.constants import TaskPriority
+from neural.containers.manager import ContainerManager
 from neural.resource_scheduler.checkpoint_manager import CheckpointManager
 from neural.resource_scheduler.desktop_pool import DesktopSlotPool
 from neural.resource_scheduler.employee_queue import EmployeeExecutionQueue
 from neural.resource_scheduler.hardware_profiler import (
     PROFILE_16GB,
+    PROFILE_64GB,
     HardwareProfiler,
 )
 from neural.resource_scheduler.resource_monitor import ResourceMonitor
@@ -18,13 +20,37 @@ from neural.resource_scheduler.scheduler import DesktopResourceScheduler
 from neural.resource_scheduler.session_lease import SessionLeaseManager
 
 
-def test_hardware_profiler_and_scaling_profiles():
+@pytest.fixture(autouse=True)
+def fake_container_manager(monkeypatch):
+    async def provision(_self, employee_id: str, role_image: str = "employee-base"):
+        return {
+            "docker_id": f"ancos-desktop-{employee_id.lower()}",
+            "workspace": f"./data/workspaces/{employee_id}",
+            "desktop_url": "http://localhost:6081/vnc.html?autoconnect=true",
+        }
+
+    async def terminate(_self, _docker_id: str):
+        return True
+
+    monkeypatch.setattr(ContainerManager, "provision_employee_desktop", provision)
+    monkeypatch.setattr(ContainerManager, "terminate_desktop", terminate)
+
+
+def test_hardware_profiler_and_scaling_profiles(monkeypatch):
     profiler = HardwareProfiler(profile=PROFILE_16GB)
 
     # Initial 16GB profile
     assert profiler.get_max_desktops() == 4
     assert profiler.get_headroom_gb() == 1.5
     assert profiler.active_profile.total_ram_gb == 16.0
+
+    limited_profiler = HardwareProfiler(profile=PROFILE_16GB, max_active_desktops=1)
+    assert limited_profiler.get_max_desktops() == 1
+    monkeypatch.setenv("ANCOS_MAX_ACTIVE_DESKTOPS", "2")
+    assert HardwareProfiler(profile=PROFILE_64GB).get_max_desktops() == 2
+    monkeypatch.setenv("ANCOS_MAX_ACTIVE_DESKTOPS", "-1")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        HardwareProfiler(profile=PROFILE_16GB)
 
     # Dynamic scaling to 32GB
     profiler.set_profile("32GB")
@@ -40,6 +66,26 @@ def test_hardware_profiler_and_scaling_profiles():
     # Back to 16GB
     profiler.set_profile(PROFILE_16GB)
     assert profiler.get_max_desktops() == 4
+
+
+@pytest.mark.asyncio
+async def test_deployment_capacity_ceiling_limits_profile_and_queues(monkeypatch):
+    monkeypatch.setenv("ANCOS_MAX_ACTIVE_DESKTOPS", "1")
+    monitor = ResourceMonitor()
+    monitor.set_mock_metrics(free_ram_gb=10.0, cpu_percent=20.0)
+    scheduler = DesktopResourceScheduler(
+        profiler=HardwareProfiler(profile=PROFILE_16GB),
+        monitor=monitor,
+    )
+
+    first = await scheduler.request_desktop_session("EMP-DEPLOY-1", "TASK-1")
+    second = await scheduler.request_desktop_session("EMP-DEPLOY-2", "TASK-2")
+
+    assert first["status"] == "active"
+    assert second["status"] == "queued_standby"
+    assert second["reason"] == "Active desktop capacity full (1/1 slots)"
+    assert scheduler.get_stats()["max_slots"] == 1
+    await scheduler.emergency_capacity_shutdown()
 
 
 @pytest.mark.asyncio

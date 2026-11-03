@@ -19,7 +19,7 @@ class DesktopResourceScheduler:
     Desktop Resource Scheduler & Capacity Governor.
     Enforces the fundamental architectural invariant:
     - Many Persistent AI Employees.
-    - Exactly ONE Maximum Active GUI Desktop Session in the current deployment.
+    - Active GUI sessions stay within the hardware profile and deployment ceiling.
     - Standby employees retain permanent identity, memory, and state WITHOUT consuming running containers.
     - Dynamic admission control, priority queueing, durable checkpointing, and safe preemption.
     - Upgradeable to 64 GB profiles without organizational rewrites.
@@ -62,7 +62,7 @@ class DesktopResourceScheduler:
         """
         Requests an active GUI desktop slot for an employee.
         If a slot is available and host is healthy -> Allocates slot & container.
-        If the single desktop slot is occupied -> Puts employee into STANDBY queue without running a container.
+        If all configured desktop slots are occupied -> Puts employee into STANDBY.
         """
         # 0. Reconcile any expired session leases first to free up slots
         await self.reconcile_expired_leases()
@@ -102,6 +102,23 @@ class DesktopResourceScheduler:
         # 3. Check physical slot capacity
         max_slots = self.profiler.get_max_desktops()
         active_count = self.slot_pool.get_active_count()
+
+        if max_slots == 0:
+            reason = "Desktop capacity is disabled by deployment configuration."
+            self._standby_employees.add(employee_id)
+            self.queue.enqueue(
+                employee_id=employee_id,
+                task_id=task_id,
+                department=department,
+                priority=priority,
+                metadata={"reason": reason},
+            )
+            return {
+                "status": "queued_standby",
+                "employee_id": employee_id,
+                "reason": reason,
+                "queue_position": self.queue.size(),
+            }
 
         if active_count >= max_slots:
             # Capacity full! Standby employee concept

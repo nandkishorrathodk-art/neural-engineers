@@ -21,12 +21,30 @@ from neural.cognitive_fabric.organizational_moe.expert_router import Organizatio
 from neural.cognitive_fabric.retrieval.agentic_rag import AgenticRAGEngine
 from neural.cognitive_fabric.retrieval.hybrid_retrieval import HybridRetrievalEngine
 from neural.constants import EmployeeStatus, SkillLevel, TaskPriority
+from neural.containers.manager import ContainerManager
 from neural.db.models import Employee, EmployeeSkill, Task
 from neural.evaluation.cognitive_benchmark import ANCOSCognitiveBenchmark
 from neural.resource_scheduler.checkpoint_manager import CheckpointManager
 from neural.resource_scheduler.hardware_profiler import PROFILE_16GB, HardwareProfiler
 from neural.resource_scheduler.resource_monitor import ResourceMonitor
 from neural.resource_scheduler.scheduler import DesktopResourceScheduler
+
+
+@pytest.fixture(autouse=True)
+def fake_desktop_containers(monkeypatch):
+    """Keep capacity integration tests independent of an installed Docker engine."""
+    async def provision(_self, employee_id: str, role_image: str = "employee-base"):
+        return {
+            "docker_id": f"ancos-desktop-{employee_id.lower()}",
+            "workspace": f"./data/workspaces/{employee_id}",
+            "desktop_url": "http://localhost:6081/vnc.html?autoconnect=true",
+        }
+
+    async def terminate(_self, _docker_id: str):
+        return True
+
+    monkeypatch.setattr(ContainerManager, "provision_employee_desktop", provision)
+    monkeypatch.setattr(ContainerManager, "terminate_desktop", terminate)
 
 
 def create_employee(

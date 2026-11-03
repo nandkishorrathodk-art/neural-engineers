@@ -1,6 +1,6 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
-from neural.api.deps import get_db_session
+from neural.api.deps import get_db_session, require_approver_identity
 from neural.api.main import create_app
 from neural.constants import ApprovalStatus, DestructiveOperationType
 from neural.db.repositories import ApprovalRepository
@@ -83,6 +83,7 @@ async def test_phase6_security_emergency_stop_and_approval_endpoints(async_sessi
     """
     app = create_app()
     app.dependency_overrides[get_db_session] = lambda: async_session
+    app.dependency_overrides[require_approver_identity] = lambda: "human_approver"
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

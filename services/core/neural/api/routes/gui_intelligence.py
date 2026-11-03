@@ -7,7 +7,6 @@ from typing import Any, Optional
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
-from PIL import Image
 from neural.api.deps import (
     get_container_manager,
     get_container_repo,
@@ -26,12 +25,12 @@ from neural.gui_intelligence.models import (
     GUIActionRequest,
 )
 from neural.gui_intelligence.perception.screen_capture import (
-    ScreenCaptureEngine,
     ScreenCaptureUnavailableError,
 )
 from neural.gui_intelligence.skills.skill_compiler import GUISkillCompiler
 from neural.gui_intelligence.skills.skill_registry import get_gui_skill_registry
 from neural.gui_intelligence.skills.skill_validator import SkillValidator
+from PIL import Image
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/gui", tags=["Neural-Speed GUI Intelligence"])

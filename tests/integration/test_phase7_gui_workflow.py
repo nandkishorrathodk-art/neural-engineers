@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from neural.api.deps import get_db_session
+from neural.api.deps import (
+    get_container_manager,
+    get_container_repo,
+    get_db_session,
+    get_employee_repo,
+    require_owner_identity,
+)
 from neural.api.main import create_app
 from neural.gui_intelligence.action.execution_loop import GUIExecutionLoop
 from neural.gui_intelligence.benchmarks.osworld_runner import OSWorldRunner
@@ -41,10 +47,31 @@ async def test_phase7_gui_intelligence_api_endpoints(async_session: AsyncSession
     app = create_app()
     app.dependency_overrides[get_db_session] = lambda: async_session
 
+    class FakeContainerManager:
+        async def get_desktop_by_employee_id(self, employee_id, **kwargs):
+            assert employee_id == "ANC-EMP-GUI-API"
+            return {"docker_id": "ancos-desktop-anc-emp-gui-api", "status": "running"}
+
+        async def capture_screenshot(self, docker_id):
+            assert docker_id == "ancos-desktop-anc-emp-gui-api"
+            from io import BytesIO
+
+            import numpy as np
+            from PIL import Image
+
+            buffer = BytesIO()
+            Image.fromarray(np.zeros((800, 1280, 3), dtype=np.uint8), mode="RGB").save(buffer, format="PNG")
+            return buffer.getvalue()
+
+    app.dependency_overrides[require_owner_identity] = lambda: "test-owner"
+    app.dependency_overrides[get_container_manager] = lambda: FakeContainerManager()
+    app.dependency_overrides[get_container_repo] = lambda: object()
+    app.dependency_overrides[get_employee_repo] = lambda: object()
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # 1. Screen Capture endpoint
-        cap_res = await client.get("/gui/screen/capture")
+        cap_res = await client.get("/gui/screen/capture?employee_id=ANC-EMP-GUI-API")
         assert cap_res.status_code == 200
         cap_data = cap_res.json()
         assert cap_data["resolution"] == [1280, 800]

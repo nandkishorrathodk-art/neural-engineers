@@ -414,6 +414,8 @@ class ContainerManager:
         """Retrieves live or cached status of desktop workstation, with DB recovery."""
         spec = self._containers.get(docker_id)
         if spec:
+            if spec.get("status") == ContainerStatus.TERMINATED.value:
+                return spec
             return await self._refresh_remote_status(spec, container_repo)
 
         if container_repo:

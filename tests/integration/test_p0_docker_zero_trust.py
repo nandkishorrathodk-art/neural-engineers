@@ -4,6 +4,7 @@ import os
 import shutil
 
 import pytest
+from neural.config import get_settings
 from neural.containers.broker import RestrictedDockerBroker
 from neural.containers.manager import ContainerManager
 from neural.exceptions import SecurityViolationError
@@ -95,6 +96,9 @@ def test_broker_enforces_least_privilege_kwargs():
 @pytest.mark.asyncio
 async def test_container_manager_provisions_with_broker_hardening():
     """Tests ContainerManager invoking broker to harden real workstation provisioning."""
+    settings = get_settings()
+    if not settings.DOCKER_BROKER_URL or not settings.DOCKER_BROKER_TOKEN:
+        pytest.skip("Live restricted Docker broker credentials are not configured.")
     manager = ContainerManager()
     emp_id = "ANC-EMP-0099"
 

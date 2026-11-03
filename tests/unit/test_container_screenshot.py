@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 
 import pytest
-
 from neural.containers.manager import ContainerManager
 from neural.exceptions import ContainerError
 

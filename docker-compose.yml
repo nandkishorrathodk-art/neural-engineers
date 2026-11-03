@@ -68,6 +68,7 @@ services:
       - BOSS_LLM_PLANNING_ENABLED=${BOSS_LLM_PLANNING_ENABLED:-true}
       - DOCKER_BROKER_URL=http://docker-broker:12002
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
+      - ANCOS_MAX_ACTIVE_DESKTOPS=${ANCOS_MAX_ACTIVE_DESKTOPS:-1}
     volumes:
       - ./data:/app/data
       - ./configs:/app/configs

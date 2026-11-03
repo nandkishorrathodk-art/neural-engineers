@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from io import BytesIO
+
 import numpy as np
 import pytest
 from httpx import ASGITransport, AsyncClient
-from PIL import Image
-
 from neural.api.deps import (
     get_container_manager,
     get_container_repo,
@@ -13,6 +12,7 @@ from neural.api.deps import (
     require_owner_identity,
 )
 from neural.api.main import create_app
+from PIL import Image
 
 
 @pytest.mark.asyncio

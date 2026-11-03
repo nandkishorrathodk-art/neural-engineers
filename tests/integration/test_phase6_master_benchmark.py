@@ -133,6 +133,20 @@ async def test_phase6_full_end_to_end_autonomous_benchmark_mission(
     # 3. WORKSTATION PROVISIONING WITH ZERO-TRUST PROFILES
     # ─────────────────────────────────────────────────────────────────────────
     cm = ContainerManager()
+
+    async def fake_restricted_broker_request(method, path, **kwargs):
+        # This benchmark covers orchestration and policy boundaries; live broker
+        # availability is exercised separately by the P0 Docker integration test.
+        assert method == "POST" and path == "/v1/containers"
+        return {
+            "vnc_port": 5901,
+            "novnc_port": 6081,
+            "workspace": str(tmp_path / "broker-workspace" / backend_dev.employee_id),
+            "vnc_password": "integration-only",
+            "status": "running",
+        }
+
+    cm._broker_request = fake_restricted_broker_request
     workstation_spec = await cm.provision_employee_desktop(
         employee_id=backend_dev.employee_id,
         role_image="employee-base",

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from neural.constants import ModelRuntime
 from neural.decision_intelligence.system_one.laya_adapter import LayaAdapter
-from neural.decision_intelligence.system_one.model_registry import ModelCheckpointMetadata, ModelRegistry
+from neural.decision_intelligence.system_one.model_registry import (
+    ModelCheckpointMetadata,
+    ModelRegistry,
+)
 
 
 def test_tampered_checkpoint_is_never_loaded(tmp_path):

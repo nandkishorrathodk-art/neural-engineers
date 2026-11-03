@@ -65,7 +65,7 @@ class DesktopSlot:
 class DesktopSlotPool:
     """
     Manages dedicated physical slots for concurrent GUI desktop sessions.
-    Currently limited to one active GUI desktop regardless of host hardware.
+    Slot capacity follows the hardware profile/deployment ceiling supplied by the scheduler.
     """
 
     def __init__(
@@ -75,15 +75,16 @@ class DesktopSlotPool:
         base_vnc_port: int = 5901,
         base_novnc_port: int = 6081,
     ) -> None:
-        self.max_slots = 1
+        self.max_slots = 0
         self.container_manager = container_manager or ContainerManager()
         self.base_vnc_port = base_vnc_port
         self.base_novnc_port = base_novnc_port
         self._slots: dict[int, DesktopSlot] = {}
-        self._reinitialize_slots(self.max_slots)
+        self._reinitialize_slots(max_slots)
 
     def _reinitialize_slots(self, count: int) -> None:
-        count = 1
+        if count < 0:
+            raise ValueError("Desktop slot capacity cannot be negative.")
         self.max_slots = count
         # Purge any free slots beyond count when downscaling
         for i in list(self._slots.keys()):

@@ -8,11 +8,6 @@ from neural.logger import get_logger
 
 logger = get_logger("ancos.resource_scheduler.profiler")
 
-# Current deployment operates one GUI workstation at a time. Hardware profiles
-# remain useful for per-container resource sizing, but do not increase this cap.
-MAX_ACTIVE_DESKTOPS = 1
-
-
 @dataclass
 class HardwareProfile:
     profile_name: str
@@ -38,7 +33,7 @@ class HardwareProfile:
 
 
 # Standard Hardware Profiles:
-# 16 GB baseline machine enforces strictly 4 active GUI desktop sessions
+    # Capacity ceilings are profile limits; deployment configuration may lower them.
 PROFILE_16GB = HardwareProfile(
     profile_name="16GB_PROFILE",
     total_ram_gb=16.0,
@@ -47,7 +42,7 @@ PROFILE_16GB = HardwareProfile(
     cpu_core_count=8,
     max_cpu_percent_threshold=85.0,
     container_mem_limit="2g",
-    container_cpu_limit="1.5",
+    container_cpu_limit=1.5,
 )
 
 PROFILE_32GB = HardwareProfile(
@@ -58,7 +53,7 @@ PROFILE_32GB = HardwareProfile(
     cpu_core_count=16,
     max_cpu_percent_threshold=88.0,
     container_mem_limit="2.5g",
-    container_cpu_limit="2.0",
+    container_cpu_limit=2.0,
 )
 
 PROFILE_64GB = HardwareProfile(
@@ -69,7 +64,7 @@ PROFILE_64GB = HardwareProfile(
     cpu_core_count=32,
     max_cpu_percent_threshold=90.0,
     container_mem_limit="3g",
-    container_cpu_limit="2.5",
+    container_cpu_limit=2.5,
 )
 
 
@@ -80,12 +75,27 @@ class HardwareProfiler:
     and supports seamless scaling from 16 GB to 64 GB without organizational rewrites.
     """
 
-    def __init__(self, profile: Optional[HardwareProfile] = None) -> None:
+    def __init__(
+        self,
+        profile: Optional[HardwareProfile] = None,
+        max_active_desktops: int | None = None,
+    ) -> None:
         self.active_profile = profile or PROFILE_16GB
+        configured_limit = max_active_desktops
+        if configured_limit is None:
+            raw_limit = os.environ.get("ANCOS_MAX_ACTIVE_DESKTOPS")
+            if raw_limit is not None:
+                try:
+                    configured_limit = int(raw_limit)
+                except ValueError as exc:
+                    raise ValueError("ANCOS_MAX_ACTIVE_DESKTOPS must be a non-negative integer.") from exc
+        if configured_limit is not None and configured_limit < 0:
+            raise ValueError("ANCOS_MAX_ACTIVE_DESKTOPS must be a non-negative integer.")
+        self.deployment_max_active_desktops = configured_limit
         logger.info(
             "Initialized HardwareProfiler",
             profile=self.active_profile.profile_name,
-            max_desktops=self.active_profile.max_active_desktops,
+            max_desktops=self.get_max_desktops(),
             total_ram_gb=self.active_profile.total_ram_gb,
         )
 
@@ -138,7 +148,9 @@ class HardwareProfiler:
         )
 
     def get_max_desktops(self) -> int:
-        return min(self.active_profile.max_active_desktops, MAX_ACTIVE_DESKTOPS)
+        if self.deployment_max_active_desktops is None:
+            return self.active_profile.max_active_desktops
+        return min(self.active_profile.max_active_desktops, self.deployment_max_active_desktops)
 
     def get_headroom_gb(self) -> float:
         return self.active_profile.safe_ram_headroom_gb

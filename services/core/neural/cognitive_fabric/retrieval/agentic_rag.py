@@ -83,7 +83,7 @@ class AgenticRAGEngine:
         """
         Executes complete bounded agentic research cycle.
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         logger.info("Starting Agentic RAG research", query=query, requester=requester_id)
 
         need = self.classify_information_need(query)
@@ -102,7 +102,7 @@ class AgenticRAGEngine:
                 "sufficiency_score": sufficiency,
                 "conflicts": [],
                 "answer": self._synthesize_answer(query, results),
-                "duration_ms": round((time.time() - start_time) * 1000, 2),
+                "duration_ms": (time.perf_counter() - start_time) * 1000,
             }
 
         # Multi-round Agentic RAG
@@ -115,7 +115,7 @@ class AgenticRAGEngine:
 
         while round_num < self.max_rounds:
             round_num += 1
-            if time.time() - start_time > self.timeout_seconds:
+            if time.perf_counter() - start_time > self.timeout_seconds:
                 logger.warning("Agentic RAG loop timeout reached", round=round_num)
                 break
 
@@ -155,7 +155,7 @@ class AgenticRAGEngine:
             "conflicts": conflicts,
             "escalation_required": final_sufficiency < 0.4,
             "answer": self._synthesize_answer(query, final_evidence[:10]),
-            "duration_ms": round((time.time() - start_time) * 1000, 2),
+            "duration_ms": (time.perf_counter() - start_time) * 1000,
         }
 
     def _synthesize_answer(self, query: str, evidence: list[dict[str, Any]]) -> str:

@@ -4,8 +4,8 @@ import pytest
 from neural.boss.recovery import FailureRecoveryManager
 from neural.constants import EmployeeStatus, TaskStatus
 from neural.db.repositories import EmployeeRepository, ProjectRepository, TaskRepository
-from neural.exceptions import InvalidTaskStateTransitionError, TaskDependencyError
 from neural.evaluation.verifier import IndependentVerifier
+from neural.exceptions import InvalidTaskStateTransitionError, TaskDependencyError
 from neural.tasks.dependencies import TaskGraph
 from neural.tasks.scheduler import TaskScheduler
 from neural.tasks.state_machine import TaskStateMachine

@@ -34,7 +34,7 @@ Audit baseline: 2026-11-02; implementation status updated through 2026-11-03. St
 | Skill verification and learning loop | PARTIALLY_IMPLEMENTED | Skill/evolution services exist; cognitive-fabric loop tests fail and promotion evidence is absent. |
 | Governance, approvals, audit trail | PARTIALLY_IMPLEMENTED | Approval/security/audit code and migrations exist; full privilege, failure, and recovery lifecycle was not runtime-tested here. |
 | Backup and disaster recovery | PARTIALLY_IMPLEMENTED | Backup/restore modules and tests exist; no clean-room restore receipt was generated in this run. |
-| Operational observability and capacity | PARTIALLY_IMPLEMENTED | Observability and resource modules exist; worker heartbeat and performance SLO baseline are absent. |
+| Operational observability and capacity | PARTIALLY_IMPLEMENTED | Resource profiles expose 4/8/16 desktop ceilings with a deployment cap (`ANCOS_MAX_ACTIVE_DESKTOPS`, Compose default 1); scheduler logic tests pass. No broker-backed multi-session load measurement, durable lease integration, or worker heartbeat/SLO baseline exists. |
 
 ## Verification boundary
 

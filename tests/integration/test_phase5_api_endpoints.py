@@ -106,28 +106,23 @@ async def test_methods_api_endpoints(async_session: AsyncSession):
 
         # 2. Benchmark candidate method
         res_bmk = await client.post(f"/methods/{method_id}/benchmark", json={})
-        assert res_bmk.status_code == 200, res_bmk.text
-        bmk_data = res_bmk.json()
-        assert bmk_data["total_scenarios"] == 4
-        assert bmk_data["accuracy"] >= 0.75
-        assert bmk_data["recommendation"] in ("promote", "iterate")
+        assert res_bmk.status_code == 503, res_bmk.text
 
-        # 3. Promote method
+        # 3. Promotion remains blocked without executor-backed benchmark evidence.
         res_promote = await client.post(f"/methods/{method_id}/promote", json={"force": True})
-        assert res_promote.status_code == 200
-        assert res_promote.json()["status"] == "promoted"
-        assert res_promote.json()["promoted_at"] is not None
+        assert res_promote.status_code == 503
 
         # 4. View active methodology catalog
         res_cat = await client.get("/methods/catalog")
         assert res_cat.status_code == 200
         catalog = res_cat.json()
-        assert any(m["method_id"] == method_id for m in catalog)
+        assert not any(m["method_id"] == method_id for m in catalog)
 
         # 5. Get method details
         res_get = await client.get(f"/methods/{method_id}")
         assert res_get.status_code == 200
         assert res_get.json()["method_id"] == method_id
+        assert res_get.json()["status"] == "candidate"
 
 
 @pytest.mark.asyncio
@@ -177,7 +172,8 @@ async def test_meta_learning_api_endpoints(async_session: AsyncSession):
         res_opt = await client.post("/meta-learning/optimize-prompt", json=prompt_payload)
         assert res_opt.status_code == 200
         opt_data = res_opt.json()
-        assert opt_data["improvement_pct"] > 0
+        assert opt_data["candidate_status"] == "not_evaluated"
+        assert opt_data["improvement_pct"] is None
         assert len(opt_data["rules_injected"]) >= 1
 
         # 6. Trigger autonomous self-improvement cycle
@@ -269,8 +265,5 @@ async def test_methods_api_fallback_serialization(async_session: AsyncSession):
 
         # Benchmark should serialize cleanly with valid recorded_at
         res_bmk = await client.post(f"/methods/{m_data['method_id']}/benchmark", json={})
-        assert res_bmk.status_code == 200
-        bmk_json = res_bmk.json()
-        assert "recorded_at" in bmk_json
-        assert bmk_json["accuracy"] >= 0.70
+        assert res_bmk.status_code == 503
 

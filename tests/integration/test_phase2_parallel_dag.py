@@ -1,4 +1,6 @@
 import asyncio
+import json
+import sys
 
 import pytest
 from neural.boss.brain import BossBrain
@@ -22,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @pytest.mark.asyncio
-async def test_phase2_full_dag_parallel_execution_and_messaging(async_session: AsyncSession):
+async def test_phase2_full_dag_parallel_execution_and_messaging(async_session: AsyncSession, tmp_path):
     """
     Phase 2 Done Gate & Master Integration Test:
     1. CEO Brain plans hierarchical objective with DAG dependencies.
@@ -75,12 +77,71 @@ async def test_phase2_full_dag_parallel_execution_and_messaging(async_session: A
     # 3. Setup LLM Gateway with mock provider tracking tokens
     llm_calls: list[dict] = []
 
+    plan_content = json.dumps({
+        "code_name": "analytics_streaming",
+        "complexity": "high",
+        "requirements": ["real-time ingestion", "operator dashboard"],
+        "technical_risks": ["stream backpressure"],
+        "mitigation_strategies": ["bounded queues and retry limits"],
+        "phases": [
+            {
+                "title": "Service design",
+                "tasks": [
+                    {
+                        "task_id": "DESIGN-API",
+                        "title": "Design streaming API",
+                        "scope": "Specify the event schema and endpoint behavior.",
+                        "role_required": "Backend Engineer",
+                        "skills_required": ["FastAPI"],
+                        "execution_mode": "terminal",
+                        "acceptance_criteria": "Automated tests pass",
+                    },
+                    {
+                        "task_id": "BUILD-STREAM",
+                        "title": "Implement stream processor",
+                        "scope": "Build bounded event processing and retries.",
+                        "role_required": "Backend Engineer",
+                        "skills_required": ["Python"],
+                        "execution_mode": "terminal",
+                        "dependencies": ["DESIGN-API"],
+                        "acceptance_criteria": "Automated tests pass",
+                    },
+                ],
+            },
+            {
+                "title": "Operator experience",
+                "tasks": [
+                    {
+                        "task_id": "BUILD-DASHBOARD",
+                        "title": "Build operator dashboard",
+                        "scope": "Display stream health and recent events.",
+                        "role_required": "Frontend Engineer",
+                        "skills_required": ["React"],
+                        "execution_mode": "terminal",
+                        "dependencies": ["BUILD-STREAM"],
+                        "acceptance_criteria": "Automated tests pass",
+                    },
+                    {
+                        "task_id": "VERIFY-STACK",
+                        "title": "Verify analytics stack",
+                        "scope": "Run end-to-end integration checks.",
+                        "role_required": "QA Engineer",
+                        "skills_required": ["pytest"],
+                        "execution_mode": "terminal",
+                        "dependencies": ["BUILD-DASHBOARD"],
+                        "acceptance_criteria": "Automated tests pass",
+                    },
+                ],
+            },
+        ],
+    })
+
     async def mock_llm_provider(model: str, prompt: str, **kwargs):
         in_tokens = 150
         out_tokens = 90
         llm_calls.append({"model": model, "prompt_len": len(prompt)})
         return {
-            "content": f"Structured execution output from {model}",
+            "content": plan_content if "OBJECTIVE:" in prompt else "VALUE = 42\n",
             "input_tokens": in_tokens,
             "output_tokens": out_tokens,
             "provider": model.split("-")[0]
@@ -94,6 +155,7 @@ async def test_phase2_full_dag_parallel_execution_and_messaging(async_session: A
         employee_repo=employee_repo,
         max_concurrency=4,
         message_bus=bus
+        , verifier=IndependentVerifier(employee_repo=employee_repo, task_repo=task_repo)
     )
     boss = BossBrain(
         project_repo=project_repo,
@@ -152,11 +214,39 @@ async def test_phase2_full_dag_parallel_execution_and_messaging(async_session: A
             db_session=async_session
         )
 
+        task_dir = tmp_path / task.task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = task_dir / "service.py"
+        artifact_path.write_text(llm_res.content, encoding="utf-8")
+        test_path = task_dir / "test_service.py"
+        test_path.write_text(
+            "from service import VALUE\n\n\ndef test_generated_value():\n    assert VALUE == 42\n",
+            encoding="utf-8",
+        )
+        test_process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            str(test_path),
+            cwd=task_dir,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        test_output, _ = await test_process.communicate()
+
         await asyncio.sleep(0.02)  # Simulate active work
         t_end = asyncio.get_event_loop().time()
         execution_timeline.append((task.task_id, "end", t_end))
 
-        return {"status": "success", "task_id": task.task_id, "output": llm_res.content}
+        return {
+            "status": "success",
+            "task_id": task.task_id,
+            "output": llm_res.content,
+            "artifacts": [str(artifact_path), str(test_path)],
+            "test_exit_code": test_process.returncode,
+            "test_output": test_output.decode("utf-8", errors="replace"),
+        }
 
     result = await boss.execute_project_dag(project.id, worker_func=worker_func)
 
@@ -283,7 +373,7 @@ async def test_phase2_llm_gateway_transparent_fallback_under_execution():
             "provider": "openai"
         }
 
-    gateway = LLMGateway(provider_invoker=mock_failing_provider)
+    gateway = LLMGateway(config_path="configs/missing-test-routing.yaml", provider_invoker=mock_failing_provider)
     response = await gateway.generate(
         prompt="Write async Redis bus client",
         tier="coding"
