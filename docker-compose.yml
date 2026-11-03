@@ -69,6 +69,7 @@ services:
       - DOCKER_BROKER_URL=http://docker-broker:12002
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
       - ANCOS_MAX_ACTIVE_DESKTOPS=${ANCOS_MAX_ACTIVE_DESKTOPS:-1}
+      - ANCOS_RESOURCE_POOL_ID=${ANCOS_RESOURCE_POOL_ID:-local}
     volumes:
       - ./data:/app/data
       - ./configs:/app/configs

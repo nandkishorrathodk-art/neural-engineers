@@ -22,7 +22,7 @@ from neural.resource_scheduler.session_lease import SessionLeaseManager
 
 @pytest.fixture(autouse=True)
 def fake_container_manager(monkeypatch):
-    async def provision(_self, employee_id: str, role_image: str = "employee-base"):
+    async def provision(_self, employee_id: str, role_image: str = "employee-base", **_limits):
         return {
             "docker_id": f"ancos-desktop-{employee_id.lower()}",
             "workspace": f"./data/workspaces/{employee_id}",

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+import socket
 from typing import Any, Optional
 
 from neural.constants import TaskPriority
+from neural.db.repositories import ResourceLeaseRepository
 from neural.logger import get_logger
 from neural.resource_scheduler.checkpoint_manager import CheckpointManager
 from neural.resource_scheduler.desktop_pool import DesktopSlotPool
@@ -33,6 +36,9 @@ class DesktopResourceScheduler:
         lease_manager: Optional[SessionLeaseManager] = None,
         checkpoint_manager: Optional[CheckpointManager] = None,
         queue: Optional[EmployeeExecutionQueue] = None,
+        resource_lease_repo: Optional[ResourceLeaseRepository] = None,
+        resource_lease_seconds: int = 1800,
+        resource_pool_id: Optional[str] = None,
     ) -> None:
         self.profiler = profiler or HardwareProfiler()
         self.monitor = monitor or ResourceMonitor()
@@ -40,6 +46,14 @@ class DesktopResourceScheduler:
         self.lease_manager = lease_manager or SessionLeaseManager()
         self.checkpoint_manager = checkpoint_manager or CheckpointManager()
         self.queue = queue or EmployeeExecutionQueue()
+        self.resource_lease_repo = resource_lease_repo
+        self.resource_lease_seconds = max(5, min(resource_lease_seconds, 3600))
+        self.resource_pool_id = (
+            resource_pool_id or os.environ.get("ANCOS_RESOURCE_POOL_ID") or socket.gethostname()
+        ).strip()
+        if not self.resource_pool_id or len(self.resource_pool_id) > 96:
+            raise ValueError("Resource pool ID must contain between 1 and 96 characters.")
+        self._resource_leases: dict[int, dict[str, Any]] = {}
 
         self._active_employees: dict[str, int] = {}  # employee_id -> slot_id
         self._standby_employees: set[str] = set()
@@ -71,14 +85,18 @@ class DesktopResourceScheduler:
         if employee_id in self._active_employees:
             slot_id = self._active_employees[employee_id]
             self.lease_manager.heartbeat(slot_id)
+            durable_lease = await self._heartbeat_resource_lease(slot_id)
             slot = self.slot_pool._slots[slot_id]
-            return {
+            result = {
                 "status": "active",
                 "slot_id": slot_id,
                 "desktop_url": slot.desktop_url,
                 "vnc_port": slot.vnc_port,
                 "is_new_allocation": False,
             }
+            if durable_lease:
+                result["resource_lease"] = durable_lease
+            return result
 
         # 2. Check host health via ResourceMonitor
         safe, reason = self.monitor.is_safe_to_admit(self.profiler.active_profile)
@@ -143,19 +161,55 @@ class DesktopResourceScheduler:
             }
 
         # 4. Free slot exists: Allocate desktop slot
-        free_slot = self.slot_pool.get_free_slot()
-        if not free_slot:
+        free_slots = [
+            slot for slot in self.slot_pool._slots.values()
+            if slot.slot_id <= self.slot_pool.max_slots and slot.is_free
+        ]
+        if not free_slots:
             # Fallback queue
             self._standby_employees.add(employee_id)
             self.queue.enqueue(employee_id=employee_id, task_id=task_id, department=department, priority=priority)
             return {"status": "queued_standby", "employee_id": employee_id, "queue_position": self.queue.size()}
 
-        # Provision desktop container
-        allocated_slot = await self.slot_pool.provision_slot(
-            slot_id=free_slot.slot_id,
-            employee_id=employee_id,
-            role_image=role_image,
-        )
+        allocated_slot = None
+        durable_lease = None
+        for free_slot in free_slots:
+            durable_lease = await self._claim_resource_lease(free_slot.slot_id, employee_id, task_id)
+            if self.resource_lease_repo and durable_lease is None:
+                continue
+            if durable_lease:
+                self._resource_leases[free_slot.slot_id] = durable_lease
+            try:
+                allocated_slot = await self.slot_pool.provision_slot(
+                    slot_id=free_slot.slot_id,
+                    employee_id=employee_id,
+                    role_image=role_image,
+                    cpu_limit=self.profiler.active_profile.container_cpu_limit,
+                    mem_limit=self.profiler.active_profile.container_mem_limit,
+                )
+            except Exception:
+                if durable_lease:
+                    await self._release_resource_lease(free_slot.slot_id)
+                raise
+            break
+
+        if allocated_slot is None:
+            reason = "All locally free desktop slots have active durable resource leases."
+            self._standby_employees.add(employee_id)
+            self.queue.enqueue(
+                employee_id=employee_id,
+                task_id=task_id,
+                department=department,
+                priority=priority,
+                metadata={"reason": reason},
+            )
+            return {
+                "status": "queued_standby",
+                "employee_id": employee_id,
+                "reason": reason,
+                "queue_position": self.queue.size(),
+            }
+
         self.lease_manager.grant(slot_id=allocated_slot.slot_id, employee_id=employee_id)
         self._active_employees[employee_id] = allocated_slot.slot_id
         self._standby_employees.discard(employee_id)
@@ -163,7 +217,7 @@ class DesktopResourceScheduler:
         # Check if resuming from saved checkpoint
         checkpoint = self.checkpoint_manager.load_checkpoint(employee_id, task_id)
 
-        return {
+        result = {
             "status": "active",
             "employee_id": employee_id,
             "slot_id": allocated_slot.slot_id,
@@ -174,6 +228,9 @@ class DesktopResourceScheduler:
             "resumed_from_checkpoint": checkpoint is not None,
             "checkpoint_step": checkpoint.get("step_index") if checkpoint else None,
         }
+        if durable_lease:
+            result["resource_lease"] = durable_lease
+        return result
 
     async def suspend_and_release(
         self,
@@ -194,8 +251,7 @@ class DesktopResourceScheduler:
         if employee_id not in self._active_employees:
             return {"status": "not_active", "employee_id": employee_id}
 
-        slot_id = self._active_employees.pop(employee_id)
-        self.lease_manager.revoke(slot_id)
+        slot_id = self._active_employees[employee_id]
 
         # 1. Save durable checkpoint
         slot = self.slot_pool._slots[slot_id]
@@ -209,7 +265,11 @@ class DesktopResourceScheduler:
         )
 
         # 2. Release slot and stop container
-        await self.slot_pool.release_slot(slot_id)
+        if not await self.slot_pool.release_slot(slot_id):
+            raise RuntimeError(f"Desktop slot {slot_id} could not be safely released.")
+        self._active_employees.pop(employee_id, None)
+        self.lease_manager.revoke(slot_id)
+        await self._release_resource_lease(slot_id)
         self._standby_employees.add(employee_id)
         logger.info("Employee safely suspended to standby with checkpoint", employee_id=employee_id, task_id=task_id)
 
@@ -252,9 +312,14 @@ class DesktopResourceScheduler:
         Reconciles and reclaims all desktop slots whose session leases have expired.
         Saves durable checkpoints and releases slots so queued standby employees can proceed.
         """
-        expired_slots = self.lease_manager.find_expired_slots()
+        expired_slots = set(self.lease_manager.find_expired_slots())
+        for slot_id in list(self._resource_leases):
+            if slot_id in expired_slots:
+                continue
+            if await self._heartbeat_resource_lease(slot_id) is None:
+                expired_slots.add(slot_id)
         reclaimed: list[int] = []
-        for slot_id in expired_slots:
+        for slot_id in sorted(expired_slots):
             slot = self.slot_pool._slots.get(slot_id)
             emp_id = slot.employee_id if slot else None
             if not emp_id:
@@ -324,4 +389,49 @@ class DesktopResourceScheduler:
             "queued_employees": self.queue.list_queue(),
             "slots": self.slot_pool.list_slots(),
         }
+
+    async def _claim_resource_lease(
+        self, slot_id: int, employee_id: str, task_id: str
+    ) -> Optional[dict[str, Any]]:
+        if not self.resource_lease_repo:
+            return None
+        profile = self.profiler.active_profile
+        return await self.resource_lease_repo.claim(
+            resource_key=f"desktop:{self.resource_pool_id}:slot-{slot_id}",
+            employee_id=employee_id,
+            task_id=task_id,
+            session_id=f"desktop-slot-{slot_id}:{employee_id}",
+            lease_seconds=self.resource_lease_seconds,
+            resource_reservation={
+                "slot_id": slot_id,
+                "resource_pool_id": self.resource_pool_id,
+                "profile": profile.profile_name,
+                "cpu_limit": profile.container_cpu_limit,
+                "mem_limit": profile.container_mem_limit,
+            },
+        )
+
+    async def _heartbeat_resource_lease(self, slot_id: int) -> Optional[dict[str, Any]]:
+        lease = self._resource_leases.get(slot_id)
+        if not lease or not self.resource_lease_repo:
+            return None
+        expiry = await self.resource_lease_repo.heartbeat(
+            lease_id=lease["lease_id"],
+            fencing_token=lease["fencing_token"],
+            lease_seconds=self.resource_lease_seconds,
+        )
+        if expiry is None:
+            self._resource_leases.pop(slot_id, None)
+            return None
+        lease["lease_expires_at"] = expiry
+        return dict(lease)
+
+    async def _release_resource_lease(self, slot_id: int) -> bool:
+        lease = self._resource_leases.pop(slot_id, None)
+        if not lease or not self.resource_lease_repo:
+            return True
+        return await self.resource_lease_repo.release(
+            lease_id=lease["lease_id"],
+            fencing_token=lease["fencing_token"],
+        )
 

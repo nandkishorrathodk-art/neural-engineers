@@ -33,7 +33,7 @@ from neural.resource_scheduler.scheduler import DesktopResourceScheduler
 @pytest.fixture(autouse=True)
 def fake_desktop_containers(monkeypatch):
     """Keep capacity integration tests independent of an installed Docker engine."""
-    async def provision(_self, employee_id: str, role_image: str = "employee-base"):
+    async def provision(_self, employee_id: str, role_image: str = "employee-base", **_limits):
         return {
             "docker_id": f"ancos-desktop-{employee_id.lower()}",
             "workspace": f"./data/workspaces/{employee_id}",

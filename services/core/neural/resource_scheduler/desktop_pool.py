@@ -120,6 +120,8 @@ class DesktopSlotPool:
         slot_id: int,
         employee_id: str,
         role_image: str = "employee-base",
+        cpu_limit: Optional[float] = None,
+        mem_limit: Optional[str] = None,
     ) -> DesktopSlot:
         slot = self._slots.get(slot_id)
         if not slot:
@@ -133,6 +135,8 @@ class DesktopSlotPool:
         res = await self.container_manager.provision_employee_desktop(
             employee_id=employee_id,
             role_image=role_image,
+            cpu_limit=cpu_limit,
+            mem_limit=mem_limit,
         )
 
         docker_id = res.get("docker_id", f"ancos-desktop-{employee_id.lower()}")
@@ -160,11 +164,18 @@ class DesktopSlotPool:
             try:
                 docker_id = slot.container_id or f"ancos-desktop-{emp_id.lower()}"
                 if hasattr(self.container_manager, "terminate_desktop"):
-                    await self.container_manager.terminate_desktop(docker_id)
+                    terminated = await self.container_manager.terminate_desktop(docker_id)
                 elif hasattr(self.container_manager, "terminate_employee_desktop"):
-                    await self.container_manager.terminate_employee_desktop(emp_id)
+                    terminated = await self.container_manager.terminate_employee_desktop(emp_id)
+                else:
+                    logger.error("Container manager has no workstation termination method", slot_id=slot_id)
+                    return False
+                if terminated is False:
+                    logger.error("Workstation termination was not confirmed; retaining occupied slot", slot_id=slot_id)
+                    return False
             except Exception as e:
                 logger.warning("Error terminating desktop container during slot release", error=str(e))
+                return False
 
         slot.release()
         return True

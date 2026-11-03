@@ -1,7 +1,7 @@
 # ANCOS NEURO-0 system audit
 
 **Audit snapshot:** 2026-11-03
-**Latest reviewed sources:** verifier snapshot at `c3979c9`, followed by the resource-capacity and lint changes in this update.
+**Latest reviewed sources:** `cb044c0` plus the current resource-lease worktree changes; local dashboard edits remain user-owned and untouched.
 
 **Repository:** local `neural-company` workspace
 **Acceptance:** NEURO-0 evidence baseline recorded; production end-to-end acceptance is **not met**.
@@ -25,7 +25,7 @@ The current dashboard edits and pre-existing removed screenshot assets were pres
 
 | Check | Result | Limits |
 |---|---|---|
-| Python suite | Current worktree: 405 collected; 393 passed, 12 skipped, zero failed; 5 warnings | P0 live broker provisioning skips when broker credentials are absent; optional model/runtime tests also skip. Scheduler integrations use mocked provisioning. See `NEURO_TEST_EVIDENCE.md`. |
+| Python suite | Latest full run: 408 collected; 396 passed, 12 skipped, zero failed; 5 warnings | Final pool-ID/config tweak is focused-tested. P0 live broker provisioning skips when broker credentials are absent; optional model/runtime tests also skip. Scheduler integrations use mocked provisioning. See `NEURO_TEST_EVIDENCE.md`. |
 | Ruff | Pass | `uv run --no-sync ruff check services tests` passes after fixing six findings. |
 | Dashboard production build | See `NEURO_TEST_EVIDENCE.md` | Build runs Next.js compile, lint/type validation, and static generation. |
 | Python mypy | See `NEURO_TEST_EVIDENCE.md` | A run was attempted; only claim a result if a completed process result is captured there. |
@@ -46,5 +46,6 @@ The control-plane slice now requires an owner identity on `POST /boss/objective`
 
 - **NEURO-1:** The dated follow-up above supersedes the initial audit-time recruitment finding; current objective-route staffing is owner-authenticated and focused-tested. No live objective-to-verified-report mission exists.
 - **NEURO-2/3:** `455f752` adds an opt-in terminal-only worker, supported-mode claim filter, start/heartbeat/submit/fail protocol, lease-checked Core API command endpoint, and restricted-broker execution. `395f53d` fixes verifier rejection lifecycle: preserve the rejected receipt, consume bounded retry budget with persisted backoff, increment fencing, and fail terminally on exhaustion. The verifier replays only declared pytest/npm-test commands and now records a bounded path/size/SHA-256 workspace snapshot through an attempt-fenced endpoint. The snapshot is verification-time metadata only, not a task-start diff or correctness review. Latest focused regression passes (36 tests). Ruff, scoped mypy, Compose parsing, and Docker runtime validation are pending for this change; the Linux Docker engine was previously unavailable, so no live consumer receipt exists.
+- **NEURO-4:** Hardware profile ceilings, deployment caps, and Compose limits now agree. The current scheduler supports injected DB-backed per-host slot leases, fencing, heartbeat, claim cleanup, profile CPU/memory handoff, and fail-closed slot release. SQLite-backed competing-scheduler and cleanup tests pass. This does not prove a live caller injects the repository, recover stale containers after process loss, or meet host capacity targets; Docker runtime remains unavailable.
 - **Roadmap fidelity:** The phase plan/status now preserve the user's full NEURO-0–NEURO-13 objectives. This corrects the prior shortened 0–9 plan, which did not represent the complete master mission.
-- **Validation freshness:** the full current-worktree suite passed on 2026-11-03: 393 passed, 12 skipped, zero failed. Ruff passes. The audit snapshot includes uncommitted dashboard edits that were not staged with this implementation; live Docker/runtime acceptance remains outstanding.
+- **Validation freshness:** latest complete full suite on 2026-11-03: 396 passed, 12 skipped, zero failed; the subsequent pool-ID namespace tweak passed focused tests, Ruff, and Compose parsing. The audit snapshot includes uncommitted dashboard edits that were not staged with this implementation; live Docker/runtime acceptance remains outstanding.
