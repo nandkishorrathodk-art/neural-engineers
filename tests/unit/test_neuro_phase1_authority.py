@@ -40,6 +40,73 @@ async def test_production_owner_identity_rejects_worker_credentials(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_verifier_queue_requires_separate_verifier_credential(async_session, monkeypatch):
+    from neural.config import get_settings
+
+    owner_token = "owner-token-" + "o" * 40
+    worker_token = "worker-token-" + "w" * 40
+    verifier_token = "verifier-token-" + "v" * 40
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("OWNER_API_TOKEN", owner_token)
+    monkeypatch.setenv("WORKER_API_TOKEN", worker_token)
+    monkeypatch.setenv("VERIFIER_API_TOKEN", verifier_token)
+    monkeypatch.setenv("APPROVER_API_TOKEN", "approver-token-" + "a" * 40)
+    get_settings.cache_clear()
+
+    project = await ProjectRepository(async_session).create(name="Verifier auth", objective="Protect queue")
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-VERIFIER-AUTH",
+        project_id=project.id,
+        title="Pending terminal review",
+        objective="Wait for verifier",
+        scope="Tests",
+        acceptance_criteria="Automated tests pass",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        fencing_token=11,
+    )
+    async_session.add(TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="worker-auth-test",
+        fencing_token=11,
+        status="submitted",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        execution_receipt={"planned_commands": [["pytest", "-q"]]},
+    ))
+    await async_session.commit()
+
+    app = create_app()
+
+    async def override_get_db_session():
+        yield async_session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        assert (await client.get("/internal/verifier/queue")).status_code == 401
+        assert (
+            await client.get(
+                "/internal/verifier/queue",
+                headers={"Authorization": f"Bearer {worker_token}"},
+            )
+        ).status_code == 401
+        response = await client.get(
+            "/internal/verifier/queue",
+            headers={"Authorization": f"Bearer {verifier_token}"},
+        )
+    get_settings.cache_clear()
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["task_id"] == "TASK-VERIFIER-AUTH"
+    assert items[0]["execution_mode"] == "terminal"
+    assert items[0]["execution_receipt"]["planned_commands"] == [["pytest", "-q"]]
+
+
+@pytest.mark.asyncio
 async def test_boss_staffing_requires_verified_skills(async_session):
     employee_repo = EmployeeRepository(async_session)
     factory = EmployeeFactory(employee_repo)
