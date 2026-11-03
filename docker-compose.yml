@@ -119,6 +119,36 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  terminal-verifier:
+    profiles: ["verifiers"]
+    image: ancos-core-api:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.core
+    container_name: ancos-terminal-verifier
+    restart: unless-stopped
+    command: ["python", "-m", "neural.workers.verifier"]
+    environment:
+      - ANCOS_CORE_API_URL=http://core-api:12000
+      - ANCOS_VERIFIER_ID=${ANCOS_VERIFIER_ID:-terminal-verifier}
+      - ANCOS_VERIFIER_POLL_SECONDS=${ANCOS_VERIFIER_POLL_SECONDS:-5}
+      - VERIFIER_API_TOKEN=${VERIFIER_API_TOKEN:?Set VERIFIER_API_TOKEN in .env}
+    depends_on:
+      core-api:
+        condition: service_started
+    networks:
+      - ancos-network
+    read_only: true
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 128
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   dashboard:
     build:
       context: ./apps/dashboard

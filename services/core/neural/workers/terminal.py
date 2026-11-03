@@ -134,7 +134,7 @@ class TerminalWorker:
                     f"/internal/worker/tasks/{task_id}/exec",
                     {"fencing_token": fence, "command": command},
                 )
-                command_receipts.append(result)
+                command_receipts.append({**result, "command": command})
                 if result.get("exit_code") != 0:
                     raise RuntimeError(
                         f"Terminal command exited with code {result.get('exit_code')}: "
@@ -150,6 +150,7 @@ class TerminalWorker:
                         "executor": "terminal-worker",
                         "execution_mode": "terminal",
                         "model": model_receipt,
+                        "planned_commands": plan.commands,
                         "commands": command_receipts,
                         "verification_status": "awaiting_independent_verifier",
                         "passed": False,

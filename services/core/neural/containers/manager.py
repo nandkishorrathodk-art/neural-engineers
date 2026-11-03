@@ -1,6 +1,6 @@
 import asyncio
-import os
 import base64
+import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -60,14 +60,16 @@ class ContainerManager:
     def _has_remote_broker(self) -> bool:
         return bool(self.settings.DOCKER_BROKER_URL and self.settings.DOCKER_BROKER_TOKEN)
 
-    async def _broker_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    async def _broker_request(
+        self, method: str, path: str, timeout: float = 60.0, **kwargs: Any
+    ) -> dict[str, Any]:
         if not self._has_remote_broker():
             raise ContainerError("Restricted Docker broker is not configured.")
         import httpx
 
         headers = {"Authorization": f"Bearer {self.settings.DOCKER_BROKER_TOKEN}"}
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.request(
                     method,
                     f"{self.settings.DOCKER_BROKER_URL.rstrip('/')}{path}",
@@ -568,6 +570,15 @@ class ContainerManager:
         except Exception as e:
             logger.warning("Docker exec failed", docker_id=docker_id, error=str(e))
             raise ContainerError(f"Command was not executed in container {docker_id}: {e}") from e
+
+    async def execute_verifier_command(self, employee_id: str, command: list[str]) -> dict[str, Any]:
+        """Run verifier tests through the broker in a disposable read-only workspace container."""
+        return await self._broker_request(
+            "POST",
+            "/v1/verifier/exec",
+            timeout=310.0,
+            json={"employee_id": employee_id, "command": command},
+        )
 
     async def capture_screenshot(self, docker_id: str) -> bytes:
         """Capture real workstation pixels through the restricted broker."""

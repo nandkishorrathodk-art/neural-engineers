@@ -1,7 +1,7 @@
 # ANCOS NEURO-0 system audit
 
 **Audit snapshot:** 2026-11-02
-**Repository delta reviewed:** commits through `395f53d` on 2026-11-03
+**Latest reviewed commit:** isolated verifier-consumer slice, 2026-11-03.
 
 **Repository:** local `neural-company` workspace
 **Acceptance:** NEURO-0 evidence baseline recorded; production end-to-end acceptance is **not met**.
@@ -45,6 +45,6 @@ The control-plane slice now requires an owner identity on `POST /boss/objective`
 ## Current repository delta (2026-11-03)
 
 - **NEURO-1:** The dated follow-up above supersedes the initial audit-time recruitment finding; current objective-route staffing is owner-authenticated and focused-tested. No live objective-to-verified-report mission exists.
-- **NEURO-2/3:** `455f752` adds an opt-in terminal-only worker, supported-mode claim filter, start/heartbeat/submit/fail protocol, lease-checked Core API command endpoint, and restricted-broker execution. `395f53d` fixes verifier rejection lifecycle: preserve the rejected receipt, consume bounded retry budget with persisted backoff, increment fencing, and fail terminally on exhaustion. Focused suites pass (23 tests); Ruff and scoped mypy pass. Compose profile rendering passed, but the Linux Docker engine is unavailable, so no image build, worker runtime, verifier consumer, or independent live receipt was produced.
+- **NEURO-2/3:** `455f752` adds an opt-in terminal-only worker, supported-mode claim filter, start/heartbeat/submit/fail protocol, lease-checked Core API command endpoint, and restricted-broker execution. `395f53d` fixes verifier rejection lifecycle: preserve the rejected receipt, consume bounded retry budget with persisted backoff, increment fencing, and fail terminally on exhaustion. The verifier consumer replays only declared pytest/npm-test commands through a separate attempt-fenced endpoint; the broker uses a temporary network-disabled sandbox, read-only employee workspace mount, 300-second cap, and cleanup. Focused suites pass (32 tests); Ruff and scoped mypy pass. Both Compose profiles parse, but the Linux Docker engine is unavailable, so no image build, consumer runtime, or independent live receipt was produced.
 - **Roadmap fidelity:** The phase plan/status now preserve the user's full NEURO-0–NEURO-13 objectives. This corrects the prior shortened 0–9 plan, which did not represent the complete master mission.
 - **Validation freshness:** the last full-suite result is still the older `c979cb2` run (339 passed, 32 failed, 11 skipped). Current `main` has focused checks only; do not treat historical full-suite results as current-source regression proof.

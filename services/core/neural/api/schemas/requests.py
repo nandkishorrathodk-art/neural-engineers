@@ -133,6 +133,25 @@ class VerificationDecisionRequest(BaseModel):
     test_summary: dict[str, Any] = Field(default_factory=dict)
 
 
+class VerifierCommandRequest(WorkerLeaseRequest):
+    command: list[Annotated[str, Field(min_length=1, max_length=8192)]] = Field(
+        ..., min_length=1, max_length=64
+    )
+
+    @field_validator("command")
+    @classmethod
+    def require_test_command(cls, command: list[str]) -> list[str]:
+        is_pytest = command[0] == "pytest" or (
+            command[0] in {"python", "python3"} and command[1:3] == ["-m", "pytest"]
+        )
+        is_npm_test = command[0] == "npm" and (
+            command[1:2] == ["test"] or command[1:3] == ["run", "test"]
+        )
+        if not (is_pytest or is_npm_test):
+            raise ValueError("Verifier execution is restricted to pytest or npm test commands.")
+        return command
+
+
 class ResourceLeaseClaimRequest(BaseModel):
     resource_key: str = Field(..., min_length=1, max_length=128)
     employee_id: str = Field(..., min_length=1, max_length=128)

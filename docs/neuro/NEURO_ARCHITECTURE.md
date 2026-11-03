@@ -19,19 +19,19 @@ Core API ── Boss / planner ── project DAG + task records
    ├── comms/meetings              ▼
    └── verifier queue       Restricted Docker broker
               │                    │
-              └── independent verifier (not deployed)
+              └── terminal test verifier (opt-in Compose profile)
                                    ▼
                          isolated employee desktop
 ```
 
-The diagram is a target/known-module view. A terminal-only task worker is available behind the opt-in `workers` Compose profile, but it has not been demonstrated running; the verifier consumer is still missing. The separate restricted Docker broker is declared in Compose and is the only component intended to control Docker. Core API and dashboard must not gain direct unrestricted Docker access.
+The diagram is a target/known-module view. A terminal-only task worker and terminal test verifier are available behind separate opt-in `workers` and `verifiers` Compose profiles, but neither has been demonstrated running. The verifier replays declared pytest/npm-test commands under a separate credential in a disposable, network-disabled container with a read-only employee-workspace mount; it fails closed unless acceptance criteria exactly match a supported test-only contract. It does not verify artifact content. The separate restricted Docker broker is declared in Compose and is the only component intended to control Docker. Core API and dashboard must not gain direct unrestricted Docker access.
 
 ## Architectural pillars and current state
 
 1. **Sovereign control plane:** owner requests enter authenticated API routes; Boss planning proposes work; policy and approval gates authorize privileged steps; hash-chained audit records preserve actions. Prove actual route-to-policy enforcement before enabling automation.
 2. **Persistent organization state:** relational records hold employees, projects, tasks, messages, approvals, verification receipts, and resource leases. Migration history is maintained via Alembic. Confirm migrations on a clean disposable database before each release.
 3. **Execution plane:** the optional terminal consumer claims only terminal-mode tasks, heartbeats its lease, sends bounded argv through a lease-checked Core API endpoint, and submits command receipts for independent review. GUI/hybrid execution, process health, interruption of in-flight broker commands, shutdown receipt, and live recovery semantics remain acceptance gaps.
-4. **Independent verification plane:** a separate identity/process obtains task evidence, validates artifacts and acceptance criteria, and emits a receipt that gates completion. Worker self-report alone must never mark work verified.
+4. **Independent verification plane:** a separate identity/process can replay declared test commands and persist a receipt that gates completion. This implementation does not yet verify arbitrary acceptance criteria or independently collect artifact manifests. Worker self-report alone must never mark work verified.
 5. **Cognition:** LLM gateway supports reasoning/coding/fast tiers with budgets and fallback; optional Laya inference is advisory. Neither model output can override policy or approval gates.
 6. **Memory and evolution:** retrieval, GraphRAG, skill/method evaluation, and evolution modules provide candidate improvements. Promotion requires reproducible evidence, isolated evaluation, approval where required, and rollback.
 7. **Human operations:** dashboard reads persisted company state; status must distinguish unavailable from empty. GUI scene, characters, and activity must never invent employee records, messages, meeting events, or successful work.

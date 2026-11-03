@@ -460,6 +460,8 @@ class TaskRepository:
                 "attempt_id": attempt.id,
                 "task_id": task.task_id,
                 "project_id": task.project_id,
+                "employee_id": task.assigned_to,
+                "execution_mode": task.execution_mode.value,
                 "title": task.title,
                 "objective": task.objective,
                 "acceptance_criteria": task.acceptance_criteria,
@@ -471,6 +473,26 @@ class TaskRepository:
             }
             for attempt, task in rows.all()
         ]
+
+    async def verification_attempt_is_current(
+        self,
+        task_id: str,
+        attempt_id: str,
+        fencing_token: int,
+    ) -> bool:
+        result = await self.session.execute(
+            select(TaskAttempt.id)
+            .join(Task, Task.id == TaskAttempt.task_id)
+            .where(
+                Task.task_id == task_id,
+                TaskAttempt.id == attempt_id,
+                TaskAttempt.status == "submitted",
+                Task.status == TaskStatus.RUNNING,
+                TaskAttempt.fencing_token == fencing_token,
+                Task.fencing_token == fencing_token,
+            )
+        )
+        return result.scalar_one_or_none() is not None
 
     async def review_task_attempt(
         self,

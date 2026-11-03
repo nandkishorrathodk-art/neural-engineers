@@ -5,8 +5,9 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_db_session, require_owner_identity
 from neural.api.main import create_app
+from neural.api.routes.verifier import execute_verifier_test
 from neural.api.routes.worker import execute_terminal_command
-from neural.api.schemas.requests import WorkerCommandRequest
+from neural.api.schemas.requests import VerifierCommandRequest, WorkerCommandRequest
 from neural.boss.brain import BossBrain
 from neural.constants import EmployeeStatus, ExecutionMode, TaskStatus
 from neural.db.models import TaskAttempt
@@ -489,6 +490,16 @@ def test_worker_terminal_command_contract_rejects_shells_and_unapproved_executab
         WorkerCommandRequest.model_validate({"fencing_token": 3, "command": ["sh", "-c", "id"]})
 
 
+def test_verifier_command_contract_allows_only_test_runners():
+    assert VerifierCommandRequest.model_validate(
+        {"fencing_token": 3, "command": ["python", "-m", "pytest", "-q"]}
+    ).command[0] == "python"
+    with pytest.raises(ValueError):
+        VerifierCommandRequest.model_validate({"fencing_token": 3, "command": ["python", "-c", "print(1)"]})
+    with pytest.raises(ValueError):
+        VerifierCommandRequest.model_validate({"fencing_token": 3, "command": ["npm", "install", "pkg"]})
+
+
 @pytest.mark.asyncio
 async def test_worker_lease_validation_requires_active_fence(async_session):
     project = await ProjectRepository(async_session).create(name="Lease validation", objective="Fence execution")
@@ -588,3 +599,73 @@ async def test_worker_command_route_requires_current_terminal_lease(async_sessio
             container_manager=StubContainerManager(),
         )
     assert rejected.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_verifier_exec_requires_current_submitted_attempt(async_session):
+    project = await ProjectRepository(async_session).create(name="Verifier execution", objective="Replay test safely")
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-VERIFY-EXEC",
+        name="Verifier Target",
+        title="Backend Engineer",
+        system_prompt="test employee",
+        status=EmployeeStatus.WORKING,
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-VERIFY-EXEC",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Verify test output",
+        objective="Rerun tests through the broker",
+        scope="Terminal verification",
+        acceptance_criteria="Automated tests pass",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        fencing_token=8,
+    )
+    attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="worker-current",
+        fencing_token=8,
+        status="submitted",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        execution_receipt={"planned_commands": [["pytest", "-q"]]},
+    )
+    async_session.add(attempt)
+    await async_session.commit()
+
+    class StubContainerManager:
+        async def get_desktop_by_employee_id(self, *_args, **_kwargs):
+            return {"status": "running", "docker_id": "ancos-desktop-anc-emp-verify-exec"}
+
+        async def execute_verifier_command(self, employee_id, command):
+            assert employee_id == "ANC-EMP-VERIFY-EXEC"
+            assert command == ["pytest", "-q"]
+            return {"exit_code": 0, "stdout": "2 passed", "stderr": ""}
+
+    result = await execute_verifier_test(
+        task_id=task.task_id,
+        attempt_id=attempt.id,
+        request=VerifierCommandRequest(fencing_token=8, command=["pytest", "-q"]),
+        task_repo=task_repo,
+        employee_repo=employee_repo,
+        container_repo=None,
+        container_manager=StubContainerManager(),
+    )
+    assert result["exit_code"] == 0
+    assert result["stdout"] == "2 passed"
+
+    with pytest.raises(HTTPException) as stale:
+        await execute_verifier_test(
+            task_id=task.task_id,
+            attempt_id=attempt.id,
+            request=VerifierCommandRequest(fencing_token=7, command=["pytest", "-q"]),
+            task_repo=task_repo,
+            employee_repo=employee_repo,
+            container_repo=None,
+            container_manager=StubContainerManager(),
+        )
+    assert stale.value.status_code == 409

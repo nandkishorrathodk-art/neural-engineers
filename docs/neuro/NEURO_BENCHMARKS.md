@@ -8,7 +8,7 @@ No live ANCOS API, worker, verifier, or Docker engine was available during NEURO
 |---|---|---|
 | Full-suite component tests | 334 passed / 31 failed / 11 skipped (376 collected) | Baseline run on 2026-11-02; not a production mission. |
 | Latest full regression | 339 passed / 32 failed / 11 skipped (382 collected) | Run at source commit `c979cb2`; predates terminal worker and verifier rejection recovery. Do not present as the current commit's complete regression result. |
-| Latest focused lifecycle regression | 23 passed | Pre-commit validation for the source committed as `395f53d`; authority/recovery, terminal-worker, and independent-verification unit suites; mocks/in-process DB tests only, not runtime acceptance. |
+| Latest focused lifecycle regression | 32 passed | Pre-commit validation for the current verifier-consumer slice; authority/recovery, terminal-worker, broker sandbox, and independent-verification unit suites; mocked Docker/API plus in-process DB tests, not runtime acceptance. |
 | Objective-to-verified-task success rate | NOT MEASURED | Terminal worker is opt-in and unrun; no separate verifier consumer or live receipt. |
 | API latency P50/P95/P99 | NOT MEASURED | Core API unavailable on local ports 12000/12003. |
 | Queue wait / tasks per hour | NOT MEASURED | No running worker queue consumer. |

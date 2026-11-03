@@ -1,8 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from neural.api.deps import get_employee_repo, get_task_repo, require_verifier_token
-from neural.api.schemas.requests import VerificationDecisionRequest
-from neural.constants import EmployeeStatus
-from neural.db.repositories import EmployeeRepository, TaskRepository
+from neural.api.deps import (
+    get_container_manager,
+    get_container_repo,
+    get_employee_repo,
+    get_task_repo,
+    require_verifier_token,
+)
+from neural.api.schemas.requests import VerificationDecisionRequest, VerifierCommandRequest
+from neural.constants import EmployeeStatus, ExecutionMode
+from neural.containers.manager import ContainerManager
+from neural.db.repositories import ContainerRepository, EmployeeRepository, TaskRepository
 
 router = APIRouter(
     prefix="/internal/verifier",
@@ -17,6 +24,44 @@ async def list_verification_queue(
     task_repo: TaskRepository = Depends(get_task_repo),
 ):
     return {"items": await task_repo.list_pending_verification(limit)}
+
+
+@router.post("/tasks/{task_id}/attempts/{attempt_id}/exec")
+async def execute_verifier_test(
+    task_id: str,
+    attempt_id: str,
+    request: VerifierCommandRequest,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_manager: ContainerManager = Depends(get_container_manager),
+):
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.execution_mode != ExecutionMode.TERMINAL:
+        raise HTTPException(status_code=409, detail="Automated verifier execution only supports terminal tasks.")
+    if not await task_repo.verification_attempt_is_current(task_id, attempt_id, request.fencing_token):
+        raise HTTPException(status_code=409, detail="Verification attempt is stale or no longer pending.")
+    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    if not employee:
+        raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
+    workstation = await container_manager.get_desktop_by_employee_id(
+        employee.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    if not workstation or workstation.get("status") != "running":
+        raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
+    result = await container_manager.execute_verifier_command(employee.employee_id, request.command)
+    return {
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "fencing_token": request.fencing_token,
+        "exit_code": result.get("exit_code"),
+        "stdout": str(result.get("stdout", ""))[-16000:],
+        "stderr": str(result.get("stderr", ""))[-4000:],
+    }
 
 
 @router.post("/tasks/{task_id}/attempts/{attempt_id}/review")

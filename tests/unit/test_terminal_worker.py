@@ -72,6 +72,8 @@ async def test_terminal_worker_submits_receipt_after_zero_exit_commands():
     receipt = seen[-1][1]["execution_receipt"]
     assert receipt["verification_status"] == "awaiting_independent_verifier"
     assert receipt["passed"] is False
+    assert receipt["planned_commands"] == [["pytest", "-q"]]
+    assert receipt["commands"][0]["command"] == ["pytest", "-q"]
 
 
 def test_terminal_command_plan_rejects_shell_and_non_allowlisted_commands():

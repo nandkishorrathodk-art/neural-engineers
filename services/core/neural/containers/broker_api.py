@@ -8,12 +8,13 @@ import shutil
 import string
 import tempfile
 import threading
+import uuid
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from neural.config import get_settings
 
@@ -57,6 +58,26 @@ class ProvisionRequest(BaseModel):
 class ExecRequest(BaseModel):
     command: str | list[str]
     workdir: Literal["/home/employee/workspace"] = "/home/employee/workspace"
+
+
+class VerificationExecRequest(BaseModel):
+    employee_id: str = Field(pattern=EMPLOYEE_ID_PATTERN)
+    command: list[Annotated[str, Field(min_length=1, max_length=8192)]] = Field(
+        min_length=1, max_length=64
+    )
+
+    @field_validator("command")
+    @classmethod
+    def require_test_runner(cls, command: list[str]) -> list[str]:
+        is_pytest = command[0] == "pytest" or (
+            command[0] in {"python", "python3"} and command[1:3] == ["-m", "pytest"]
+        )
+        is_npm_test = command[0] == "npm" and (
+            command[1:2] == ["test"] or command[1:3] == ["run", "test"]
+        )
+        if not (is_pytest or is_npm_test):
+            raise ValueError("Verifier sandbox accepts only pytest or npm test commands.")
+        return command
 
 
 class ImageBuildRequest(BaseModel):
@@ -348,6 +369,84 @@ def execute_in_container(container_id: str, payload: ExecRequest) -> dict[str, A
     )
     output = result.output.decode("utf-8", errors="replace") if result.output else ""
     return {"exit_code": result.exit_code, "stdout": output, "stderr": ""}
+
+
+@app.post("/v1/verifier/exec")
+def execute_verifier_test(payload: VerificationExecRequest) -> dict[str, Any]:
+    """Run a test command in a disposable, offline container with a read-only employee workspace."""
+    client = docker_client()
+    workstation = get_managed_container(employee_container_id(payload.employee_id))
+    labels = workstation.labels or {}
+    workspace = workspace_volume_name(payload.employee_id)
+    if (
+        labels.get("ancos.employee_id") != payload.employee_id
+        or labels.get("ancos.workspace_volume") != workspace
+    ):
+        raise HTTPException(status_code=409, detail="Employee workspace ownership could not be verified.")
+    try:
+        volume = client.volumes.get(workspace)
+    except NotFound as exc:
+        raise HTTPException(status_code=404, detail="Employee workspace volume not found.") from exc
+    volume_labels = volume.attrs.get("Labels") or {}
+    if volume_labels.get("ancos.managed") != "true" or volume_labels.get("ancos.employee_id") != payload.employee_id:
+        raise HTTPException(status_code=409, detail="Employee workspace volume ownership check failed.")
+
+    image_tags = workstation.image.tags or []
+    image = next((tag for tag in image_tags if tag in ALLOWED_IMAGES), None)
+    if not image:
+        raise HTTPException(status_code=409, detail="Employee workstation image is not allowlisted.")
+
+    verifier_name = f"ancos-verifier-{payload.employee_id.lower()}-{uuid.uuid4().hex[:12]}"
+    verifier_container: Any = None
+    try:
+        verifier_container = client.containers.run(
+            image=image,
+            entrypoint=["/bin/sleep"],
+            command=["3600"],
+            name=verifier_name,
+            detach=True,
+            labels={
+                "ancos.managed": "true",
+                "ancos.verifier": "true",
+                "ancos.employee_id": payload.employee_id,
+                "ancos.workspace_volume": workspace,
+            },
+            user="1000:1000",
+            volumes={workspace: {"bind": "/home/employee/workspace", "mode": "ro"}},
+            network_disabled=True,
+            read_only=True,
+            tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
+            nano_cpus=1_000_000_000,
+            mem_limit="1g",
+            memswap_limit="1g",
+            pids_limit=128,
+            privileged=False,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"],
+        )
+        result = verifier_container.exec_run(
+            cmd=["/usr/bin/timeout", "300s", *payload.command],
+            user="1000:1000",
+            workdir="/home/employee/workspace",
+            environment={
+                "HOME": "/tmp",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTEST_ADDOPTS": "-p no:cacheprovider",
+                "TMPDIR": "/tmp",
+            },
+        )
+        output = result.output.decode("utf-8", errors="replace") if result.output else ""
+        return {"exit_code": result.exit_code, "stdout": output, "stderr": ""}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Isolated verifier execution failed.") from exc
+    finally:
+        if verifier_container is not None:
+            try:
+                verifier_container.remove(force=True)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail="Verifier sandbox cleanup failed.") from exc
 
 
 @app.post("/v1/containers/{container_id}/vnc-password")
