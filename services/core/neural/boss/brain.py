@@ -222,24 +222,16 @@ class BossBrain:
                     first_task = created_tasks[0]
                     # Prioritize employee with empirically verified matching skills
                     assignee = self.delegator.select_best_assignee(first_task, employees)
-                    if not assignee:
-                        assignee = employees[0]
-                        first_task_info = phases[0].get("tasks", [{}])[0] if phases else {}
-                        req_role = first_task_info.get("role_required", "")
-                        for emp in employees:
-                            if req_role and req_role.replace("-", " ").lower() in emp.title.lower():
-                                assignee = emp
-                                break
-
-                    await t_repo.assign_task(first_task.task_id, assignee.id)
-                    first_task.assigned_to = assignee.id
-                    first_task.status = TaskStatus.ASSIGNED
-                    logger.info(
-                        "Assigned first task to employee",
-                        task_id=first_task.task_id,
-                        employee_id=assignee.employee_id,
-                        assignee_name=assignee.name
-                    )
+                    if assignee:
+                        await t_repo.assign_task(first_task.task_id, assignee.id)
+                        first_task.assigned_to = assignee.id
+                        first_task.status = TaskStatus.ASSIGNED
+                        logger.info(
+                            "Assigned first task to employee",
+                            task_id=first_task.task_id,
+                            employee_id=assignee.employee_id,
+                            assignee_name=assignee.name
+                        )
 
         # Notify via Message Bus if present
         if self.message_bus:

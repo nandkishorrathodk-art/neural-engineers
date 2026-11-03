@@ -6,7 +6,13 @@ from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_db_session
 from neural.api.main import create_app
 from neural.boss.brain import BossBrain
-from neural.constants import ContainerStatus, ProjectStatus, TaskPriority, TaskStatus
+from neural.constants import (
+    ContainerStatus,
+    EmployeeStatus,
+    ProjectStatus,
+    TaskPriority,
+    TaskStatus,
+)
 from neural.containers.manager import ContainerManager, DockerBrokerRequestError
 from neural.db.repositories import (
     ContainerRepository,
@@ -369,7 +375,17 @@ async def test_phase1_edge_cases(async_session: AsyncSession):
     assert unknown_emp.department == "Engineering"
     assert len(unknown_emp.skills) >= 1
 
-    # 3. Port allocation fragmentation and reclamation
+    # 3. A busy employee must not receive another task; leave it pending for capacity.
+    await employee_repo.update_status(unknown_emp.employee_id, EmployeeStatus.WORKING)
+    busy_project, busy_tasks = await brain.plan_and_create_project(
+        objective="Do not over-assign a busy specialist",
+        auto_assign_first_task=True,
+    )
+    assert busy_project.id is not None
+    assert busy_tasks[0].assigned_to is None
+    assert busy_tasks[0].status == TaskStatus.PENDING
+
+    # 4. Port allocation fragmentation and reclamation
     manager = ContainerManager()
     p1 = manager.allocate_ports("id-1")
     p2 = manager.allocate_ports("id-2")

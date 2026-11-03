@@ -63,15 +63,16 @@ class TaskDelegator:
         if not available_employees:
             return None
 
-        # Filter only idle/working candidates (prefer idle)
+        # Never over-assign an employee who is already working or unavailable.
         idle_employees = [e for e in available_employees if e.status == EmployeeStatus.IDLE]
-        candidate_pool = idle_employees if idle_employees else list(available_employees)
+        if not idle_employees:
+            return None
 
         required_caps = task.required_capabilities or []
 
         # Sort candidates descending by (verified_matches, unverified_matches, total_skills, quality_score)
         sorted_candidates = sorted(
-            candidate_pool,
+            idle_employees,
             key=lambda emp: self.score_employee_for_task(emp, required_caps),
             reverse=True
         )
