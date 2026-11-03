@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import shutil
@@ -229,8 +230,8 @@ def health() -> dict[str, str]:
 
 @app.post("/v1/containers")
 def provision_container(payload: ProvisionRequest) -> dict[str, Any]:
-    # Serialize admission and creation so two concurrent requests cannot both
-    # pass the single-workstation capacity check.
+    # Serialize admission and creation so concurrent requests cannot exceed
+    # the configured workstation ceiling.
     with _provision_lock:
         return _provision_single_container(payload)
 
@@ -244,11 +245,20 @@ def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
         all=True,
         filters={"label": "ancos.managed=true"},
     )
-    if existing_workstations:
-        names = sorted(container.name for container in existing_workstations)
+    try:
+        workstation_limit = int(os.environ.get("ANCOS_MAX_ACTIVE_DESKTOPS", "1"))
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="Desktop capacity setting is invalid.") from exc
+    if workstation_limit < 0:
+        raise HTTPException(status_code=503, detail="Desktop capacity setting is invalid.")
+    existing_workstations = [
+        container for container in existing_workstations
+        if container.name != employee_container_id(payload.employee_id)
+    ]
+    if len(existing_workstations) >= workstation_limit:
         raise HTTPException(
             status_code=409,
-            detail=f"Only one ANCOS workstation is available; terminate the existing workstation first ({names[0]}).",
+            detail=f"Desktop capacity is full ({len(existing_workstations)}/{workstation_limit}).",
         )
 
     name = employee_container_id(payload.employee_id)

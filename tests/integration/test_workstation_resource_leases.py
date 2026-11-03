@@ -6,7 +6,8 @@ from neural.api.deps import get_container_manager, get_db_session, require_owner
 from neural.api.main import create_app
 from neural.constants import ApprovalStatus
 from neural.db.models import Employee, ResourceLease
-from neural.db.repositories import ApprovalRepository
+from neural.db.repositories import ApprovalRepository, ResourceLeaseRepository
+from neural.resource_scheduler.workstation_lease import claim_workstation_lease
 from sqlalchemy import select
 
 
@@ -160,3 +161,33 @@ async def test_invalid_approval_releases_unprovisioned_workstation_reservation(a
     ).scalars().all()
     assert len(leases) == 1
     assert leases[0].status == "released"
+
+
+@pytest.mark.asyncio
+async def test_configured_workstation_capacity_claims_distinct_durable_slots(async_session, monkeypatch):
+    monkeypatch.setenv("ANCOS_MAX_ACTIVE_DESKTOPS", "2")
+    employee_ids = [f"ANC-EMP-LEASE-CAP-{index}" for index in range(1, 4)]
+    for employee_id in employee_ids:
+        await create_employee(async_session, employee_id)
+
+    repository = ResourceLeaseRepository(async_session)
+    leases = [
+        await claim_workstation_lease(
+            repository,
+            employee_id,
+            f"ancos-desktop-{employee_id.lower()}",
+        )
+        for employee_id in employee_ids
+    ]
+
+    assert leases[0] is not None
+    assert leases[1] is not None
+    assert leases[2] is None
+    leases = (
+        await async_session.execute(
+            select(ResourceLease).where(ResourceLease.employee_id.in_(employee_ids))
+        )
+    ).scalars().all()
+    active_leases = [lease for lease in leases if lease.status == "active"]
+    assert len(active_leases) == 2
+    assert len({lease.resource_key for lease in active_leases}) == 2

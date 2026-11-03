@@ -29,6 +29,7 @@ services:
       - APP_ENV=production
       - DOCKER_HOST=unix:///var/run/docker.sock
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
+      - ANCOS_MAX_ACTIVE_DESKTOPS=${ANCOS_MAX_ACTIVE_DESKTOPS:-1}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./docker:/opt/ancos-docker:ro

@@ -227,33 +227,48 @@ class ContainerManager:
             ContainerStatus.RUNNING.value,
             ContainerStatus.STOPPED.value,
         }
-        for existing in self._containers.values():
-            if (
-                existing.get("employee_id") != employee_id
-                and existing.get("status") in active_statuses
-            ):
+        try:
+            # Import lazily: resource_scheduler's package exports DesktopSlotPool,
+            # which itself imports ContainerManager.
+            from neural.resource_scheduler.workstation_lease import workstation_slot_limit
+
+            workstation_limit = workstation_slot_limit()
+        except ValueError as exc:
+            raise ContainerError("ANCOS_MAX_ACTIVE_DESKTOPS must be a non-negative integer.") from exc
+        active_employees = {
+            existing.get("employee_id")
+            for existing in self._containers.values()
+            if existing.get("status") in active_statuses
+        }
+        if employee_id not in active_employees and len(active_employees) >= workstation_limit:
+            raise DockerBrokerRequestError(
+                f"Desktop capacity is full ({len(active_employees)}/{workstation_limit}).",
+                status_code=409,
+            )
+        docker_id = f"ancos-desktop-{employee_id.lower()}"
+        if container_repo:
+            existing_records = await container_repo.list_all()
+            active_db = [
+                row for row in existing_records
+                if row.docker_id != docker_id
+                and (row.status.value if hasattr(row.status, "value") else str(row.status)) in active_statuses
+            ]
+            if len(active_db) >= workstation_limit:
                 raise DockerBrokerRequestError(
-                    "Only one ANCOS workstation is available; terminate the existing workstation first.",
+                    f"Desktop capacity is full ({len(active_db)}/{workstation_limit}).",
                     status_code=409,
                 )
-        if container_repo:
-            for existing in await container_repo.list_all():
-                status = existing.status.value if hasattr(existing.status, "value") else str(existing.status)
-                if existing.docker_id != f"ancos-desktop-{employee_id.lower()}" and status in active_statuses:
-                    raise DockerBrokerRequestError(
-                        "Only one ANCOS workstation is available; terminate the existing workstation first.",
-                        status_code=409,
-                    )
-
-        docker_id = f"ancos-desktop-{employee_id.lower()}"
         client = self._get_client()
         if client is not None:
-            for existing in client.containers.list(all=True):
-                if existing.name.startswith("ancos-desktop-") and existing.name != docker_id:
-                    raise DockerBrokerRequestError(
-                        "Only one ANCOS workstation is available; terminate the existing workstation first.",
-                        status_code=409,
-                    )
+            existing_workstations = [
+                item for item in client.containers.list(all=True)
+                if item.name.startswith("ancos-desktop-") and item.name != docker_id
+            ]
+            if len(existing_workstations) >= workstation_limit:
+                raise DockerBrokerRequestError(
+                    f"Desktop capacity is full ({len(existing_workstations)}/{workstation_limit}).",
+                    status_code=409,
+                )
         effective_cpu = cpu_limit or self.settings.DEFAULT_CONTAINER_CPU_LIMIT
         effective_mem = mem_limit or self.settings.DEFAULT_CONTAINER_MEM_LIMIT
         if role_image.startswith("ancos/"):
