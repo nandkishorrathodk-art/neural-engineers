@@ -191,7 +191,7 @@ class TaskRepository:
             if latest_attempt and latest_attempt.status == "submitted":
                 # A submitted attempt waits for independent verification.
                 continue
-            if latest_attempt and latest_attempt.status == "failed" and latest_attempt.lease_expires_at > now:
+            if latest_attempt and latest_attempt.status in {"failed", "rejected"} and latest_attempt.lease_expires_at > now:
                 # Persisted retry backoff survives worker process restarts.
                 continue
             if latest_attempt and latest_attempt.status == "waiting" and latest_attempt.lease_expires_at > now:
@@ -525,6 +525,17 @@ class TaskRepository:
                         submitted_at=now,
                     )
                 )
+                retrying = False
+                retry_after_seconds = 0
+            else:
+                retrying = task.retry_count < task.max_retries
+                retry_after_seconds = min(2 ** task.retry_count, 60) if retrying else 0
+                attempt.error_message = str(verification_receipt.get("notes", "Independent verification failed."))[:4000]
+                attempt.lease_expires_at = now + timedelta(seconds=retry_after_seconds)
+                task.retry_count += 1 if retrying else 0
+                task.status = TaskStatus.ASSIGNED if retrying else TaskStatus.FAILED
+                task.completed_at = None if retrying else now
+                task.fencing_token += 1
             await self.session.commit()
             return {
                 "task_id": task.task_id,
@@ -532,6 +543,9 @@ class TaskRepository:
                 "task_status": task.status.value,
                 "attempt_status": attempt.status,
                 "fencing_token": task.fencing_token,
+                "retrying": retrying,
+                "retry_count": task.retry_count,
+                "retry_after_seconds": retry_after_seconds,
             }
 
     async def get_by_task_id(self, task_id: str) -> Optional[Task]:

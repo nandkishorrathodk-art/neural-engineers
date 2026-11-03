@@ -4,6 +4,12 @@
 
 **Environment:** Windows local workspace; Python 3.12.14; pytest 9.2; Next.js 15.5.26.
 
+## Latest update — 2026-11-03
+
+- Added an opt-in terminal-only consumer and bounded verifier-rejection recovery. If an independent review rejects an attempt, the attempt retains the rejection receipt, the task is requeued with persisted backoff and a new fencing token, and retry exhaustion moves the task to terminal `FAILED`. Stale verifier decisions cannot attach to the next attempt.
+- Focused regression run: `uv run --no-sync pytest tests/unit/test_neuro_phase1_authority.py tests/unit/test_terminal_worker.py tests/unit/test_verification.py` — **23 passed**. Ruff passed on the changed repository, verifier route, and tests; scoped mypy passed on verifier route and repository. Earlier terminal worker validation also passed 23 tests, 2 skipped, Ruff, mypy, and Compose profile rendering.
+- Docker Linux engine is unavailable in this environment. No worker image build, verifier consumer runtime, or live end-to-end receipt was produced. NEURO-2 and NEURO-3 remain in progress; NEURO-5 remains not accepted.
+
 ## Python tests
 
 Command: `uv run --no-sync pytest`

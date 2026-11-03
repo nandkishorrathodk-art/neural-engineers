@@ -254,6 +254,72 @@ async def test_worker_failure_retries_only_retryable_errors_within_budget(async_
 
 
 @pytest.mark.asyncio
+async def test_verifier_rejection_retries_with_backoff_then_fails_closed(async_session):
+    project = await ProjectRepository(async_session).create(name="Verifier recovery", objective="Retry rejected work")
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-VERIFIER-RETRY",
+        project_id=project.id,
+        title="Retry rejected output",
+        objective="Correct failing acceptance checks",
+        scope="Execution",
+        acceptance_criteria="Independent verification passes",
+        status=TaskStatus.RUNNING,
+        fencing_token=1,
+        max_retries=1,
+    )
+    first_attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="worker-test",
+        fencing_token=1,
+        status="submitted",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        execution_receipt={"verification_status": "awaiting_independent_verifier"},
+    )
+    async_session.add(first_attempt)
+    await async_session.commit()
+
+    rejection = {
+        "passed": False,
+        "notes": "Acceptance check failed.",
+        "evidence_refs": ["command:pytest"],
+        "checks": [{"name": "tests", "passed": False}],
+    }
+    first_result = await task_repo.review_task_attempt(task.task_id, first_attempt.id, "verifier-test", rejection)
+    assert first_result is not None
+    assert first_result["task_status"] == TaskStatus.ASSIGNED.value
+    assert first_result["attempt_status"] == "rejected"
+    assert first_result["retrying"] is True
+    assert first_result["retry_count"] == 1
+    assert first_result["retry_after_seconds"] == 1
+    assert first_result["fencing_token"] == 2
+    assert await task_repo.list_pending_verification() == []
+
+    second_attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=2,
+        worker_id="worker-test",
+        fencing_token=2,
+        status="submitted",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        execution_receipt={"verification_status": "awaiting_independent_verifier"},
+    )
+    task.status = TaskStatus.RUNNING
+    async_session.add(second_attempt)
+    await async_session.commit()
+
+    exhausted = await task_repo.review_task_attempt(task.task_id, second_attempt.id, "verifier-test", rejection)
+    assert exhausted is not None
+    assert exhausted["task_status"] == TaskStatus.FAILED.value
+    assert exhausted["attempt_status"] == "rejected"
+    assert exhausted["retrying"] is False
+    assert exhausted["retry_count"] == 1
+    assert exhausted["retry_after_seconds"] == 0
+    assert exhausted["fencing_token"] == 3
+
+
+@pytest.mark.asyncio
 async def test_expired_worker_lease_consumes_retry_budget(async_session):
     project = await ProjectRepository(async_session).create(name="Lease recovery", objective="Recover worker loss")
     employee = await EmployeeRepository(async_session).create(

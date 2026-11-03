@@ -35,7 +35,7 @@ async def review_task_attempt(
             status_code=409,
             detail="The submitted attempt is stale, already reviewed, or no longer the task's active fenced attempt.",
         )
-    if outcome["task_status"] == "completed":
+    if outcome["task_status"] in {"completed", "failed"}:
         task = await task_repo.get_by_task_id(task_id)
         if task and task.assigned_to:
             await employee_repo.update_status(task.assigned_to, EmployeeStatus.IDLE)
