@@ -122,6 +122,11 @@ async def get_employee_workstation(
     )
     if not desktop_spec:
         raise HTTPException(status_code=404, detail=f"No active workstation found for employee '{employee_id}'")
+    if desktop_spec.get("status") == "runtime_unavailable":
+        raise HTTPException(
+            status_code=503,
+            detail="Workstation runtime is unavailable; its durable lease remains reserved pending recovery.",
+        )
     if desktop_spec.get("status") == "running":
         lease = await renew_workstation_lease(
             resource_lease_repo,

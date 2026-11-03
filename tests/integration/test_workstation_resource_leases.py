@@ -138,6 +138,37 @@ async def test_approved_workstation_lifecycle_claims_renews_and_releases_durable
 
 
 @pytest.mark.asyncio
+async def test_workstation_runtime_outage_returns_503_and_retains_durable_lease(async_session):
+    employee = await create_employee(async_session, "ANC-EMP-LEASE-OUTAGE")
+    approval = await create_provision_approval(async_session, employee.employee_id)
+    manager = FakeContainerManager()
+    app = create_app()
+    app.dependency_overrides[get_db_session] = lambda: async_session
+    app.dependency_overrides[get_container_manager] = lambda: manager
+    app.dependency_overrides[require_owner_identity] = lambda: "test-owner"
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        provisioned = await client.post(
+            f"/employees/{employee.employee_id}/workstation/provision?approval_id={approval.id}"
+        )
+        assert provisioned.status_code == 200
+        docker_id = provisioned.json()["docker_id"]
+        manager.workstations[employee.employee_id]["status"] = "runtime_unavailable"
+
+        unavailable = await client.get(f"/employees/{employee.employee_id}/workstation")
+
+    assert unavailable.status_code == 503
+    assert "runtime is unavailable" in unavailable.json()["detail"].lower()
+    rows = (
+        await async_session.execute(
+            select(ResourceLease).where(ResourceLease.session_id == docker_id)
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == "active"
+
+
+@pytest.mark.asyncio
 async def test_invalid_approval_releases_unprovisioned_workstation_reservation(async_session):
     employee = await create_employee(async_session, "ANC-EMP-LEASE-INVALID")
     employee_id = employee.employee_id
