@@ -49,13 +49,13 @@ The first test invocation failed at collection because the local environment lac
 | Dashboard `npm run build` | **Passed**. Next.js 15.5.26 compiled, completed TypeScript validity checking, generated all 9 static pages, and finalized build traces. |
 | Dashboard lint script | Not run; package script uses `next lint`, which is not an independent backend quality signal. Ruff result above is the Python lint baseline. |
 
-## Runtime and performance baseline
+## NEURO-0 runtime and performance snapshot (2026-11-02)
 
 - Docker Desktop Linux engine was unavailable (Docker engine named pipe absent).
 - No core API listener was found on ports 12000 or 12003. Ports 12001 and 12002 were already occupied by separate processes and were not changed.
-- Compose defines Redis, restricted Docker broker, core API, and dashboard only; it does not define a task worker or verifier consumer.
+- At this snapshot, Compose defined Redis, restricted Docker broker, core API, and dashboard only. The later `455f752` change adds an opt-in terminal worker; no verifier consumer has been added.
 - Docker lease, retry, backoff, and fencing logic has focused in-process DB coverage, but no deployed consumer or live crash-recovery receipt exists.
-- No real task, live GUI action, independent verifier receipt, throughput measurement, latency percentile, or cost benchmark was captured.
+- No real task, live GUI action, independent verifier receipt, throughput measurement, latency percentile, or cost benchmark was captured. This remains true through the latest focused checks.
 - Therefore P50/P95/P99, queue delay, throughput, failure recovery, and cost per verified task are **NOT MEASURED**. Do not use synthetic tests as a performance baseline.
 
 ## Repeat commands

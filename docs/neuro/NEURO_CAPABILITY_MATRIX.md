@@ -1,6 +1,6 @@
 # ANCOS capability matrix
 
-Audit baseline: 2026-11-02. Status describes evidence available in the repository and current local environment, not roadmap intent.
+Audit baseline: 2026-11-02; implementation status updated through 2026-11-03. Status describes evidence available in the repository and current local environment, not roadmap intent.
 
 ## Status vocabulary
 
@@ -38,4 +38,4 @@ Audit baseline: 2026-11-02. Status describes evidence available in the repositor
 
 ## Verification boundary
 
-Python component tests: 334 passed, 31 failed, 11 skipped. Passing cases support only their tested contracts. External Docker, core API, task worker, verifier, and model runtime were unavailable; therefore no “BUILT_AND_VERIFIED” label is assigned to the complete autonomous company workflow.
+NEURO-0 full-suite baseline on 2026-11-02: 334 passed, 31 failed, 11 skipped. A later full regression on source commit `c979cb2` reported 339 passed, 32 failed, 11 skipped; latest commits have focused 23-pass lifecycle coverage, not a new full-suite run. Passing cases support only their tested contracts. External Docker, core API, task worker, verifier, and model runtime were not demonstrated live; therefore no `BUILT_AND_VERIFIED` label is assigned to the complete autonomous company workflow. See `NEURO_TEST_EVIDENCE.md` for commit and scope boundaries.

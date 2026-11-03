@@ -1,6 +1,7 @@
 # ANCOS NEURO-0 system audit
 
-**Audit date:** 2026-11-02
+**Audit snapshot:** 2026-11-02
+**Repository delta reviewed:** commits through `395f53d` on 2026-11-03
 
 **Repository:** local `neural-company` workspace
 **Acceptance:** NEURO-0 evidence baseline recorded; production end-to-end acceptance is **not met**.
@@ -35,8 +36,15 @@ The current dashboard edits and pre-existing removed screenshot assets were pres
 
 ## Acceptance verdict
 
-NEURO-0 records the current baseline and prioritizes the gaps. It does **not** accept the system as production-ready or autonomous. The capability labels and evidence hierarchy are in `NEURO_CAPABILITY_MATRIX.md`; the master design is in `NEURO_ARCHITECTURE.md`; remediation order is in `NEURO_PHASE_PLAN.md`.
+NEURO-0 records a local baseline and prioritizes the gaps. It does **not** accept the system as production-ready or autonomous. The capability labels and evidence hierarchy are in `NEURO_CAPABILITY_MATRIX.md`; the master design is in `NEURO_ARCHITECTURE.md`; remediation order and the complete user-provided NEURO-0–13 sequence are in `NEURO_PHASE_PLAN.md`.
 
 ## NEURO-1 follow-up (2026-11-02)
 
 The control-plane slice now requires an owner identity on `POST /boss/objective`, invokes Boss staffing when verified skills or idle capacity are insufficient, records separate owner-submission and Boss-staffing audit events, and disables direct employee creation. The fixed-name bootstrap helper now generates and reuses dynamic profiles. The owner-only project report reads actual task, attempt, and verifier evidence. Five latest focused tests pass, including production-mode credential rejection, recruitment, and report accuracy. This does not satisfy the NEURO-1 end-to-end acceptance mission because a live task consumer and verifier are still unavailable; see current phase status and evidence report.
+
+## Current repository delta (2026-11-03)
+
+- **NEURO-1:** The dated follow-up above supersedes the initial audit-time recruitment finding; current objective-route staffing is owner-authenticated and focused-tested. No live objective-to-verified-report mission exists.
+- **NEURO-2/3:** `455f752` adds an opt-in terminal-only worker, supported-mode claim filter, start/heartbeat/submit/fail protocol, lease-checked Core API command endpoint, and restricted-broker execution. `395f53d` fixes verifier rejection lifecycle: preserve the rejected receipt, consume bounded retry budget with persisted backoff, increment fencing, and fail terminally on exhaustion. Focused suites pass (23 tests); Ruff and scoped mypy pass. Compose profile rendering passed, but the Linux Docker engine is unavailable, so no image build, worker runtime, verifier consumer, or independent live receipt was produced.
+- **Roadmap fidelity:** The phase plan/status now preserve the user's full NEURO-0–NEURO-13 objectives. This corrects the prior shortened 0–9 plan, which did not represent the complete master mission.
+- **Validation freshness:** the last full-suite result is still the older `c979cb2` run (339 passed, 32 failed, 11 skipped). Current `main` has focused checks only; do not treat historical full-suite results as current-source regression proof.
