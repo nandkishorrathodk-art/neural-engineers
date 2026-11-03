@@ -149,14 +149,19 @@ class TaskRepository:
         ).scalars().all()
 
         for task in candidates:
-            dependency_statuses = (
+            dependency_evidence = (
                 await self.session.execute(
-                    select(Task.status)
+                    select(Task.status, Task.verification_result)
                     .join(TaskDependency, TaskDependency.depends_on_task_id == Task.id)
                     .where(TaskDependency.task_id == task.id)
                 )
-            ).scalars().all()
-            if any(status != TaskStatus.COMPLETED for status in dependency_statuses):
+            ).all()
+            if any(
+                status != TaskStatus.COMPLETED
+                or not isinstance(receipt, dict)
+                or receipt.get("passed") is not True
+                for status, receipt in dependency_evidence
+            ):
                 continue
 
             attempts = (
@@ -283,6 +288,82 @@ class TaskRepository:
                 "lease_expires_at": lease_expires_at.isoformat(),
                 "status": task.status.value,
             }
+
+        # Owner objective submission assigns the first task. Once it receives an
+        # independent passing receipt, later DAG tasks must be dispatched to a
+        # currently available employee instead of remaining pending forever.
+        # Only employees with an already-running desktop are eligible here: this
+        # path never provisions a workstation or crosses the approval boundary.
+        ready_query = select(Task).where(
+            Task.status == TaskStatus.PENDING,
+            Task.assigned_to.is_(None),
+        )
+        if execution_modes is not None:
+            mode_values = [getattr(mode, "value", mode) for mode in execution_modes]
+            ready_query = ready_query.where(Task.execution_mode.in_(mode_values))
+        ready_tasks = (
+            await self.session.execute(
+                ready_query.order_by(Task.priority.asc(), Task.task_id.asc())
+                .limit(64)
+                .with_for_update(skip_locked=True)
+            )
+        ).scalars().all()
+        if ready_tasks:
+            eligible_employees = (
+                await self.session.execute(
+                    select(Employee)
+                    .join(Container, Employee.container_id == Container.id)
+                    .options(selectinload(Employee.skills), selectinload(Employee.container))
+                    .where(
+                        Employee.status == EmployeeStatus.IDLE,
+                        Container.status == ContainerStatus.RUNNING,
+                    )
+                    .order_by(Employee.hired_at.asc())
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars().all()
+            from neural.boss.delegator import TaskDelegator
+
+            delegator = TaskDelegator()
+            for ready_task in ready_tasks:
+                dependency_evidence = (
+                    await self.session.execute(
+                        select(Task.status, Task.verification_result)
+                        .join(TaskDependency, TaskDependency.depends_on_task_id == Task.id)
+                        .where(TaskDependency.task_id == ready_task.id)
+                    )
+                ).all()
+                if any(
+                    status != TaskStatus.COMPLETED
+                    or not isinstance(receipt, dict)
+                    or receipt.get("passed") is not True
+                    for status, receipt in dependency_evidence
+                ):
+                    continue
+                assignee = delegator.select_best_assignee(ready_task, eligible_employees)
+                if not assignee:
+                    continue
+                assigned = await self.session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == ready_task.id,
+                        Task.status == TaskStatus.PENDING,
+                        Task.assigned_to.is_(None),
+                    )
+                    .values(
+                        assigned_to=assignee.id,
+                        status=TaskStatus.ASSIGNED,
+                        fencing_token=Task.fencing_token + 1,
+                    )
+                )
+                if assigned.rowcount == 1:
+                    await self.session.commit()
+                    return await self.claim_next_task(
+                        worker_id,
+                        lease_seconds=lease_seconds,
+                        execution_modes=execution_modes,
+                    )
+                await self.session.rollback()
         return None
 
     async def start_task_attempt(self, task_id: str, worker_id: str, fencing_token: int) -> bool:

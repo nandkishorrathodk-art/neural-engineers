@@ -100,6 +100,157 @@ async def test_worker_claim_reserves_idle_employee_and_prevents_overlapping_task
 
 
 @pytest.mark.asyncio
+async def test_worker_claim_dispatches_next_dag_task_only_after_verified_prerequisite(async_session):
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-DAG-CONTINUE",
+        name="DAG Continuation Validation",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.IDLE,
+    )
+    container = await ContainerRepository(async_session).create(
+        docker_id="ancos-desktop-anc-emp-dag-continue",
+        image="ancos/employee-base:latest",
+        status=ContainerStatus.RUNNING,
+        resource_limits={},
+        network_config={},
+        workspace_path="/tmp/dag-continuation-validation",
+    )
+    await employee_repo.assign_container(employee.employee_id, container.id)
+    project = await ProjectRepository(async_session).create(
+        name="Verified DAG continuation",
+        objective="Dispatch dependent work after independent verification",
+    )
+    task_repo = TaskRepository(async_session)
+    first = await task_repo.create(
+        task_id="TASK-DAG-FIRST",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="First task",
+        objective="Complete the prerequisite",
+        scope="Validation",
+        acceptance_criteria="The prerequisite has an independent passing receipt",
+        execution_mode=ExecutionMode.TERMINAL,
+        priority=TaskPriority.HIGH,
+        status=TaskStatus.ASSIGNED,
+    )
+    second = await task_repo.create(
+        task_id="TASK-DAG-SECOND",
+        project_id=project.id,
+        title="Dependent task",
+        objective="Continue the project after verification",
+        scope="Validation",
+        acceptance_criteria="The dependent task is dispatched only after verified completion",
+        execution_mode=ExecutionMode.TERMINAL,
+        priority=TaskPriority.MEDIUM,
+        status=TaskStatus.PENDING,
+    )
+    await task_repo.add_dependency(second.task_id, first.task_id)
+
+    await async_session.refresh(employee)
+    live_employee = await employee_repo.get_by_employee_id(employee.employee_id)
+    assert live_employee is not None and live_employee.container is not None
+    assert live_employee.status == EmployeeStatus.IDLE
+    assert live_employee.container.status == ContainerStatus.RUNNING
+    first_claim = await task_repo.claim_next_task(
+        "worker-dag-continuation",
+        execution_modes=[ExecutionMode.TERMINAL],
+    )
+    assert first_claim is not None
+    assert first_claim["task_id"] == first.task_id
+    assert await task_repo.start_task_attempt(
+        first.task_id,
+        "worker-dag-continuation",
+        first_claim["fencing_token"],
+    )
+    assert await task_repo.submit_task_attempt(
+        first.task_id,
+        "worker-dag-continuation",
+        first_claim["fencing_token"],
+        {"planned_commands": [["python3", "-m", "unittest", "-v"]]},
+    )
+    attempts = await task_repo.list_attempts_by_project(project.id)
+    first_attempt = next(attempt for attempt in attempts if attempt.task_id == first.id)
+    reviewed = await task_repo.review_task_attempt(
+        first.task_id,
+        first_attempt.id,
+        "independent-verifier",
+        {
+            "passed": True,
+            "notes": "Independent prerequisite verification passed.",
+            "evidence_refs": ["verifier:first-task"],
+            "checks": [{"name": "tests", "passed": True}],
+            "test_summary": {"passed": 1},
+        },
+    )
+    assert reviewed is not None
+    assert reviewed["task_status"] == TaskStatus.COMPLETED.value
+
+    next_claim = await task_repo.claim_next_task(
+        "worker-dag-continuation",
+        execution_modes=[ExecutionMode.TERMINAL],
+    )
+    assert next_claim is not None
+    assert next_claim["task_id"] == second.task_id
+    assert next_claim["employee_id"] == employee.employee_id
+
+
+@pytest.mark.asyncio
+async def test_worker_claim_does_not_unlock_dependency_with_unverified_completion(async_session):
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-UNVERIFIED-DEPENDENCY",
+        name="Unverified Dependency Validation",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.IDLE,
+    )
+    container = await ContainerRepository(async_session).create(
+        docker_id="ancos-desktop-anc-emp-unverified-dependency",
+        image="ancos/employee-base:latest",
+        status=ContainerStatus.RUNNING,
+        resource_limits={},
+        network_config={},
+        workspace_path="/tmp/unverified-dependency-validation",
+    )
+    await employee_repo.assign_container(employee.employee_id, container.id)
+    project = await ProjectRepository(async_session).create(
+        name="Unverified dependency gate",
+        objective="Do not release dependent work from legacy completion",
+    )
+    task_repo = TaskRepository(async_session)
+    prerequisite = await task_repo.create(
+        task_id="TASK-LEGACY-COMPLETE",
+        project_id=project.id,
+        title="Legacy completed task",
+        objective="This row has no verifier proof",
+        scope="Validation",
+        acceptance_criteria="An independent verifier receipt is required",
+        status=TaskStatus.COMPLETED,
+    )
+    dependent = await task_repo.create(
+        task_id="TASK-WAITING-FOR-VERIFICATION",
+        project_id=project.id,
+        title="Task waiting for proof",
+        objective="Remain pending while prerequisite proof is absent",
+        scope="Validation",
+        acceptance_criteria="Only verified tasks may unlock this task",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.PENDING,
+    )
+    await task_repo.add_dependency(dependent.task_id, prerequisite.task_id)
+
+    assert await task_repo.claim_next_task(
+        "worker-unverified-dependency",
+        execution_modes=[ExecutionMode.TERMINAL],
+    ) is None
+    persisted = await task_repo.get_by_task_id(dependent.task_id)
+    assert persisted.status == TaskStatus.PENDING
+    assert persisted.assigned_to is None
+
+
+@pytest.mark.asyncio
 async def test_production_owner_identity_rejects_worker_credentials(monkeypatch):
     from neural.config import get_settings
 
