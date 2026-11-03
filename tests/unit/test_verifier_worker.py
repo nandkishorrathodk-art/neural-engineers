@@ -2,6 +2,7 @@ import json
 
 import httpx
 import pytest
+from neural.api.schemas.requests import VerifierCommandRequest
 from neural.containers import broker_api
 from neural.containers.broker_api import VerificationExecRequest, VerificationManifestRequest
 from neural.workers.verifier import VerificationWorker, replayable_test_commands
@@ -44,11 +45,20 @@ def test_replayable_test_commands_filter_out_non_test_commands():
             ["python", "-c", "print('not replayed')"],
             ["pytest", "-q"],
             ["pytest", "-q"],
+            ["python3", "-m", "unittest", "-v"],
             ["npm", "run", "test"],
             ["curl", "https://example.invalid"],
         ]
     }
-    assert replayable_test_commands(receipt) == [["pytest", "-q"], ["npm", "run", "test"]]
+    assert replayable_test_commands(receipt) == [
+        ["pytest", "-q"],
+        ["python3", "-m", "unittest", "-v"],
+        ["npm", "run", "test"],
+    ]
+    assert VerifierCommandRequest(
+        fencing_token=7,
+        command=["python3", "-m", "unittest", "-v"],
+    ).command == ["python3", "-m", "unittest", "-v"]
 
 
 @pytest.mark.asyncio
@@ -68,7 +78,7 @@ async def test_verifier_reruns_declared_test_and_submits_independent_receipt():
 
     client = httpx.AsyncClient(base_url="http://core.test", transport=httpx.MockTransport(handler))
     verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
-    result = await verifier.verify_item(_item([["pytest", "-q"]]))
+    result = await verifier.verify_item(_item([["python3", "-m", "unittest", "-v"]]))
     await verifier.close()
 
     assert result == {"task_status": "completed"}
@@ -221,7 +231,10 @@ def test_broker_runs_verification_in_read_only_offline_workspace(monkeypatch):
     monkeypatch.setattr(broker_api, "get_managed_container", lambda _name: workstation)
 
     result = broker_api.execute_verifier_test(
-        VerificationExecRequest(employee_id="ANC-EMP-VERIFY", command=["pytest", "-q"])
+        VerificationExecRequest(
+            employee_id="ANC-EMP-VERIFY",
+            command=["python3", "-m", "unittest", "-v"],
+        )
     )
 
     assert result == {"exit_code": 0, "stdout": "3 passed", "stderr": ""}
@@ -234,7 +247,9 @@ def test_broker_runs_verification_in_read_only_offline_workspace(monkeypatch):
     assert run["entrypoint"] == ["/bin/sleep"]
     assert run["cap_drop"] == ["ALL"]
     assert run["security_opt"] == ["no-new-privileges:true"]
-    assert calls["exec"]["cmd"] == ["/usr/bin/timeout", "300s", "pytest", "-q"]
+    assert calls["exec"]["cmd"] == [
+        "/usr/bin/timeout", "300s", "python3", "-m", "unittest", "-v"
+    ]
     assert calls["exec"]["environment"]["PYTHONDONTWRITEBYTECODE"] == "1"
     assert calls["exec"]["environment"]["HOME"] == "/tmp"
     assert calls["removed"] == {"force": True}

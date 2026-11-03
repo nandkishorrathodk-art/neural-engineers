@@ -30,10 +30,13 @@ def replayable_test_commands(receipt: dict[str, Any]) -> list[list[str]]:
         is_pytest = command[0] == "pytest" or (
             command[0] in {"python", "python3"} and command[1:3] == ["-m", "pytest"]
         )
+        is_unittest = (
+            command[0] in {"python", "python3"} and command[1:3] == ["-m", "unittest"]
+        )
         is_npm_test = command[0] == "npm" and (
             command[1:2] == ["test"] or command[1:3] == ["run", "test"]
         )
-        if (is_pytest or is_npm_test) and command not in tests:
+        if (is_pytest or is_unittest or is_npm_test) and command not in tests:
             tests.append(command)
     return tests
 

@@ -144,11 +144,14 @@ class VerifierCommandRequest(WorkerLeaseRequest):
         is_pytest = command[0] == "pytest" or (
             command[0] in {"python", "python3"} and command[1:3] == ["-m", "pytest"]
         )
+        is_unittest = (
+            command[0] in {"python", "python3"} and command[1:3] == ["-m", "unittest"]
+        )
         is_npm_test = command[0] == "npm" and (
             command[1:2] == ["test"] or command[1:3] == ["run", "test"]
         )
-        if not (is_pytest or is_npm_test):
-            raise ValueError("Verifier execution is restricted to pytest or npm test commands.")
+        if not (is_pytest or is_unittest or is_npm_test):
+            raise ValueError("Verifier execution is restricted to pytest, unittest, or npm test commands.")
         return command
 
 

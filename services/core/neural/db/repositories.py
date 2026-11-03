@@ -199,10 +199,29 @@ class TaskRepository:
             employee = await self.session.scalar(
                 select(Employee).options(selectinload(Employee.container)).where(
                     Employee.id == task.assigned_to,
-                    Employee.status == EmployeeStatus.WORKING,
                 )
             )
             if not employee or not employee.container or employee.container.status != ContainerStatus.RUNNING:
+                continue
+            retrying_same_assignment = bool(
+                latest_attempt and latest_attempt.status in {"failed", "rejected", "expired"}
+            )
+            if employee.status != EmployeeStatus.IDLE and not (
+                employee.status == EmployeeStatus.WORKING and retrying_same_assignment
+            ):
+                continue
+            other_active_attempt = await self.session.scalar(
+                select(TaskAttempt.id)
+                .join(Task, Task.id == TaskAttempt.task_id)
+                .where(
+                    Task.assigned_to == employee.id,
+                    Task.id != task.id,
+                    TaskAttempt.status.in_(["leased", "running"]),
+                    TaskAttempt.lease_expires_at > now,
+                )
+                .limit(1)
+            )
+            if other_active_attempt:
                 continue
             if latest_attempt and latest_attempt.status in {"leased", "running"}:
                 if latest_attempt.fencing_token == task.fencing_token and latest_attempt.lease_expires_at > now:
@@ -225,6 +244,14 @@ class TaskRepository:
                     .values(fencing_token=new_fencing_token)
                 )
                 if claimed.rowcount != 1:
+                    await self.session.rollback()
+                    continue
+                employee_claim = await self.session.execute(
+                    update(Employee)
+                    .where(Employee.id == employee.id, Employee.status == employee.status)
+                    .values(status=EmployeeStatus.WORKING)
+                )
+                if employee_claim.rowcount != 1:
                     await self.session.rollback()
                     continue
                 attempt = TaskAttempt(
@@ -336,6 +363,27 @@ class TaskRepository:
                     error_message=reason[:4000],
                 )
             )
+            if result.rowcount == 1 and task.assigned_to:
+                other_active_attempt = await self.session.scalar(
+                    select(TaskAttempt.id)
+                    .join(Task, Task.id == TaskAttempt.task_id)
+                    .where(
+                        Task.assigned_to == task.assigned_to,
+                        Task.id != task.id,
+                        TaskAttempt.status.in_(["leased", "running"]),
+                        TaskAttempt.lease_expires_at > now,
+                    )
+                    .limit(1)
+                )
+                if not other_active_attempt:
+                    await self.session.execute(
+                        update(Employee)
+                        .where(
+                            Employee.id == task.assigned_to,
+                            Employee.status == EmployeeStatus.WORKING,
+                        )
+                        .values(status=EmployeeStatus.IDLE)
+                    )
             await self.session.commit()
         return result.rowcount == 1
 
@@ -436,6 +484,12 @@ class TaskRepository:
             if task_update.rowcount != 1:
                 await self.session.rollback()
                 return None
+            if not should_retry and task.assigned_to:
+                await self.session.execute(
+                    update(Employee)
+                    .where(Employee.id == task.assigned_to)
+                    .values(status=EmployeeStatus.IDLE)
+                )
             await self.session.commit()
         return {
             "retrying": should_retry,
@@ -558,6 +612,12 @@ class TaskRepository:
                 task.status = TaskStatus.ASSIGNED if retrying else TaskStatus.FAILED
                 task.completed_at = None if retrying else now
                 task.fencing_token += 1
+            if (passed or not retrying) and task.assigned_to:
+                await self.session.execute(
+                    update(Employee)
+                    .where(Employee.id == task.assigned_to)
+                    .values(status=EmployeeStatus.IDLE)
+                )
             await self.session.commit()
             return {
                 "task_id": task.task_id,

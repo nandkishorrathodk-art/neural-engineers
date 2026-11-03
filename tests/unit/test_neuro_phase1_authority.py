@@ -13,15 +13,90 @@ from neural.api.schemas.requests import (
     WorkerCommandRequest,
 )
 from neural.boss.brain import BossBrain
-from neural.constants import EmployeeStatus, ExecutionMode, TaskStatus
+from neural.constants import (
+    ContainerStatus,
+    EmployeeStatus,
+    ExecutionMode,
+    TaskPriority,
+    TaskStatus,
+)
 from neural.db.models import TaskAttempt
 from neural.db.repositories import (
     AuditRepository,
+    ContainerRepository,
     EmployeeRepository,
     ProjectRepository,
     TaskRepository,
 )
 from neural.employees.factory import EmployeeFactory
+
+
+@pytest.mark.asyncio
+async def test_worker_claim_reserves_idle_employee_and_prevents_overlapping_tasks(async_session):
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-WORKER-CLAIM",
+        name="Worker Claim Validation",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.IDLE,
+    )
+    container = await ContainerRepository(async_session).create(
+        docker_id="ancos-desktop-anc-emp-worker-claim",
+        image="ancos/employee-base:latest",
+        status=ContainerStatus.RUNNING,
+        resource_limits={},
+        network_config={},
+        workspace_path="/tmp/worker-claim-validation",
+    )
+    await employee_repo.assign_container(employee.employee_id, container.id)
+    project = await ProjectRepository(async_session).create(
+        name="Worker claim capacity",
+        objective="Claim only while an employee workstation is available",
+    )
+    task_repo = TaskRepository(async_session)
+    for task_id in ("TASK-CLAIM-1", "TASK-CLAIM-2"):
+        await task_repo.create(
+            task_id=task_id,
+            project_id=project.id,
+            assigned_to=employee.id,
+            title=f"Run {task_id}",
+            objective="Run the assigned terminal task",
+            scope="Validation",
+            acceptance_criteria="A verifier receipt is stored",
+            execution_mode=ExecutionMode.TERMINAL,
+            priority=TaskPriority.HIGH,
+            status=TaskStatus.ASSIGNED,
+        )
+
+    await async_session.refresh(employee)
+    claimed = await task_repo.claim_next_task("worker-claim-test", execution_modes=[ExecutionMode.TERMINAL])
+    assert claimed is not None
+    assert claimed["task_id"] == "TASK-CLAIM-1"
+    await async_session.refresh(employee)
+    assert employee.status == EmployeeStatus.WORKING
+    assert await task_repo.claim_next_task("worker-claim-test-2", execution_modes=[ExecutionMode.TERMINAL]) is None
+
+    assert await task_repo.release_task_claim(
+        claimed["task_id"],
+        "worker-claim-test",
+        claimed["fencing_token"],
+        "Validation releases the unstarted claim.",
+    )
+    await async_session.refresh(employee)
+    assert employee.status == EmployeeStatus.IDLE
+
+    next_claim = await task_repo.claim_next_task("worker-claim-test-2", execution_modes=[ExecutionMode.TERMINAL])
+    assert next_claim is not None
+    assert next_claim["task_id"] == "TASK-CLAIM-2"
+    await async_session.refresh(employee)
+    assert employee.status == EmployeeStatus.WORKING
+    assert await task_repo.release_task_claim(
+        next_claim["task_id"],
+        "worker-claim-test-2",
+        next_claim["fencing_token"],
+        "Validation releases the second unstarted claim.",
+    )
 
 
 @pytest.mark.asyncio
