@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -148,9 +149,22 @@ def test_checkpoint_manager_durability_and_resumption():
 
         loaded = ck_mgr.load_checkpoint("EMP-CK-1", "TASK-PERSIST-1")
         assert loaded is not None
+        assert loaded["version"] == 2
+        assert loaded["integrity_verified"] is True
+        assert len(loaded["integrity_sha256"]) == 64
         assert loaded["step_index"] == 7
         assert loaded["state_dict"]["tests_passing"] == 14
         assert len(loaded["pending_operations"]) == 1
+
+        # Corrupt saved state is not accepted for resumption.
+        with open(path, "r+", encoding="utf-8") as f:
+            saved = json.load(f)
+            saved["state_dict"]["tests_passing"] = 99
+            f.seek(0)
+            json.dump(saved, f)
+            f.truncate()
+        assert ck_mgr.load_checkpoint("EMP-CK-1", "TASK-PERSIST-1") is None
+        assert ck_mgr.has_checkpoint("EMP-CK-1", "TASK-PERSIST-1") is False
 
         # Clear checkpoint
         cleared = ck_mgr.clear_checkpoint("EMP-CK-1", "TASK-PERSIST-1")
@@ -158,6 +172,82 @@ def test_checkpoint_manager_durability_and_resumption():
         assert not ck_mgr.has_checkpoint("EMP-CK-1", "TASK-PERSIST-1")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_checkpoint_manager_rejects_employee_path_traversal(tmp_path):
+    ck_mgr = CheckpointManager(base_dir=str(tmp_path / "checkpoints"))
+    with pytest.raises(ValueError, match="safe path component"):
+        ck_mgr.save_checkpoint("../outside", "TASK-1", step_index=1, state_dict={})
+    with pytest.raises(ValueError, match="safe path component"):
+        ck_mgr.list_employee_checkpoints("../outside")
+    assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_keeps_legacy_checkpoint_readable_but_does_not_resume_it(tmp_path):
+    checkpoint_dir = str(tmp_path / "checkpoints")
+    ck_mgr = CheckpointManager(base_dir=checkpoint_dir)
+    path = ck_mgr.save_checkpoint(
+        employee_id="EMP-LEGACY",
+        task_id="TASK-LEGACY",
+        step_index=4,
+        state_dict={"progress": "old-format"},
+    )
+    with open(path, "r+", encoding="utf-8") as f:
+        legacy = json.load(f)
+        legacy.pop("integrity_sha256")
+        legacy["version"] = 1
+        f.seek(0)
+        json.dump(legacy, f)
+        f.truncate()
+
+    retained = ck_mgr.load_checkpoint("EMP-LEGACY", "TASK-LEGACY")
+    assert retained is not None
+    assert retained["integrity_verified"] is False
+
+    monitor = ResourceMonitor()
+    monitor.set_mock_metrics(free_ram_gb=10.0, cpu_percent=20.0)
+    scheduler = DesktopResourceScheduler(
+        profiler=HardwareProfiler(profile=PROFILE_16GB, max_active_desktops=1),
+        monitor=monitor,
+        checkpoint_manager=CheckpointManager(base_dir=checkpoint_dir),
+    )
+    result = await scheduler.request_desktop_session("EMP-LEGACY", "TASK-LEGACY")
+
+    assert result["resumed_from_checkpoint"] is False
+    assert result["checkpoint_available_unverified"] is True
+    assert result["checkpoint"] is None
+    await scheduler.emergency_capacity_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_returns_verified_checkpoint_state_for_resume(tmp_path):
+    checkpoint_dir = str(tmp_path / "checkpoints")
+    ck_mgr = CheckpointManager(base_dir=checkpoint_dir)
+    ck_mgr.save_checkpoint(
+        employee_id="EMP-RESUME",
+        task_id="TASK-RESUME",
+        step_index=12,
+        state_dict={"draft": "chapter 3", "verified": True},
+        pending_operations=[{"operation": "review chapter 3"}],
+        workspace_path="persistent/EMP-RESUME",
+    )
+    monitor = ResourceMonitor()
+    monitor.set_mock_metrics(free_ram_gb=10.0, cpu_percent=20.0)
+    scheduler = DesktopResourceScheduler(
+        profiler=HardwareProfiler(profile=PROFILE_16GB, max_active_desktops=1),
+        monitor=monitor,
+        checkpoint_manager=CheckpointManager(base_dir=checkpoint_dir),
+    )
+
+    result = await scheduler.request_desktop_session("EMP-RESUME", "TASK-RESUME")
+
+    assert result["status"] == "active"
+    assert result["resumed_from_checkpoint"] is True
+    assert result["checkpoint_step"] == 12
+    assert result["checkpoint"]["state_dict"] == {"draft": "chapter 3", "verified": True}
+    assert result["checkpoint"]["pending_operations"] == [{"operation": "review chapter 3"}]
+    await scheduler.emergency_capacity_shutdown()
 
 
 def test_employee_execution_queue_prioritization():

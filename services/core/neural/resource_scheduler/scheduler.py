@@ -210,7 +210,12 @@ class DesktopResourceScheduler:
         self._standby_employees.discard(employee_id)
 
         # Check if resuming from saved checkpoint
-        checkpoint = self.checkpoint_manager.load_checkpoint(employee_id, task_id)
+        checkpoint_candidate = self.checkpoint_manager.load_checkpoint(employee_id, task_id)
+        checkpoint = (
+            checkpoint_candidate
+            if checkpoint_candidate and checkpoint_candidate.get("integrity_verified") is True
+            else None
+        )
 
         result = {
             "status": "active",
@@ -221,7 +226,9 @@ class DesktopResourceScheduler:
             "novnc_port": allocated_slot.novnc_port,
             "is_new_allocation": True,
             "resumed_from_checkpoint": checkpoint is not None,
+            "checkpoint_available_unverified": checkpoint_candidate is not None and checkpoint is None,
             "checkpoint_step": checkpoint.get("step_index") if checkpoint else None,
+            "checkpoint": checkpoint,
         }
         if durable_lease:
             result["resource_lease"] = durable_lease
