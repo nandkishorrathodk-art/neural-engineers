@@ -548,10 +548,10 @@ class TaskRepository:
         status: TaskStatus,
         enforce_verification: Optional[bool] = None
     ) -> None:
+        task = await self.get_by_task_id(task_id)
+        if not task:
+            raise ValueError(f"Task {task_id} not found")
         if status == TaskStatus.COMPLETED:
-            task = await self.get_by_task_id(task_id)
-            if not task:
-                raise ValueError(f"Task {task_id} not found")
             v_res = task.verification_result
             if not v_res or not v_res.get("passed"):
                 raise UnverifiedTaskError(
@@ -574,6 +574,22 @@ class TaskRepository:
         )
         lock = get_session_lock(self.session)
         async with lock:
+            if status == TaskStatus.CANCELLED:
+                now = utc_now()
+                await self.session.execute(
+                    update(TaskAttempt)
+                    .where(
+                        TaskAttempt.task_id == task.id,
+                        TaskAttempt.fencing_token == task.fencing_token,
+                        TaskAttempt.status.in_(["leased", "running"]),
+                    )
+                    .values(
+                        status="cancelled",
+                        finished_at=now,
+                        lease_expires_at=now,
+                        error_message="Task was cancelled by an authorized control-plane action.",
+                    )
+                )
             await self.session.execute(stmt)
             await self.session.commit()
 

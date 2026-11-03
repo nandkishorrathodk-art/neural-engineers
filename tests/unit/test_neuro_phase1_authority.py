@@ -346,3 +346,39 @@ async def test_expired_worker_lease_exhaustion_fails_task_and_releases_employee(
     assert failed_task.status == TaskStatus.FAILED
     assert failed_task.retry_count == 1
     assert released_employee.status == EmployeeStatus.IDLE
+
+
+@pytest.mark.asyncio
+async def test_cancelling_task_fences_and_closes_active_worker_attempt(async_session):
+    project = await ProjectRepository(async_session).create(name="Cancellation", objective="Stop active work")
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-CANCEL-ACTIVE-WORKER",
+        project_id=project.id,
+        title="Cancel leased work",
+        objective="Stop the current worker attempt",
+        scope="Execution",
+        acceptance_criteria="Attempt is terminal and stale heartbeat is rejected",
+        status=TaskStatus.RUNNING,
+        fencing_token=7,
+    )
+    attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="worker-active",
+        fencing_token=7,
+        status="running",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=2),
+        execution_receipt={},
+    )
+    async_session.add(attempt)
+    await async_session.commit()
+
+    await task_repo.update_status(task.task_id, TaskStatus.CANCELLED)
+    cancelled_task = await task_repo.get_by_task_id(task.task_id)
+    await async_session.refresh(attempt)
+    assert cancelled_task.status == TaskStatus.CANCELLED
+    assert cancelled_task.fencing_token == 8
+    assert attempt.status == "cancelled"
+    assert attempt.finished_at is not None
+    assert await task_repo.heartbeat_task_attempt(task.task_id, "worker-active", 7) is None
