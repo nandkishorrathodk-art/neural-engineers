@@ -892,7 +892,7 @@ class ResourceLeaseRepository:
         now = utc_now()
         ttl = max(5, min(lease_seconds, 3600))
         async with get_session_lock(self.session):
-            active = (
+            leases = (
                 await self.session.execute(
                     select(ResourceLease)
                     .where(
@@ -900,17 +900,25 @@ class ResourceLeaseRepository:
                             ResourceLease.resource_key == resource_key,
                             ResourceLease.employee_id == employee_id,
                         ),
-                        ResourceLease.status == "active",
+                        ResourceLease.status.in_(("active", "expired")),
                     )
                     .with_for_update()
                 )
             ).scalars().all()
-            if any(lease.lease_expires_at > now for lease in active):
-                await self.session.rollback()
+            if leases:
+                newly_expired = False
+                for lease in leases:
+                    if lease.status == "active" and lease.lease_expires_at <= now:
+                        # Expiry fences the old owner but does not prove the desktop
+                        # process stopped. Keep the resource quarantined until the
+                        # caller confirms cleanup and explicitly releases this fence.
+                        lease.status = "expired"
+                        newly_expired = True
+                if newly_expired:
+                    await self.session.commit()
+                else:
+                    await self.session.rollback()
                 return None
-            for lease in active:
-                lease.status = "expired"
-                lease.released_at = now
 
             previous_fence = await self.session.scalar(
                 select(func.max(ResourceLease.fencing_token)).where(ResourceLease.resource_key == resource_key)
@@ -961,7 +969,7 @@ class ResourceLeaseRepository:
                 .where(
                     ResourceLease.id == lease_id,
                     ResourceLease.fencing_token == fencing_token,
-                    ResourceLease.status == "active",
+                    ResourceLease.status.in_(("active", "expired")),
                 )
                 .values(status="released", released_at=now)
             )
@@ -969,15 +977,26 @@ class ResourceLeaseRepository:
         return result.rowcount == 1
 
     async def reconcile_expired(self) -> int:
+        """Fence expired owners without freeing resources for reuse."""
         now = utc_now()
         async with get_session_lock(self.session):
             result = await self.session.execute(
                 update(ResourceLease)
                 .where(ResourceLease.status == "active", ResourceLease.lease_expires_at <= now)
-                .values(status="expired", released_at=now)
+                .values(status="expired")
             )
             await self.session.commit()
         return result.rowcount or 0
+
+    async def list_expired(self) -> Sequence[dict[str, Any]]:
+        """Returns quarantined leases for a cleanup worker to inspect."""
+        await self.reconcile_expired()
+        result = await self.session.execute(
+            select(ResourceLease)
+            .where(ResourceLease.status == "expired")
+            .order_by(ResourceLease.granted_at.asc())
+        )
+        return [self._as_dict(lease) for lease in result.scalars().all()]
 
 
 class EmployeeRepository:

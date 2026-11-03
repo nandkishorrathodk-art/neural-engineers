@@ -24,7 +24,10 @@ async def claim_resource_lease(
         resource_reservation=request.resource_reservation,
     )
     if lease is None:
-        raise HTTPException(status_code=409, detail="Resource or employee already has an active lease.")
+        raise HTTPException(
+            status_code=409,
+            detail="Resource or employee is leased or quarantined pending cleanup.",
+        )
     return lease
 
 

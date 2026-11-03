@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from neural.constants import TaskPriority
 from neural.db.models import ResourceLease
@@ -123,3 +125,60 @@ async def test_failed_container_termination_retains_slot_and_durable_lease(async
     assert lease.status == "active"
     assert scheduler.get_stats()["active_employees"] == ["ANC-EMP-KEEP"]
     assert scheduler.get_stats()["active_desktops_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_expired_lease_stays_quarantined_until_explicit_cleanup_release(async_session):
+    repository = ResourceLeaseRepository(async_session)
+    original = await repository.claim(
+        resource_key="desktop:test-host:slot-1",
+        employee_id="ANC-EMP-STALE",
+        lease_seconds=5,
+    )
+    assert original is not None
+
+    row = await async_session.get(ResourceLease, original["lease_id"])
+    assert row is not None
+    row.lease_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+    await async_session.commit()
+
+    # TTL expiry revokes the old heartbeat, but cannot prove the container exited.
+    assert await repository.claim(
+        resource_key="desktop:test-host:slot-1",
+        employee_id="ANC-EMP-NEW",
+        lease_seconds=30,
+    ) is None
+    quarantined = await repository.list_expired()
+    assert [lease["lease_id"] for lease in quarantined] == [original["lease_id"]]
+    assert await repository.heartbeat(original["lease_id"], original["fencing_token"]) is None
+
+    # Reuse is allowed only after the cleanup owner confirms the resource is gone.
+    assert await repository.release(original["lease_id"], original["fencing_token"])
+    replacement = await repository.claim(
+        resource_key="desktop:test-host:slot-1",
+        employee_id="ANC-EMP-NEW",
+        lease_seconds=30,
+    )
+    assert replacement is not None
+    assert replacement["fencing_token"] == original["fencing_token"] + 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_terminates_its_expired_session_before_releasing_quarantine(
+    async_session, tmp_path
+):
+    repository = ResourceLeaseRepository(async_session)
+    scheduler = make_scheduler(repository, FakeContainerManager(), tmp_path / "stale")
+    grant = await scheduler.request_desktop_session("ANC-EMP-STALE", "TASK-STALE")
+    row = await async_session.get(ResourceLease, grant["resource_lease"]["lease_id"])
+    assert row is not None
+    row.lease_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+    await async_session.commit()
+
+    reclaimed = await scheduler.reconcile_expired_leases()
+
+    assert reclaimed == [grant["slot_id"]]
+    assert scheduler.get_stats()["active_desktops_count"] == 0
+    row = await async_session.get(ResourceLease, grant["resource_lease"]["lease_id"])
+    assert row is not None
+    assert row.status == "released"

@@ -421,7 +421,8 @@ class DesktopResourceScheduler:
             lease_seconds=self.resource_lease_seconds,
         )
         if expiry is None:
-            self._resource_leases.pop(slot_id, None)
+            # Keep the old fence locally so reconciliation can terminate its
+            # workstation and release the quarantined row after cleanup succeeds.
             return None
         lease["lease_expires_at"] = expiry
         return dict(lease)
