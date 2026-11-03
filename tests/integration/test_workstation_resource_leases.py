@@ -4,9 +4,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_container_manager, get_db_session, require_owner_identity
 from neural.api.main import create_app
-from neural.constants import ApprovalStatus
+from neural.constants import ApprovalStatus, ContainerStatus
 from neural.db.models import Employee, ResourceLease
-from neural.db.repositories import ApprovalRepository, ResourceLeaseRepository
+from neural.db.repositories import ApprovalRepository, ContainerRepository, ResourceLeaseRepository
 from neural.resource_scheduler.workstation_lease import claim_workstation_lease
 from sqlalchemy import select
 
@@ -191,3 +191,68 @@ async def test_configured_workstation_capacity_claims_distinct_durable_slots(asy
     active_leases = [lease for lease in leases if lease.status == "active"]
     assert len(active_leases) == 2
     assert len({lease.resource_key for lease in active_leases}) == 2
+
+
+@pytest.mark.asyncio
+async def test_session_lookup_prefers_active_lease_after_pool_change(async_session):
+    repository = ResourceLeaseRepository(async_session)
+    employee_id = "ANC-EMP-LEASE-POOL-CHANGE"
+    session_id = f"ancos-desktop-{employee_id.lower()}"
+    previous = await repository.claim(
+        resource_key="desktop:previous-pool:slot-1",
+        employee_id=employee_id,
+        session_id=session_id,
+        lease_seconds=60,
+    )
+    assert previous is not None
+    assert await repository.release(previous["lease_id"], previous["fencing_token"])
+
+    current = await repository.claim(
+        resource_key="desktop:current-pool:slot-1",
+        employee_id=employee_id,
+        session_id=session_id,
+        lease_seconds=60,
+    )
+    assert current is not None
+
+    found = await repository.get_by_session_id(session_id)
+    assert found is not None
+    assert found["lease_id"] == current["lease_id"]
+    assert found["status"] == "active"
+    assert await repository.release(found["lease_id"], found["fencing_token"])
+
+
+@pytest.mark.asyncio
+async def test_container_upsert_reuses_terminated_docker_record(async_session):
+    repository = ContainerRepository(async_session)
+    docker_id = "ancos-desktop-anc-emp-reused"
+    original = await repository.create(
+        docker_id=docker_id,
+        image="ancos/employee-base:latest",
+        status=ContainerStatus.TERMINATED,
+        vnc_port=5901,
+        novnc_port=6081,
+        resource_limits={"cpu_limit": 2.0, "mem_limit": "4g"},
+        network_config={"network": "ancos-bridge-net"},
+        workspace_path="ancos-workspace-anc-emp-reused",
+    )
+    original_started_at = original.started_at
+
+    current = await repository.upsert_current(
+        docker_id=docker_id,
+        image="ancos/employee-qa:latest",
+        status=ContainerStatus.RUNNING,
+        vnc_port=5902,
+        novnc_port=6082,
+        resource_limits={"cpu_limit": 1.0, "mem_limit": "1g"},
+        network_config={"network": "ancos-bridge-net"},
+        workspace_path="ancos-workspace-anc-emp-reused",
+    )
+
+    rows = await repository.list_all()
+    assert current.id == original.id
+    assert current.status == ContainerStatus.RUNNING
+    assert current.image == "ancos/employee-qa:latest"
+    assert current.vnc_port == 5902
+    assert current.started_at > original_started_at
+    assert len(rows) == 1

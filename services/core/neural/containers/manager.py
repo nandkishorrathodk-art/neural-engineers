@@ -366,7 +366,7 @@ class ContainerManager:
         # Optional database persistence
         if container_repo:
             try:
-                db_container = await container_repo.create(
+                db_container = await container_repo.upsert_current(
                     docker_id=docker_id,
                     image=image_name,
                     status=ContainerStatus.RUNNING,
@@ -380,7 +380,14 @@ class ContainerManager:
                 if employee_repo:
                     await employee_repo.assign_container(employee_id, db_container.id)
             except Exception as db_err:
-                logger.warning("Failed to persist container record in DB", error=str(db_err))
+                logger.exception(
+                    "Workstation started but its database record could not be persisted",
+                    docker_id=docker_id,
+                    error=str(db_err),
+                )
+                raise ContainerError(
+                    f"Workstation {docker_id} started, but its lifecycle record could not be persisted."
+                ) from db_err
 
         logger.info(
             "Desktop workstation ready",

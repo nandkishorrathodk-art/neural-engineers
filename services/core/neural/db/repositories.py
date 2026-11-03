@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -948,7 +948,15 @@ class ResourceLeaseRepository:
         result = await self.session.execute(
             select(ResourceLease)
             .where(ResourceLease.session_id == session_id)
-            .order_by(ResourceLease.fencing_token.desc())
+            .order_by(
+                case(
+                    (ResourceLease.status == "active", 0),
+                    (ResourceLease.status == "expired", 1),
+                    else_=2,
+                ),
+                ResourceLease.granted_at.desc(),
+                ResourceLease.fencing_token.desc(),
+            )
             .limit(1)
         )
         lease = result.scalar_one_or_none()
@@ -1240,6 +1248,31 @@ class ContainerRepository:
         container = Container(**kwargs)
         self.session.add(container)
         await self.session.commit()
+        await self.session.refresh(container)
+        return container
+
+    async def upsert_current(self, **kwargs: Any) -> Container:
+        """Persist the latest lifecycle record for a deterministic Docker ID."""
+        docker_id = kwargs.get("docker_id")
+        if not docker_id:
+            raise ValueError("docker_id is required to upsert a workstation record")
+        kwargs.setdefault("started_at", utc_now())
+
+        container = await self.get_by_docker_id(docker_id)
+        if container is None:
+            container = Container(**kwargs)
+            self.session.add(container)
+        else:
+            if kwargs["started_at"] <= container.started_at:
+                kwargs["started_at"] = container.started_at + timedelta(microseconds=1)
+            for key, value in kwargs.items():
+                setattr(container, key, value)
+
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
         await self.session.refresh(container)
         return container
 

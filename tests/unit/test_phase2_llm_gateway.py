@@ -100,9 +100,11 @@ async def test_llm_gateway_tier_exhaustion():
 # 2. Circuit Breaker & Recovery Tests
 # =========================================================================
 
-def test_circuit_breaker_lifecycle():
+def test_circuit_breaker_lifecycle(monkeypatch):
     """Test CLOSED -> OPEN after failures -> HALF_OPEN after timeout -> CLOSED on success."""
     cb = CircuitBreaker(name="test-model", failure_threshold=2, recovery_timeout=0.05)
+    now = [100.0]
+    monkeypatch.setattr("neural.llm.retry.time.monotonic", lambda: now[0])
 
     assert cb.state == CircuitState.CLOSED
     assert cb.can_execute() is True
@@ -116,9 +118,8 @@ def test_circuit_breaker_lifecycle():
     assert cb.state == CircuitState.OPEN
     assert cb.can_execute() is False
 
-    # Simulate waiting past recovery timeout
-    import time
-    time.sleep(0.06)
+    # Advance a monotonic clock deterministically past recovery timeout.
+    now[0] += 0.06
     assert cb.state == CircuitState.HALF_OPEN
     assert cb.can_execute() is True  # Trial allowed
 
