@@ -2,7 +2,7 @@
 
 ## Deployment inventory
 
-The checked-in `docker-compose.yml` declares Redis, a dedicated restricted Docker broker, core API, dashboard, an opt-in terminal-only worker under `workers`, and a separate terminal test verifier under `verifiers`. Both consumers are opt-in and neither has a live runtime receipt. The local audit could not inspect a live ANCOS API or Docker engine; unrelated listeners on ports 12001 and 12002 were left untouched.
+The checked-in `docker-compose.yml` declares Redis, a dedicated restricted Docker broker, core API, dashboard, an opt-in terminal-only worker under `workers`, and a separate terminal test verifier under `verifiers`. One controlled current-source worker-to-verifier protocol cycle has a live receipt, but the long-running Compose consumer profiles remain unverified. The original repository audit snapshot could not inspect a live ANCOS API or Docker engine; subsequent isolated validation results are recorded in `NEURO_TEST_EVIDENCE.md`.
 
 ## Operator requirements before a pilot
 

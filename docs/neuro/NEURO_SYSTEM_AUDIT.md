@@ -40,7 +40,7 @@ NEURO-0 records a local baseline and prioritizes the gaps. It does **not** accep
 
 ## NEURO-1 follow-up (2026-11-02)
 
-The control-plane slice now requires an owner identity on `POST /boss/objective`, invokes Boss staffing when verified skills or idle capacity are insufficient, records separate owner-submission and Boss-staffing audit events, and disables direct employee creation. The fixed-name bootstrap helper now generates and reuses dynamic profiles. The owner-only project report reads actual task, attempt, and verifier evidence. Five latest focused tests pass, including production-mode credential rejection, recruitment, and report accuracy. This does not satisfy the NEURO-1 end-to-end acceptance mission because a live task consumer and verifier are still unavailable; see current phase status and evidence report.
+The control-plane slice now requires an owner identity on `POST /boss/objective`, invokes Boss staffing when verified skills or idle capacity are insufficient, records separate owner-submission and Boss-staffing audit events, and disables direct employee creation. The fixed-name bootstrap helper now generates and reuses dynamic profiles. The owner-only project report reads actual task, attempt, and verifier evidence. Five focused tests passed, including production-mode credential rejection, recruitment, and report accuracy. At the time of this follow-up, the live task consumer and verifier were unavailable. A later controlled worker/verifier receipt is recorded below; neither result satisfies the full NEURO-1 end-to-end mission.
 
 ## Current repository delta (2026-11-03)
 

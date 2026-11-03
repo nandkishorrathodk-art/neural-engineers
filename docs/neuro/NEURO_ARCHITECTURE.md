@@ -24,7 +24,7 @@ Core API ── Boss / planner ── project DAG + task records
                          isolated employee desktop
 ```
 
-The diagram is a target/known-module view. A terminal-only task worker and terminal test verifier are available behind separate opt-in `workers` and `verifiers` Compose profiles, but neither has been demonstrated running. The verifier replays declared pytest/npm-test commands under a separate credential in a disposable, network-disabled container with a read-only employee-workspace mount; it fails closed unless acceptance criteria exactly match a supported test-only contract. It does not verify artifact content. The separate restricted Docker broker is declared in Compose and is the only component intended to control Docker. Core API and dashboard must not gain direct unrestricted Docker access.
+The diagram is a target/known-module view. A terminal-only task worker and terminal test verifier are available behind separate opt-in `workers` and `verifiers` Compose profiles. One controlled current-source worker-to-verifier protocol cycle has been demonstrated with a manually seeded task and local planner stub; the long-running Compose profiles and a Boss objective-to-report mission have not. The verifier replays declared pytest, Python unittest, or npm-test commands under a separate credential in a disposable, network-disabled container with a read-only employee-workspace mount; it fails closed unless acceptance criteria exactly match a supported test-only contract. It does not verify artifact content. The separate restricted Docker broker is declared in Compose and is the only component intended to control Docker. Core API and dashboard must not gain direct unrestricted Docker access.
 
 ## Architectural pillars and current state
 
