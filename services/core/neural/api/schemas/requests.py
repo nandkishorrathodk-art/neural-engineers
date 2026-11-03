@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Optional
 
-from neural.constants import ActionItemStatus, MeetingType, ProposalType, VoteChoice
+from neural.constants import ActionItemStatus, ExecutionMode, MeetingType, ProposalType, VoteChoice
 from pydantic import BaseModel, Field
 
 
@@ -96,6 +96,16 @@ class UpdateTaskStatusRequest(BaseModel):
 
 class WorkerLeaseRequest(BaseModel):
     fencing_token: int = Field(..., ge=1)
+
+
+class WorkerClaimRequest(BaseModel):
+    execution_modes: list[ExecutionMode] = Field(
+        default_factory=lambda: list(ExecutionMode), min_length=1, max_length=4
+    )
+
+
+class WorkerCommandRequest(WorkerLeaseRequest):
+    command: list[str] = Field(..., min_length=1, max_length=64)
 
 
 class WorkerSubmitRequest(WorkerLeaseRequest):

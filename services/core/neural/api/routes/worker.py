@@ -7,6 +7,7 @@ from neural.api.deps import (
     require_worker_token,
 )
 from neural.api.schemas.requests import (
+    WorkerClaimRequest,
     WorkerFailureRequest,
     WorkerLeaseRequest,
     WorkerSubmitRequest,
@@ -24,13 +25,14 @@ router = APIRouter(
 
 @router.post("/tasks/claim")
 async def claim_next_task(
+    request: WorkerClaimRequest = WorkerClaimRequest(),
     worker_id: str = Depends(require_worker_token),
     task_repo: TaskRepository = Depends(get_task_repo),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     container_repo: ContainerRepository = Depends(get_container_repo),
     container_manager: ContainerManager = Depends(get_container_manager),
 ):
-    task = await task_repo.claim_next_task(worker_id)
+    task = await task_repo.claim_next_task(worker_id, execution_modes=request.execution_modes)
     if task:
         workstation = await container_manager.get_desktop_by_employee_id(
             task["employee_id"],

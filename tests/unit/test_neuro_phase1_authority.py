@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_db_session, require_owner_identity
 from neural.api.main import create_app
 from neural.boss.brain import BossBrain
-from neural.constants import EmployeeStatus, TaskStatus
+from neural.constants import EmployeeStatus, ExecutionMode, TaskStatus
 from neural.db.models import TaskAttempt
 from neural.db.repositories import (
     AuditRepository,
@@ -382,3 +382,32 @@ async def test_cancelling_task_fences_and_closes_active_worker_attempt(async_ses
     assert attempt.status == "cancelled"
     assert attempt.finished_at is not None
     assert await task_repo.heartbeat_task_attempt(task.task_id, "worker-active", 7) is None
+
+
+@pytest.mark.asyncio
+async def test_worker_claim_filters_execution_modes_before_leasing(async_session):
+    project = await ProjectRepository(async_session).create(name="Mode filtering", objective="Only claim supported work")
+    employee = await EmployeeRepository(async_session).create(
+        employee_id="ANC-EMP-MODE-TEST",
+        name="Mode Worker",
+        title="Backend Engineer",
+        system_prompt="test employee",
+        status=EmployeeStatus.WORKING,
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-TERMINAL-MODE",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Terminal task",
+        objective="Run terminal work",
+        scope="Execution",
+        acceptance_criteria="A supported-mode worker may claim this",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.ASSIGNED,
+    )
+
+    assert await task_repo.claim_next_task("worker-gui", execution_modes=[ExecutionMode.GUI]) is None
+    assert await task_repo.list_attempts_by_project(project.id) == []
+    persisted = await task_repo.get_by_task_id(task.task_id)
+    assert persisted.fencing_token == 0

@@ -125,17 +125,24 @@ class TaskRepository:
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def claim_next_task(self, worker_id: str, lease_seconds: int = 60) -> Optional[dict[str, Any]]:
+    async def claim_next_task(
+        self,
+        worker_id: str,
+        lease_seconds: int = 60,
+        execution_modes: Optional[Sequence[Any]] = None,
+    ) -> Optional[dict[str, Any]]:
         """Atomically lease one assigned task and issue its monotonic fencing token."""
         now = utc_now()
+        candidate_query = select(Task).where(
+            Task.assigned_to.is_not(None),
+            Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
+        )
+        if execution_modes is not None:
+            mode_values = [getattr(mode, "value", mode) for mode in execution_modes]
+            candidate_query = candidate_query.where(Task.execution_mode.in_(mode_values))
         candidates = (
             await self.session.execute(
-                select(Task)
-                .where(
-                    Task.assigned_to.is_not(None),
-                    Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
-                )
-                .order_by(Task.priority.asc(), Task.task_id.asc())
+                candidate_query.order_by(Task.priority.asc(), Task.task_id.asc())
                 .limit(64)
                 .with_for_update(skip_locked=True)
             )
