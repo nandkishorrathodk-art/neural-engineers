@@ -28,7 +28,7 @@ from neural.db.repositories import (
     ServiceHeartbeatRepository,
     TaskRepository,
 )
-from neural.exceptions import ContainerError
+from neural.exceptions import ClarificationRequiredError, ContainerError
 from neural.security.approval_gates import HumanApprovalGate
 from neural.security.kill_switch import get_kill_switch
 
@@ -87,17 +87,29 @@ async def submit_objective(
 ):
     if not payload.objective or not payload.objective.strip():
         raise HTTPException(status_code=400, detail="Objective cannot be empty")
+    if payload.budget_usd is not None:
+        raise HTTPException(
+            status_code=501,
+            detail="Project-level hard budget enforcement is not wired to durable multi-worker accounting yet.",
+        )
 
     employees_before = await employee_repo.list_all()
     existing_ids = {employee.employee_id for employee in employees_before}
     brain = BossBrain(project_repo=project_repo, task_repo=task_repo, employee_repo=employee_repo)
     # Strategic analysis, planning, project & tasks persistence, and task assignment
-    project, tasks = await brain.plan_and_create_project(
-        objective=payload.objective,
-        project_name=payload.project_name,
-        auto_assign_first_task=True,
-        auto_recruit_workforce=True,
-    )
+    try:
+        project, tasks = await brain.plan_and_create_project(
+            objective=payload.objective,
+            project_name=payload.project_name,
+            auto_assign_first_task=True,
+            auto_recruit_workforce=True,
+            deadline_days=payload.deadline_days,
+        )
+    except ClarificationRequiredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "clarification_required", "questions": exc.questions},
+        ) from exc
 
     employees_after = await employee_repo.list_all()
     recruited_ids = sorted(
@@ -115,6 +127,7 @@ async def submit_objective(
             "name": project.name,
             "objective": payload.objective,
             "tasks_count": len(tasks),
+            "deadline_days": payload.deadline_days,
             "plan_source": (project.execution_plan or {}).get("plan_source", "unknown"),
         }
     )

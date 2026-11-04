@@ -4,6 +4,17 @@
 
 **Environment:** Windows local workspace; Python 3.12.14; pytest 9.2; Next.js 15.5.26.
 
+## 2026-11-04 five-agent implementation batch
+
+- NEURO-1: vague objectives return clarification questions before hiring/persistence; objective deadlines persist to project plans and tasks; project budget requests fail closed until durable multi-worker accounting exists. Dispatch orders real priority then deadline and refreshes the employee/container relation before checking eligibility. Focused planning/authority/dispatch tests are part of the full run below.
+- NEURO-3: terminal worker releases and rejects GUI, hybrid, and authorized-tools tasks at start before workstation access. Focused mode guard: **3 passed**.
+- NEURO-6: semantic/procedural task memory is not trusted when verifier provenance names a different task. Focused memory suite: **10 passed**.
+- NEURO-11: telemetry returns `null`/unavailable instead of nominal CPU/RAM/disk/network values when samplers are missing, does not create directories during a GET, and does not fabricate active workstation counts. Dashboard displays only available measurements. Focused observability suite: **6 passed**; Next.js production build passed.
+- NEURO-12: readiness probes read the shared emergency-stop latch and fail closed when it is active or unreadable. Focused readiness tests: **3 passed**.
+- Combined current-worktree regression: `uv run --no-sync pytest -q` — **507 passed, 12 skipped, zero failed** (92.72 seconds). Repo Ruff: **all checks passed**. Skips include credential-dependent live broker and optional model/runtime cases; they are not runtime passes.
+- `npm run build` in `apps/dashboard` — **passed**. `git diff --check` — **passed**.
+- Source and test evidence only for these changes. No production deployment or live Docker task was run.
+
 ## 2026-11-04 runtime heartbeat observability
 
 - Command: `uv run --no-sync pytest tests/unit/test_boss_brain.py tests/unit/test_neuro_phase1_authority.py tests/unit/test_terminal_worker.py tests/unit/test_verifier_worker.py -q`

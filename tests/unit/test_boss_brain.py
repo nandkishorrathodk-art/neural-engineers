@@ -148,6 +148,39 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
 
 
 @pytest.mark.asyncio
+async def test_boss_planner_preserves_model_clarification_without_creating_tasks(monkeypatch):
+    import json
+
+    from neural.boss.planner import TaskPlanner
+    from neural.llm.gateway import LLMGateway
+
+    async def invoke(**_kwargs):
+        return {
+            "content": json.dumps({
+                "code_name": "Clarification",
+                "complexity": "low",
+                "requirements": [],
+                "clarification_required": True,
+                "clarifying_questions": ["Which system should be fixed, and what failure do you observe?"],
+                "technical_risks": [],
+                "mitigation_strategies": [],
+                "phases": [],
+            }),
+            "input_tokens": 20,
+            "output_tokens": 30,
+            "provider": "test",
+        }
+
+    gateway = LLMGateway(provider_invoker=invoke)
+    monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    plan = await TaskPlanner(llm_gateway=gateway).decompose_objective("Please fix the service")
+
+    assert plan["clarification_required"] is True
+    assert plan["phases"] == []
+    assert plan["clarifying_questions"] == ["Which system should be fixed, and what failure do you observe?"]
+
+
+@pytest.mark.asyncio
 async def test_boss_brain_plan_and_create_project(async_session):
     from neural.db.repositories import ProjectRepository, TaskRepository
     project_repo = ProjectRepository(async_session)

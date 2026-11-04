@@ -26,6 +26,14 @@ class HumanApprovalRequiredError(ANCOSError):
         super().__init__(f"Action '{action_type}' requires human approval: {details}")
 
 
+class ClarificationRequiredError(ANCOSError):
+    """Raised when an owner objective is too ambiguous to plan safely."""
+
+    def __init__(self, questions: list[str]):
+        self.questions = questions
+        super().__init__("Owner clarification is required before this objective can be planned.")
+
+
 class ContainerError(ANCOSError):
     """Raised when container management or VNC gateway encounters an error."""
     pass

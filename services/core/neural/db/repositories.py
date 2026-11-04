@@ -62,6 +62,17 @@ from neural.db.models import (
 from neural.exceptions import UnverifiedTaskError, VerificationFailedError
 
 
+def _task_dispatch_order() -> tuple[Any, ...]:
+    priority_rank = case(
+        (Task.priority == TaskPriority.CRITICAL, 0),
+        (Task.priority == TaskPriority.HIGH, 1),
+        (Task.priority == TaskPriority.MEDIUM, 2),
+        (Task.priority == TaskPriority.LOW, 3),
+        else_=4,
+    )
+    return priority_rank.asc(), Task.deadline.asc().nulls_last(), Task.task_id.asc()
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -145,7 +156,7 @@ class TaskRepository:
             candidate_query = candidate_query.where(Task.execution_mode.in_(mode_values))
         candidates = (
             await self.session.execute(
-                candidate_query.order_by(Task.priority.asc(), Task.task_id.asc())
+                candidate_query.order_by(*_task_dispatch_order())
                 .limit(64)
                 .with_for_update(skip_locked=True)
             )
@@ -205,7 +216,10 @@ class TaskRepository:
             if latest_attempt and latest_attempt.status == "waiting" and latest_attempt.lease_expires_at > now:
                 continue
             employee = await self.session.scalar(
-                select(Employee).options(selectinload(Employee.container)).where(
+                select(Employee)
+                .options(selectinload(Employee.container))
+                .execution_options(populate_existing=True)
+                .where(
                     Employee.id == task.assigned_to,
                 )
             )
@@ -306,7 +320,7 @@ class TaskRepository:
             ready_query = ready_query.where(Task.execution_mode.in_(mode_values))
         ready_tasks = (
             await self.session.execute(
-                ready_query.order_by(Task.priority.asc(), Task.task_id.asc())
+                ready_query.order_by(*_task_dispatch_order())
                 .limit(64)
                 .with_for_update(skip_locked=True)
             )

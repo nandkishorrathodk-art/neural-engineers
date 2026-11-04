@@ -51,6 +51,15 @@ async def test_planner_objective_analysis_and_complexity():
 
 
 @pytest.mark.asyncio
+async def test_rules_planner_requests_clarification_for_under_specified_objectives():
+    plan = await TaskPlanner().decompose_objective("fix it")
+
+    assert plan["clarification_required"] is True
+    assert plan["clarifying_questions"]
+    assert plan["phases"] == []
+
+
+@pytest.mark.asyncio
 async def test_planner_subtasks_and_hierarchy():
     planner = TaskPlanner()
     plan = await planner.decompose_objective("Implement resilient user service")

@@ -215,9 +215,13 @@ class SixTierMemoryStore:
         allowed_departments: Optional[list[str]] = None,
         allowed_projects: Optional[list[str]] = None,
     ) -> MemoryRecord:
+        expected_task_id = source.removeprefix("task:") if source.startswith("task:") else None
         is_v = bool(
             verified_by
-            and valid_independent_verification_receipt(verification_receipt)
+            and valid_independent_verification_receipt(
+                verification_receipt,
+                task_id=expected_task_id,
+            )
             and verification_receipt.get("verifier_id") == verified_by
         )
         record = MemoryRecord(
@@ -255,7 +259,10 @@ class SixTierMemoryStore:
     ) -> MemoryRecord:
         is_v = bool(
             verified_by
-            and valid_independent_verification_receipt(verification_receipt)
+            and valid_independent_verification_receipt(
+                verification_receipt,
+                task_id=task_id,
+            )
             and verification_receipt.get("verifier_id") == verified_by
         )
         record = MemoryRecord(

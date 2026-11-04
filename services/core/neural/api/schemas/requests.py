@@ -8,8 +8,8 @@ from pydantic import BaseModel, Field, field_validator
 class ObjectiveSubmissionRequest(BaseModel):
     objective: str = Field(..., description="High-level project objective from human owner")
     project_name: Optional[str] = Field(None, description="Optional name for the project")
-    budget_usd: Optional[float] = Field(None, description="Optional hard cap token/compute budget in USD")
-    deadline_days: Optional[int] = Field(None, description="Target timeline in days")
+    budget_usd: Optional[float] = Field(None, gt=0, le=1_000_000, description="Requested hard project budget in USD")
+    deadline_days: Optional[int] = Field(None, ge=1, le=3650, description="Target project deadline in days")
 
 
 class TaskRecoveryApprovalRequest(BaseModel):

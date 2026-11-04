@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 from neural.db.repositories import AuditRepository
 from neural.exceptions import AuditIntegrityError
@@ -20,12 +22,53 @@ def test_system_telemetry_collector_gauges():
     assert "timestamp" in telemetry
 
     # Value ranges
-    assert 0.0 <= telemetry["cpu"]["percent"] <= 100.0
+    if telemetry["cpu"]["available"]:
+        assert 0.0 <= telemetry["cpu"]["percent"] <= 100.0
+    else:
+        assert telemetry["cpu"]["percent"] is None
     assert telemetry["cpu"]["cores"] >= 1
-    assert telemetry["memory"]["total_mb"] > 0
-    assert 0.0 <= telemetry["memory"]["percent"] <= 100.0
-    assert telemetry["disk"]["total_gb"] > 0
-    assert telemetry["network"]["bytes_sent"] >= 0
+    if telemetry["memory"]["available"]:
+        assert telemetry["memory"]["total_mb"] > 0
+        assert 0.0 <= telemetry["memory"]["percent"] <= 100.0
+    else:
+        assert telemetry["memory"]["percent"] is None
+    if telemetry["disk"]["available"]:
+        assert telemetry["disk"]["total_gb"] > 0
+    else:
+        assert telemetry["disk"]["percent"] is None
+    if telemetry["network"]["available"]:
+        assert telemetry["network"]["bytes_sent"] >= 0
+    else:
+        assert telemetry["network"]["bytes_sent"] is None
+    assert telemetry["available"] is any(
+        telemetry[name]["available"] for name in ("cpu", "memory", "disk", "network")
+    )
+
+
+def test_system_telemetry_reports_unknown_instead_of_nominal_fallbacks(monkeypatch: pytest.MonkeyPatch):
+    """Unsupported hosts and missing counters must not look like measured health."""
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    cpu = SystemTelemetryCollector.get_cpu_info()
+    memory = SystemTelemetryCollector.get_memory_info()
+    disk = SystemTelemetryCollector.get_disk_info("/path/that/does/not/exist")
+    network = SystemTelemetryCollector.get_network_info()
+
+    assert cpu["available"] is False and cpu["percent"] is None
+    assert memory["available"] is False and memory["percent"] is None
+    assert disk["available"] is False and disk["percent"] is None
+    assert network["available"] is False and network["bytes_recv"] is None
+
+    monkeypatch.setattr(SystemTelemetryCollector, "get_cpu_info", classmethod(lambda cls: cpu))
+    monkeypatch.setattr(SystemTelemetryCollector, "get_memory_info", classmethod(lambda cls: memory))
+    monkeypatch.setattr(SystemTelemetryCollector, "get_disk_info", classmethod(lambda cls: disk))
+    monkeypatch.setattr(SystemTelemetryCollector, "get_network_info", classmethod(lambda cls: network))
+    telemetry = SystemTelemetryCollector.collect_all_telemetry()
+
+    assert telemetry["available"] is False
+    assert telemetry["workstations"]["active"] is None
+    assert telemetry["workstations"]["available"] is False
 
 
 @pytest.mark.asyncio

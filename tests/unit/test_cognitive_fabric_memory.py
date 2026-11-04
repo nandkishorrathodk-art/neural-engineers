@@ -236,11 +236,44 @@ async def test_six_tier_store_query_and_filtering():
     v_res = store.query_records(verified_only=True, requester_id="BossAI")
     assert len(v_res) == 1
     assert "FastAPI Routing" in v_res[0].content
-
     # Query by keyword
     kw_res = store.query_records(query="APIRouter", requester_id="BossAI")
     assert len(kw_res) == 1
     assert "FastAPI Routing" in kw_res[0].content
+
+
+@pytest.mark.asyncio
+async def test_task_scoped_semantic_memory_rejects_receipt_for_another_task():
+    store = SixTierMemoryStore()
+
+    record = await store.store_semantic(
+        concept="Task result",
+        explanation="A verified result for task TASK-A.",
+        source="task:TASK-A",
+        verified_by="independent-verifier",
+        verification_receipt=_verification_receipt("TASK-B"),
+    )
+
+    assert not record.is_verified
+    assert record.provenance["independent_verification_receipt"] is None
+    assert store.query_trusted_records(requester_id="BossAI") == []
+
+
+@pytest.mark.asyncio
+async def test_procedure_task_id_must_match_independent_receipt():
+    store = SixTierMemoryStore()
+
+    record = await store.store_procedural(
+        procedure_name="task procedure",
+        steps=[{"step": 1, "action": "verify"}],
+        verified_by="independent-verifier",
+        task_id="TASK-A",
+        verification_receipt=_verification_receipt("TASK-B"),
+    )
+
+    assert not record.is_verified
+    assert record.provenance["independent_verification_receipt"] is None
+    assert store.query_trusted_records(requester_id="BossAI") == []
 
 
 @pytest.mark.asyncio

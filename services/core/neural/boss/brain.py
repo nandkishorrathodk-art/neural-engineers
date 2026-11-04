@@ -1,5 +1,5 @@
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from neural.boss.delegator import TaskDelegator
@@ -107,7 +107,7 @@ class BossBrain:
         return self.scheduler
 
     async def analyze_and_plan(self, objective: str) -> dict[str, Any]:
-        from neural.exceptions import EmergencyStopTriggered
+        from neural.exceptions import ClarificationRequiredError, EmergencyStopTriggered
         from neural.security.kill_switch import get_kill_switch
 
         get_kill_switch().guard_active()
@@ -116,6 +116,11 @@ class BossBrain:
 
         logger.info("Boss AI analyzing incoming objective", objective=objective)
         plan = await self.planner.decompose_objective(objective)
+        if plan.get("clarification_required") is True:
+            questions = plan.get("clarifying_questions")
+            if not isinstance(questions, list) or not questions:
+                raise ValueError("Boss plan requested clarification without any specific questions.")
+            raise ClarificationRequiredError([str(question) for question in questions[:3]])
         logger.info("Decomposition complete", phases_count=len(plan.get("phases", [])))
         return plan
 
@@ -127,7 +132,8 @@ class BossBrain:
         employee_repo: Optional[EmployeeRepository] = None,
         project_name: Optional[str] = None,
         auto_assign_first_task: bool = True,
-        auto_recruit_workforce: bool = False
+        auto_recruit_workforce: bool = False,
+        deadline_days: Optional[int] = None,
     ) -> tuple[Project, list[Task]]:
         """
         Analyzes objective, produces structured execution plan,
@@ -142,6 +148,16 @@ class BossBrain:
             raise ValueError("ProjectRepository is required to persist project")
 
         plan = await self.analyze_and_plan(objective)
+        project_deadline: Optional[datetime] = None
+        if deadline_days is not None:
+            if deadline_days < 1 or deadline_days > 3650:
+                raise ValueError("deadline_days must be between 1 and 3650")
+            project_deadline = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=deadline_days)
+            plan["owner_constraints"] = {
+                **_json_object(plan.get("owner_constraints")),
+                "deadline_days": deadline_days,
+                "deadline_at": project_deadline.isoformat(),
+            }
         name = project_name or f"Project-{plan.get('code_name', 'Alpha')}"
 
         project = await p_repo.create(
@@ -176,7 +192,8 @@ class BossBrain:
                         required_capabilities=task_info.get("skills_required", []),
                         priority=priority,
                         status=TaskStatus.PENDING,
-                        resource_budget=task_info.get("resource_budget", {"estimated_hours": 4, "max_tokens": 50000})
+                        resource_budget=task_info.get("resource_budget", {"estimated_hours": 4, "max_tokens": 50000}),
+                        deadline=project_deadline,
                     )
                     created_tasks.append(task)
                     phase_to_task_ids[phase_id].append(task.task_id)

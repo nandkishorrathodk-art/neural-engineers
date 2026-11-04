@@ -32,10 +32,12 @@ class PlannedPhase(BaseModel):
 class ObjectivePlan(BaseModel):
     code_name: str = Field(min_length=1, max_length=60)
     complexity: Literal["low", "medium", "high"]
-    requirements: list[str] = Field(min_length=1, max_length=30)
+    requirements: list[str] = Field(default_factory=list, max_length=30)
+    clarification_required: bool = False
+    clarifying_questions: list[str] = Field(default_factory=list, max_length=8)
     technical_risks: list[str] = Field(default_factory=list, max_length=20)
     mitigation_strategies: list[str] = Field(default_factory=list, max_length=20)
-    phases: list[PlannedPhase] = Field(min_length=1, max_length=12)
+    phases: list[PlannedPhase] = Field(default_factory=list, max_length=12)
 
 
 class TaskPlanner:
@@ -63,6 +65,10 @@ class TaskPlanner:
         plan, response = await self.llm_gateway.generate_structured(
             prompt=(
                 "Create a practical software project plan for this human objective. "
+                "First decide whether an essential outcome, target, or constraint is missing. "
+                "If missing information would materially change the plan, set clarification_required=true, "
+                "ask up to three short, specific clarifying_questions, and leave phases empty. "
+                "Do not invent the owner's intent. Otherwise set clarification_required=false and plan normally. "
                 "Use 2-6 phases and concrete tasks an engineering team can deliver. "
                 "Every task needs measurable acceptance criteria and required skills. "
                 "Every task must declare its execution_mode as one of gui, terminal, hybrid, or authorized_tools. "
@@ -76,6 +82,31 @@ class TaskPlanner:
             temperature=0.1,
             max_tokens=3500,
         )
+
+        if plan.clarification_required:
+            questions = [question.strip() for question in plan.clarifying_questions if question.strip()]
+            if not questions:
+                raise ModelProviderError(
+                    "Boss plan rejected: clarification was requested without a clarifying question."
+                )
+            return {
+                "code_name": plan.code_name,
+                "complexity": plan.complexity,
+                "requirements": plan.requirements,
+                "risk_analysis": {
+                    "technical_risks": plan.technical_risks,
+                    "mitigation_strategies": plan.mitigation_strategies,
+                },
+                "clarification_required": True,
+                "clarifying_questions": questions[:3],
+                "plan_source": "llm",
+                "planning_model": response.model,
+                "phases": [],
+            }
+        if not plan.requirements:
+            raise ModelProviderError("Boss plan rejected: no project requirements were extracted.")
+        if not plan.phases:
+            raise ModelProviderError("Boss plan rejected: no executable phases were planned.")
 
         raw_ids = [task.task_id for phase in plan.phases for task in phase.tasks]
         if len(raw_ids) != len(set(raw_ids)):
@@ -224,6 +255,32 @@ class TaskPlanner:
         if objective and objective.strip() and self.llm_gateway and self._has_configured_provider(self.llm_gateway):
             return await self._decompose_with_model(objective.strip())
 
+        normalized = " ".join(re.findall(r"[a-z0-9]+", objective.lower())) if objective else ""
+        words = normalized.split()
+        vague_objectives = {
+            "do it",
+            "fix it",
+            "fix this",
+            "make it better",
+            "improve it",
+            "build something",
+            "create something",
+            "make something",
+        }
+        if normalized and (normalized in vague_objectives or len(words) < 3):
+            return {
+                "code_name": "Clarification",
+                "complexity": "low",
+                "requirements": [],
+                "risk_analysis": self.assess_risks(objective),
+                "clarification_required": True,
+                "clarifying_questions": [
+                    "What specific outcome should ANCOS deliver, and what would count as success?"
+                ],
+                "plan_source": "rules_fallback",
+                "phases": [],
+            }
+
         words = re.findall(r"\b[A-Za-z0-9]+\b", objective) if objective else []
         code_name = words[0].capitalize() if words else "Omega"
         complexity = self.score_complexity(objective)
@@ -235,6 +292,8 @@ class TaskPlanner:
             "complexity": complexity,
             "requirements": requirements,
             "risk_analysis": risk_analysis,
+            "clarification_required": False,
+            "clarifying_questions": [],
             "plan_source": "rules_fallback",
             "phases": [
                 {

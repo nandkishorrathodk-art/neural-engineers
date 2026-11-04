@@ -94,6 +94,17 @@ async def start_task_attempt(
     if not await task_repo.worker_claim_is_current(task_id, worker_id, request.fencing_token):
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     task = await task_repo.get_by_task_id(task_id)
+    if task and task.execution_mode != ExecutionMode.TERMINAL:
+        await task_repo.release_task_claim(
+            task_id,
+            worker_id,
+            request.fencing_token,
+            f"Terminal worker cannot execute {task.execution_mode.value}-mode tasks.",
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"Terminal worker cannot execute {task.execution_mode.value}-mode tasks.",
+        )
     employee = await employee_repo.get_by_employee_id(task.assigned_to) if task and task.assigned_to else None
     workstation = (
         await container_manager.get_desktop_by_employee_id(

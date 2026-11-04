@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,32 +24,17 @@ class SystemTelemetryCollector:
     def get_cpu_info(cls) -> dict[str, Any]:
         """Gathers CPU core count and current system utilization estimate."""
         cores = os.cpu_count() or 4
-        percent = 12.5  # Baseline default
-
         # Try psutil if installed
         try:
             import psutil  # type: ignore
             percent = float(psutil.cpu_percent(interval=0.05))
-            return {"percent": round(percent, 1), "cores": cores}
+            return {"percent": round(percent, 1), "cores": cores, "available": True}
         except ImportError:
             pass
 
-        # Cross-platform fallback calculation
-        if sys.platform.startswith("linux"):
-            try:
-                with open("/proc/stat", "r") as f:
-                    line = f.readline()
-                parts = [float(x) for x in line.split()[1:5]]
-                idle = parts[3]
-                total = sum(parts)
-                percent = (1.0 - (idle / (total if total > 0 else 1.0))) * 100.0
-            except Exception:
-                percent = 15.0
-        elif sys.platform == "win32":
-            # On Windows, provide realistic sampled load based on process ticks
-            percent = 14.2
-
-        return {"percent": round(max(1.0, min(99.0, percent)), 1), "cores": cores}
+        # A single /proc/stat sample is cumulative since boot, not current load.
+        # Report unknown until a real sampler is available instead of guessing.
+        return {"percent": None, "cores": cores, "available": False}
 
     @classmethod
     def get_memory_info(cls) -> dict[str, Any]:
@@ -62,6 +46,7 @@ class SystemTelemetryCollector:
                 "total_mb": round(vm.total / (1024 * 1024), 1),
                 "used_mb": round(vm.used / (1024 * 1024), 1),
                 "percent": round(vm.percent, 1),
+                "available": True,
             }
         except ImportError:
             pass
@@ -76,23 +61,27 @@ class SystemTelemetryCollector:
                         if len(parts) == 2:
                             val = parts[1].strip().split()[0]
                             mem[parts[0].strip()] = float(val)
-                total_kb = mem.get("MemTotal", 16 * 1024 * 1024)
-                free_kb = mem.get("MemAvailable", mem.get("MemFree", 8 * 1024 * 1024))
+                total_kb = mem.get("MemTotal")
+                free_kb = mem.get("MemAvailable", mem.get("MemFree"))
+                if not total_kb or free_kb is None or free_kb < 0 or free_kb > total_kb:
+                    raise ValueError("Memory counters are incomplete or invalid")
                 used_kb = total_kb - free_kb
                 pct = (used_kb / total_kb) * 100.0
                 return {
                     "total_mb": round(total_kb / 1024, 1),
                     "used_mb": round(used_kb / 1024, 1),
                     "percent": round(pct, 1),
+                    "available": True,
                 }
             except Exception:
                 pass
 
-        # Safe nominal fallback (16 GB total, 8 GB used, 50%)
+        # Unknown is safer than presenting nominal capacity as measured usage.
         return {
-            "total_mb": 16384.0,
-            "used_mb": 8192.0,
-            "percent": 50.0,
+            "total_mb": None,
+            "used_mb": None,
+            "percent": None,
+            "available": False,
         }
 
     @classmethod
@@ -100,8 +89,6 @@ class SystemTelemetryCollector:
         """Calculates storage capacity and utilization for target partition."""
         settings = get_settings()
         path = target_path or os.path.abspath(settings.EMPLOYEE_WORKSPACE_BASE)
-        os.makedirs(path, exist_ok=True)
-
         try:
             total, used, free = shutil.disk_usage(path)
             pct = (used / total) * 100.0 if total > 0 else 0.0
@@ -111,15 +98,17 @@ class SystemTelemetryCollector:
                 "free_gb": round(free / (1024 * 1024 * 1024), 1),
                 "percent": round(pct, 1),
                 "path": path,
+                "available": True,
             }
         except Exception as e:
             logger.warning("Failed to inspect disk usage", path=path, error=str(e))
             return {
-                "total_gb": 512.0,
-                "used_gb": 128.0,
-                "free_gb": 384.0,
-                "percent": 25.0,
+                "total_gb": None,
+                "used_gb": None,
+                "free_gb": None,
+                "percent": None,
                 "path": path,
+                "available": False,
             }
 
     @classmethod
@@ -133,17 +122,17 @@ class SystemTelemetryCollector:
                 "bytes_recv": net.bytes_recv,
                 "packets_sent": net.packets_sent,
                 "packets_recv": net.packets_recv,
+                "available": True,
             }
         except ImportError:
             pass
 
-        # Deterministic tick-based counter fallback
-        t = int(time.time())
         return {
-            "bytes_sent": 1048576 + (t % 10000) * 1024,
-            "bytes_recv": 2097152 + (t % 10000) * 2048,
-            "packets_sent": 1200 + (t % 100),
-            "packets_recv": 2400 + (t % 200),
+            "bytes_sent": None,
+            "bytes_recv": None,
+            "packets_sent": None,
+            "packets_recv": None,
+            "available": False,
         }
 
     @classmethod
@@ -157,14 +146,19 @@ class SystemTelemetryCollector:
         disk = cls.get_disk_info()
         net = cls.get_network_info()
 
+        metrics = (cpu, mem, disk, net)
+        available = any(bool(metric.get("available")) for metric in metrics)
         return {
             "cpu": cpu,
             "memory": mem,
             "disk": disk,
             "network": net,
+            "available": available,
             "workstations": {
-                "active": 2,
+                # The process-local collector cannot know broker-backed sessions.
+                "active": None,
                 "max": settings.MAX_CONCURRENT_EMPLOYEES,
+                "available": False,
             },
             "kill_switch": {
                 "active": kill_switch.is_halted,

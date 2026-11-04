@@ -251,6 +251,77 @@ async def test_worker_claim_reserves_idle_employee_and_prevents_overlapping_task
 
 
 @pytest.mark.asyncio
+async def test_worker_claim_orders_by_real_priority_then_earliest_deadline(async_session):
+    employee_repo = EmployeeRepository(async_session)
+    project = await ProjectRepository(async_session).create(
+        name="Deadline dispatch",
+        objective="Dispatch critical and deadline-sensitive work first",
+    )
+    task_repo = TaskRepository(async_session)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    task_specs = [
+        ("TASK-A-LOW", TaskPriority.LOW, now + timedelta(hours=1)),
+        ("TASK-B-HIGH-LATE", TaskPriority.HIGH, now + timedelta(days=3)),
+        ("TASK-C-CRITICAL", TaskPriority.CRITICAL, now + timedelta(days=20)),
+        ("TASK-D-HIGH-SOON", TaskPriority.HIGH, now + timedelta(days=1)),
+    ]
+    for index, (task_id, priority, deadline) in enumerate(task_specs):
+        employee = await employee_repo.create(
+            employee_id=f"ANC-EMP-DISPATCH-{index}",
+            name=f"Dispatch Employee {index}",
+            title="Software Engineer",
+            system_prompt="Task dispatch priority fixture",
+            status=EmployeeStatus.IDLE,
+        )
+        container = await ContainerRepository(async_session).create(
+            docker_id=f"ancos-desktop-anc-emp-dispatch-{index}",
+            image="ancos/employee-base:latest",
+            status=ContainerStatus.RUNNING,
+            resource_limits={},
+            network_config={},
+            workspace_path=f"/tmp/dispatch-{index}",
+        )
+        await employee_repo.assign_container(employee.employee_id, container.id)
+        await task_repo.create(
+            task_id=task_id,
+            project_id=project.id,
+            assigned_to=employee.id,
+            title=task_id,
+            objective="Run the assigned task",
+            scope="Priority validation",
+            acceptance_criteria="Independent verification passes",
+            execution_mode=ExecutionMode.TERMINAL,
+            priority=priority,
+            deadline=deadline,
+            status=TaskStatus.ASSIGNED,
+        )
+
+    claimed_ids = []
+    for number in range(len(task_specs)):
+        claim = await task_repo.claim_next_task(f"worker-priority-{number}")
+        if claim is None:
+            containers = ContainerRepository(async_session)
+            container_statuses = [
+                (employee.employee_id, (await containers.get_by_id(employee.container_id)).status)
+                for employee in await employee_repo.list_all()
+            ]
+            pytest.fail(
+                f"no claim at {number}; claimed={claimed_ids}; "
+                f"tasks={[(t.task_id, t.priority, t.deadline, t.status) for t in await task_repo.list_by_project(project.id)]}; "
+                f"employees={[(e.employee_id, e.status) for e in await employee_repo.list_all()]}; "
+                f"containers={container_statuses}"
+            )
+        claimed_ids.append(claim["task_id"])
+
+    assert claimed_ids == [
+        "TASK-C-CRITICAL",
+        "TASK-D-HIGH-SOON",
+        "TASK-B-HIGH-LATE",
+        "TASK-A-LOW",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_worker_claim_dispatches_next_dag_task_only_after_verified_prerequisite(async_session):
     employee_repo = EmployeeRepository(async_session)
     employee = await employee_repo.create(
@@ -660,6 +731,7 @@ async def test_production_objective_is_owner_authenticated_and_audited(
     worker_token = "worker-token-" + "w" * 40
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("OWNER_API_TOKEN", owner_token)
+    monkeypatch.setenv("BOSS_LLM_PLANNING_ENABLED", "false")
     monkeypatch.setenv("WORKER_API_TOKEN", worker_token)
     monkeypatch.setenv("VERIFIER_API_TOKEN", "verifier-token-" + "v" * 40)
     monkeypatch.setenv("APPROVER_API_TOKEN", "approver-token-" + "a" * 40)
@@ -672,7 +744,7 @@ async def test_production_objective_is_owner_authenticated_and_audited(
     app.dependency_overrides[get_db_session] = override_get_db_session
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        payload = {"objective": "Create an evidence-backed API service"}
+        payload = {"objective": "Create an evidence-backed API service", "deadline_days": 3}
         assert (await client.post("/boss/objective", json=payload)).status_code == 401
         assert (
             await client.post(
@@ -681,6 +753,28 @@ async def test_production_objective_is_owner_authenticated_and_audited(
                 headers={"Authorization": f"Bearer {worker_token}"},
             )
         ).status_code == 401
+
+        clarification = await client.post(
+            "/boss/objective",
+            json={"objective": "fix it"},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert clarification.status_code == 409
+        assert clarification.json()["detail"]["code"] == "clarification_required"
+        assert clarification.json()["detail"]["questions"]
+        assert await ProjectRepository(async_session).list_all() == []
+        assert await EmployeeRepository(async_session).list_all() == []
+        assert await AuditRepository(async_session).list_all() == []
+
+        budget_request = await client.post(
+            "/boss/objective",
+            json={"objective": "Create a cost-bounded API service", "budget_usd": 10},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert budget_request.status_code == 501
+        assert await ProjectRepository(async_session).list_all() == []
+        assert await EmployeeRepository(async_session).list_all() == []
+        assert await AuditRepository(async_session).list_all() == []
 
         accepted = await client.post(
             "/boss/objective",
@@ -700,6 +794,12 @@ async def test_production_objective_is_owner_authenticated_and_audited(
         assert report["task_counts"]["verified"] == 0
         assert report["task_counts"]["completed_without_verification"] == 0
         assert report["task_counts"]["assigned"] >= 1
+        project = await ProjectRepository(async_session).get_by_id(project_id)
+        assert project is not None
+        assert project.execution_plan["owner_constraints"]["deadline_days"] == 3
+        persisted_tasks = await TaskRepository(async_session).list_by_project(project_id)
+        assert persisted_tasks
+        assert all(task.deadline is not None for task in persisted_tasks)
 
     audit_records = await AuditRepository(async_session).list_all()
     owner_events = [record for record in audit_records if record.action == "SUBMIT_OBJECTIVE"]
