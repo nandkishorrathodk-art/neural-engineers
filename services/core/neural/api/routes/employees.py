@@ -11,10 +11,12 @@ from neural.api.deps import (
     get_task_repo,
     require_owner_identity,
 )
+from neural.api.schemas.requests import AssignDeskRequest
 from neural.api.schemas.responses import (
     EmployeeResponse,
     TaskResponse,
     VncCredentialResponse,
+    WorkstationAssignmentResponse,
     WorkstationResponse,
 )
 from neural.containers.manager import ContainerManager, DockerBrokerRequestError
@@ -31,6 +33,8 @@ from neural.resource_scheduler.workstation_lease import (
     release_workstation_lease,
     renew_workstation_lease,
 )
+from neural.workstations.assignment import WorkstationAssignmentService
+from neural.workstations.layout import CANONICAL_WORKSTATIONS
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
@@ -50,7 +54,8 @@ def serialize_employee_model(emp, desktop_url: Optional[str] = None) -> Employee
         skills=skills_data,
         hired_at=emp.hired_at,
         container_id=emp.container_id,
-        desktop_url=desktop_url
+        desktop_url=desktop_url,
+        desk_id=getattr(emp, "desk_id", None),
     )
 
 
@@ -81,6 +86,54 @@ async def create_employee():
         status_code=405,
         detail="Employees can only be created by Boss staffing decisions for an owner-submitted objective.",
     )
+
+
+@router.get("/workstations/assignments", response_model=list[WorkstationAssignmentResponse])
+async def list_workstation_assignments(
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+):
+    employees = await employee_repo.list_all()
+    occupied_map = {emp.desk_id: emp for emp in employees if getattr(emp, "desk_id", None)}
+
+    assignments: list[WorkstationAssignmentResponse] = []
+    seen_desk_ids: set[str] = set()
+
+    for ws in CANONICAL_WORKSTATIONS:
+        desk_id = ws["id"]
+        seen_desk_ids.add(desk_id)
+        emp = occupied_map.get(desk_id)
+        assignments.append(
+            WorkstationAssignmentResponse(
+                id=desk_id,
+                name=ws["name"],
+                department=ws["department"],
+                role=ws["role"],
+                desk_type=ws.get("desk_type", "single"),
+                monitor_count=ws.get("monitor_count", 2),
+                occupant_id=emp.employee_id if emp else None,
+                occupant_name=emp.name if emp else None,
+                occupant_status=emp.status.value if emp and hasattr(emp.status, "value") else (str(emp.status) if emp else None),
+            )
+        )
+
+    # Include any overflow desks currently occupied
+    for desk_id, emp in occupied_map.items():
+        if desk_id not in seen_desk_ids:
+            assignments.append(
+                WorkstationAssignmentResponse(
+                    id=desk_id,
+                    name=f"Overflow Desk ({desk_id})",
+                    department=emp.department,
+                    role="overflow",
+                    desk_type="single",
+                    monitor_count=1,
+                    occupant_id=emp.employee_id,
+                    occupant_name=emp.name,
+                    occupant_status=emp.status.value if hasattr(emp.status, "value") else str(emp.status),
+                )
+            )
+
+    return assignments
 
 
 @router.get("/{employee_id}", response_model=EmployeeResponse)
@@ -150,7 +203,8 @@ async def get_employee_workstation(
         mem_limit=desktop_spec["mem_limit"],
         status=desktop_spec["status"],
         workspace=desktop_spec["workspace"],
-        started_at=desktop_spec.get("started_at")
+        started_at=desktop_spec.get("started_at"),
+        desk_id=employee.desk_id,
     )
 
 
@@ -381,5 +435,56 @@ async def get_employee_tasks(
         )
         for t in tasks
     ]
+
+
+@router.put("/{employee_id}/desk", response_model=EmployeeResponse)
+async def assign_employee_desk(
+    employee_id: str,
+    payload: AssignDeskRequest,
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_mgr: ContainerManager = Depends(get_container_manager),
+):
+    if not WorkstationAssignmentService.is_valid_desk_id(payload.desk_id):
+        raise HTTPException(status_code=400, detail=f"Invalid desk identifier '{payload.desk_id}'")
+
+    try:
+        updated = await employee_repo.assign_desk(employee_id, payload.desk_id)
+    except ValueError as e:
+        msg = str(e)
+        if "already assigned" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+
+    desktop_spec = await container_mgr.get_desktop_by_employee_id(
+        updated.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    desktop_url = desktop_spec.get("desktop_url") if desktop_spec else None
+    return serialize_employee_model(updated, desktop_url=desktop_url)
+
+
+@router.delete("/{employee_id}/desk", response_model=EmployeeResponse)
+async def release_employee_desk(
+    employee_id: str,
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_mgr: ContainerManager = Depends(get_container_manager),
+):
+    try:
+        updated = await employee_repo.release_desk(employee_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    desktop_spec = await container_mgr.get_desktop_by_employee_id(
+        updated.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    desktop_url = desktop_spec.get("desktop_url") if desktop_spec else None
+    return serialize_employee_model(updated, desktop_url=desktop_url)
 
 

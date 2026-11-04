@@ -221,7 +221,23 @@ async def test_graph_rag_evidence_grounded_query():
     hybrid.index_document(
         "doc-postmortem-404",
         "During OAuth2 implementation in Project Alpha, unencrypted tokens were logged in debug output.",
-        metadata={"is_verified": True, "source": "security_postmortem_404", "access_level": "public"},
+        metadata={
+            "verification_status": "verified",
+            "verified_at": "2026-11-04T12:00:00",
+            "source": "security_postmortem_404",
+            "access_level": "public",
+            "metadata": {"task_id": "TASK-SECURITY-404"},
+            "provenance": {
+                "verified_by": "security-verifier",
+                "independent_verification_receipt": {
+                    "passed": True,
+                    "task_id": "TASK-SECURITY-404",
+                    "attempt_id": "attempt-security-404",
+                    "verifier_id": "security-verifier",
+                    "evidence_refs": ["test:security-postmortem"],
+                },
+            },
+        },
     )
 
     graph_rag = GraphRAGEngine(kg=kg, hybrid_retriever=hybrid)

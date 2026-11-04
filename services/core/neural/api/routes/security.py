@@ -4,7 +4,12 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from neural.api.deps import get_db_session, require_approver_identity, require_owner_identity
-from neural.db.repositories import ApprovalRepository, AuditRepository, TaskRepository
+from neural.db.repositories import (
+    ApprovalRepository,
+    AuditRepository,
+    EmergencyStopRepository,
+    TaskRepository,
+)
 from neural.security.approval_gates import HumanApprovalGate
 from neural.security.kill_switch import get_kill_switch
 from pydantic import BaseModel, Field
@@ -34,14 +39,23 @@ class ApprovalRequestPayload(BaseModel):
 
 
 @router.get("/status")
-async def get_security_status() -> dict[str, Any]:
+async def get_security_status(
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
     """Retrieves current Zero-Trust security and emergency kill switch status."""
     kill_switch = get_kill_switch()
+    try:
+        state = await EmergencyStopRepository(session).get_state()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Emergency-stop state is unavailable; system safety status cannot be confirmed.",
+        ) from exc
     return {
-        "kill_switch_active": kill_switch.is_halted,
-        "halt_reason": kill_switch.halt_reason,
-        "halted_by": kill_switch.halted_by,
-        "halt_timestamp": kill_switch.halt_timestamp.isoformat() if kill_switch.halt_timestamp else None,
+        "kill_switch_active": state["active"],
+        "halt_reason": state["reason"],
+        "halted_by": state["changed_by"],
+        "halt_timestamp": state["changed_at"].isoformat() if state["changed_at"] else None,
         "halt_latency_ms": kill_switch.halt_latency_ms,
         "seccomp_profile": "SCMP_ACT_ERRNO",
         "apparmor_profile": "ancos-workstation",
@@ -63,11 +77,19 @@ async def trigger_emergency_stop(
     """
     kill_switch = get_kill_switch()
     audit_repo = AuditRepository(session)
-    receipt = await kill_switch.emergency_halt(
-        reason=body.reason,
-        actor=actor,
-        audit_repo=audit_repo,
-    )
+    state_repo = EmergencyStopRepository(session)
+    try:
+        receipt = await kill_switch.emergency_halt(
+            reason=body.reason,
+            actor=actor,
+            audit_repo=audit_repo,
+            state_repo=state_repo,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Emergency-stop state could not be persisted; system halt was not confirmed.",
+        ) from exc
     return receipt
 
 
@@ -84,13 +106,21 @@ async def resume_system(
     kill_switch = get_kill_switch()
     task_repo = TaskRepository(session)
     audit_repo = AuditRepository(session)
-    receipt = await kill_switch.resume(
-        actor=actor,
-        recovery_strategy=body.recovery_strategy,
-        auth_token=None,
-        task_repo=task_repo,
-        audit_repo=audit_repo,
-    )
+    state_repo = EmergencyStopRepository(session)
+    try:
+        receipt = await kill_switch.resume(
+            actor=actor,
+            recovery_strategy=body.recovery_strategy,
+            auth_token=None,
+            task_repo=task_repo,
+            audit_repo=audit_repo,
+            state_repo=state_repo,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Emergency-stop state could not be persisted; system remains halted.",
+        ) from exc
     return receipt
 
 

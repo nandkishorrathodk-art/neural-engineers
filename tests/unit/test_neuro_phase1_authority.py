@@ -13,6 +13,9 @@ from neural.api.schemas.requests import (
     WorkerCommandRequest,
 )
 from neural.boss.brain import BossBrain
+from neural.cognitive_fabric.memory.models import MemoryLayer
+from neural.cognitive_fabric.memory.six_tier_store import SixTierMemoryStore
+from neural.cognitive_fabric.retrieval.hybrid_retrieval import HybridRetrievalEngine
 from neural.constants import (
     ContainerStatus,
     EmployeeStatus,
@@ -26,11 +29,157 @@ from neural.db.repositories import (
     AuditRepository,
     ContainerRepository,
     EmployeeRepository,
+    MemoryRepository,
     PerformanceRepository,
     ProjectRepository,
     TaskRepository,
 )
 from neural.employees.factory import EmployeeFactory
+
+
+@pytest.mark.asyncio
+async def test_verified_task_review_persists_idempotent_memory_for_restart_retrieval(async_session):
+    employee = await EmployeeRepository(async_session).create(
+        employee_id="ANC-EMP-MEMORY-LIFECYCLE",
+        name="Memory Lifecycle Validation",
+        title="Software Engineer",
+        system_prompt="Memory lifecycle test employee.",
+    )
+    project = await ProjectRepository(async_session).create(
+        name="Verified memory lifecycle",
+        objective="Promote verified outcomes into persistent organizational memory",
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-MEMORY-LIFECYCLE",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Persist a verified task result",
+        objective="Create a memory only after an independent passing receipt",
+        scope="Memory integration",
+        acceptance_criteria="A passing verifier receipt is persisted and retrievable after store recreation",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        fencing_token=9,
+    )
+    attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="memory-lifecycle-worker",
+        fencing_token=9,
+        status="submitted",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=1),
+        execution_receipt={"summary": "Added durable verifier-bound memory promotion."},
+    )
+    async_session.add(attempt)
+    await async_session.flush()
+    attempt_id = attempt.id
+    await async_session.commit()
+    persisted_task = await task_repo.get_by_task_id("TASK-MEMORY-LIFECYCLE")
+    assert persisted_task is not None and persisted_task.status == TaskStatus.RUNNING
+    persisted_attempt = await async_session.get(TaskAttempt, attempt_id)
+    assert persisted_attempt is not None and persisted_attempt.status == "submitted"
+    assert persisted_task.fencing_token == persisted_attempt.fencing_token == 9
+
+    accepted = await task_repo.review_task_attempt(
+        task.task_id,
+        attempt_id,
+        "independent-memory-verifier",
+        {
+            "passed": True,
+            "verifier_id": "employee-supplied-forgery",
+            "attempt_id": "forged-attempt",
+            "task_id": "forged-task",
+            "notes": "The independently replayed task result is correct and reusable.",
+            "evidence_refs": ["verifier:memory-lifecycle:tests", "workspace-delta:sha256:abc123"],
+            "checks": [{"name": "independent tests", "passed": True}],
+            "test_summary": {"passed": 3},
+        },
+    )
+    assert accepted is not None and accepted["task_status"] == TaskStatus.COMPLETED.value
+
+    memory_repo = MemoryRepository(async_session)
+    entries = await memory_repo.list_entries(source=f"task-attempt:{attempt_id}")
+    assert len(entries) == 1
+    persisted_receipt = entries[0].metadata_json["provenance"]["independent_verification_receipt"]
+    assert persisted_receipt["verifier_id"] == "independent-memory-verifier"
+    assert persisted_receipt["attempt_id"] == attempt_id
+    assert persisted_receipt["task_id"] == task.task_id
+
+    # The accepted transition is one-shot; replaying the review cannot duplicate memory.
+    assert await task_repo.review_task_attempt(
+        task.task_id,
+        attempt_id,
+        "independent-memory-verifier",
+        {"passed": True, "notes": "duplicate", "evidence_refs": ["duplicate"], "checks": [], "test_summary": {}},
+    ) is None
+    assert len(await memory_repo.list_entries(source=f"task-attempt:{attempt_id}")) == 1
+
+    # Recreate the store to model process restart, then ensure trusted retrieval indexes it.
+    restarted_store = SixTierMemoryStore(memory_repo=memory_repo)
+    retriever = HybridRetrievalEngine(memory_store=restarted_store)
+    assert await retriever.restore_persisted_memory() == 1
+    restored = restarted_store.query_trusted_records(
+        requester_id="BossAI",
+        layer=MemoryLayer.EPISODIC,
+        query="independently replayed task result",
+    )
+    assert len(restored) == 1
+    assert retriever.retrieve("independently replayed task result", requester_id="BossAI")
+
+
+@pytest.mark.asyncio
+async def test_rejected_task_review_does_not_create_trusted_memory(async_session):
+    employee = await EmployeeRepository(async_session).create(
+        employee_id="ANC-EMP-MEMORY-REJECTED",
+        name="Rejected Memory Validation",
+        title="Software Engineer",
+        system_prompt="Rejected memory lifecycle test employee.",
+    )
+    project = await ProjectRepository(async_session).create(
+        name="Rejected memory lifecycle",
+        objective="Ensure rejected work is not promoted as trusted memory",
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-MEMORY-REJECTED",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Reject a task result",
+        objective="Reject failed independent verification",
+        scope="Memory integration",
+        acceptance_criteria="Failed verification creates no trusted memory",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        fencing_token=4,
+    )
+    attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="memory-reject-worker",
+        fencing_token=4,
+        status="submitted",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=1),
+        execution_receipt={},
+    )
+    async_session.add(attempt)
+    await async_session.flush()
+    attempt_id = attempt.id
+    await async_session.commit()
+    rejected = await task_repo.review_task_attempt(
+        task.task_id,
+        attempt_id,
+        "independent-memory-verifier",
+        {
+            "passed": False,
+            "notes": "Independent replay failed.",
+            "evidence_refs": ["verifier:failed"],
+            "checks": [{"name": "tests", "passed": False}],
+            "test_summary": {"failed": 1},
+        },
+    )
+    assert rejected is not None and rejected["attempt_status"] == "rejected"
+    assert await MemoryRepository(async_session).list_entries(source=f"task-attempt:{attempt_id}") == []
 
 
 @pytest.mark.asyncio
@@ -652,15 +801,61 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
         scope="Reporting",
         acceptance_criteria="A passing verifier receipt is stored",
     )
+    verified_receipt = {
+        "passed": True,
+        "notes": "Acceptance checks passed",
+        "evidence_refs": [
+            "verifier:attempt-report:test:1",
+            f"workspace:sha256:{'a' * 64}",
+        ],
+        "artifacts": ["verified-artifact"],
+        "test_summary": {
+            "independent_test_runs": [{
+                "command": ["python3", "-m", "unittest", "--password", "must-not-leak"],
+                "worker_exit_code": 0,
+                "verifier_exit_code": 0,
+                "evidence_ref": "verifier:attempt-report:test:1",
+            }],
+            "workspace_manifest_before": {"complete": True, "file_count": 0},
+            "workspace_manifest": {
+                "complete": True,
+                "file_count": 1,
+                "files": [{"path": "src/main.py", "size_bytes": 14, "sha256": "a" * 64}],
+            },
+            "workspace_delta": {
+                "complete": True,
+                "created": [{"path": "src/main.py", "size_bytes": 14, "sha256": "a" * 64}],
+                "modified": [],
+                "counts": {"created": 1, "modified": 0, "deleted": 0},
+            },
+        },
+        "checks": [{"name": "tests_passed", "passed": True}],
+    }
     await task_repo.complete_with_receipt(
         passing_task.task_id,
-        {
-            "passed": True,
-            "notes": "Acceptance checks passed",
-            "evidence_refs": ["sha256:verified-artifact"],
-            "artifacts": ["verified-artifact"],
-            "test_summary": {"passed": 2},
-        },
+        verified_receipt,
+    )
+    async_session.add(
+        TaskAttempt(
+            task_id=passing_task.id,
+            attempt_number=1,
+            worker_id="worker-report",
+            fencing_token=1,
+            status="verified",
+            lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            execution_receipt={
+                "model": {
+                    "provider": "openai",
+                    "model": "gpt-4.1-mini",
+                    "input_tokens": 123,
+                    "output_tokens": 45,
+                    "api_key": "must-not-leak",
+                },
+            },
+            verification_receipt=verified_receipt,
+            verified_by="verifier-report",
+            verified_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
     )
     async_session.add(
         TaskAttempt(
@@ -746,7 +941,23 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
     assert reported_failure["attempts"][0]["error_message"] == "Process returned exit code 2"
     reported_success = next(task for task in report["tasks"] if task["task_id"] == "TASK-VERIFIED-REPORT")
     assert reported_success["verified"] is True
-    assert reported_success["evidence_refs"] == ["sha256:verified-artifact"]
+    assert reported_success["evidence_refs"] == [
+        "verifier:attempt-report:test:1",
+        f"workspace:sha256:{'a' * 64}",
+    ]
+    assert reported_success["attempts"][0]["execution_model"] == {
+        "provider": "openai",
+        "model": "gpt-4.1-mini",
+        "input_tokens": 123,
+        "output_tokens": 45,
+    }
+    assert reported_success["verification_evidence"]["independent_test_runs"] == [{
+        "executable": "python3",
+        "worker_exit_code": 0,
+        "verifier_exit_code": 0,
+        "evidence_ref": "verifier:attempt-report:test:1",
+    }]
+    assert "must-not-leak" not in str(reported_success)
 
 
 @pytest.mark.asyncio

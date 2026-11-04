@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -19,6 +20,14 @@ if TYPE_CHECKING:
     pass
 
 logger = get_logger("ancos.boss")
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _json_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 class BossBrain:
@@ -307,8 +316,23 @@ class BossBrain:
         attempts = await self.task_repo.list_attempts_by_project(project.id)
         attempts_by_task: dict[str, list[dict[str, Any]]] = {}
         for attempt in attempts:
-            receipt = attempt.verification_receipt if isinstance(attempt.verification_receipt, dict) else {}
+            execution = _json_object(attempt.execution_receipt)
+            model = _json_object(execution.get("model"))
+            receipt = _json_object(attempt.verification_receipt)
+            safe_model: dict[str, Any] = {}
+            for key in ("provider", "model"):
+                value = model.get(key)
+                if isinstance(value, str) and 0 < len(value) <= 128:
+                    safe_model[key] = value
+            for key in ("input_tokens", "output_tokens"):
+                value = model.get(key)
+                if type(value) is int and 0 <= value <= 10_000_000:
+                    safe_model[key] = value
+            model_cost = model.get("cost_usd")
+            if isinstance(model_cost, (int, float)) and not isinstance(model_cost, bool) and 0 <= model_cost <= 1_000_000:
+                safe_model["cost_usd"] = round(float(model_cost), 8)
             attempts_by_task.setdefault(attempt.task_id, []).append({
+                "attempt_id": attempt.id,
                 "attempt_number": attempt.attempt_number,
                 "worker_id": attempt.worker_id,
                 "status": attempt.status,
@@ -321,6 +345,7 @@ class BossBrain:
                 "verifier_id": attempt.verified_by,
                 "verification_passed": receipt.get("passed"),
                 "verification_notes": receipt.get("notes"),
+                "execution_model": safe_model,
             })
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         counts = {
@@ -348,7 +373,7 @@ class BossBrain:
 
         for task in sorted(tasks, key=lambda row: row.task_id):
             status = task.status.value if hasattr(task.status, "value") else str(task.status)
-            receipt = task.verification_result if isinstance(task.verification_result, dict) else {}
+            receipt = _json_object(task.verification_result)
             verified = status == TaskStatus.COMPLETED.value and receipt.get("passed") is True
             deadline = task.deadline
             if deadline and deadline.tzinfo:
@@ -390,6 +415,107 @@ class BossBrain:
 
             employee = employees_by_id.get(task.assigned_to) if task.assigned_to else None
             task_attempts = attempts_by_task.get(task.id, [])
+            verification_evidence: dict[str, Any] = {}
+            if receipt:
+                summary = _json_object(receipt.get("test_summary"))
+                test_runs = _json_list(summary.get("independent_test_runs"))
+                before = _json_object(summary.get("workspace_manifest_before"))
+                manifest = _json_object(summary.get("workspace_manifest"))
+                delta = _json_object(summary.get("workspace_delta"))
+
+                def safe_manifest_files(payload: dict[str, Any]) -> list[dict[str, Any]]:
+                    files = _json_list(payload.get("files"))
+                    safe_files: list[dict[str, Any]] = []
+                    for item in files:
+                        if not isinstance(item, dict):
+                            continue
+                        path = item.get("path")
+                        size = item.get("size_bytes")
+                        digest = item.get("sha256")
+                        if (
+                            not isinstance(path, str)
+                            or not path
+                            or len(path) > 256
+                            or path.startswith("/")
+                            or "\\" in path
+                            or any(part in {"", ".", ".."} for part in path.split("/"))
+                            or type(size) is not int
+                            or size < 0
+                            or not isinstance(digest, str)
+                            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                        ):
+                            continue
+                        safe_files.append({"path": path, "size_bytes": size, "sha256": digest})
+                    return safe_files[:32]
+
+                safe_runs = []
+                for run in test_runs[:12]:
+                    if not isinstance(run, dict):
+                        continue
+                    command = _json_list(run.get("command"))
+                    executable = command[0] if command else None
+                    if not isinstance(executable, str) or executable not in {"python", "python3", "pytest", "npm"}:
+                        continue
+                    worker_exit_code = run.get("worker_exit_code")
+                    verifier_exit_code = run.get("verifier_exit_code")
+                    evidence_ref = run.get("evidence_ref")
+                    safe_runs.append({
+                        "executable": executable,
+                        "worker_exit_code": worker_exit_code if type(worker_exit_code) is int and -255 <= worker_exit_code <= 255 else None,
+                        "verifier_exit_code": verifier_exit_code if type(verifier_exit_code) is int and -255 <= verifier_exit_code <= 255 else None,
+                        "evidence_ref": evidence_ref[:256] if isinstance(evidence_ref, str) else None,
+                    })
+                safe_manifest = safe_manifest_files(manifest)
+                raw_counts = _json_object(delta.get("counts"))
+                safe_counts: dict[str, int] = {}
+                for key in ("created", "modified", "deleted"):
+                    value = raw_counts.get(key)
+                    if type(value) is int and 0 <= value <= 2000:
+                        safe_counts[key] = value
+                verification_evidence = {
+                    "passed": receipt.get("passed") is True,
+                    "evidence_refs": [
+                        ref[:256] for ref in _json_list(receipt.get("evidence_refs"))
+                        if isinstance(ref, str) and ref.startswith((
+                            "verifier:", "sha256:", "workspace:sha256:", "workspace-baseline:sha256:", "workspace-delta:sha256:"
+                        ))
+                    ][:256] if isinstance(receipt.get("evidence_refs"), list) else [],
+                    "checks": [
+                        {"name": check["name"][:128], "passed": check.get("passed") is True}
+                        for check in _json_list(receipt.get("checks"))[:64]
+                        if isinstance(check, dict) and isinstance(check.get("name"), str)
+                    ],
+                    "independent_test_runs": safe_runs,
+                    "workspace_manifest_before": {
+                        "complete": before.get("complete") is True,
+                        "file_count": before.get("file_count"),
+                    },
+                    "workspace_manifest": {
+                        "complete": manifest.get("complete") is True,
+                        "file_count": manifest.get("file_count"),
+                        "returned_file_count": len(safe_manifest),
+                        "files": safe_manifest,
+                    },
+                    "workspace_delta": {
+                        "complete": delta.get("complete") is True,
+                        "created": safe_manifest_files({"files": delta.get("created", [])}),
+                        "modified": [
+                            {key: item[key] for key in ("path", "after_size_bytes", "after_sha256") if key in item}
+                        for item in _json_list(delta.get("modified"))[:32]
+                            if isinstance(item, dict)
+                            and isinstance(item.get("path"), str)
+                            and len(item["path"]) <= 256
+                            and not item["path"].startswith("/")
+                            and "\\" not in item["path"]
+                            and not any(part in {"", ".", ".."} for part in item["path"].split("/"))
+                            and isinstance(item.get("after_sha256"), str)
+                            and re.fullmatch(r"[0-9a-f]{64}", item["after_sha256"]) is not None
+                            and type(item.get("after_size_bytes")) is int
+                            and item["after_size_bytes"] >= 0
+                        ] if isinstance(delta.get("modified"), list) else [],
+                        "counts": safe_counts,
+                    },
+                }
             execution_health = "not_running"
             if status == TaskStatus.RUNNING.value:
                 current_attempt = next(
@@ -429,8 +555,9 @@ class BossBrain:
                 "completed_at": task.completed_at,
                 "verified": verified,
                 "execution_health": execution_health,
-                "verification_notes": receipt.get("notes") if receipt else None,
-                "evidence_refs": receipt.get("evidence_refs", []) if verified else [],
+                "verification_notes": str(receipt.get("notes", ""))[:1000] if receipt else None,
+                "evidence_refs": verification_evidence.get("evidence_refs", []) if verified else [],
+                "verification_evidence": verification_evidence,
                 "attempts": task_attempts,
             })
 

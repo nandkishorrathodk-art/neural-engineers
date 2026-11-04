@@ -6,6 +6,7 @@ from neural.api.deps import (
     get_employee_repo,
     get_service_heartbeat_repo,
     get_task_repo,
+    require_execution_not_halted,
     require_worker_token,
 )
 from neural.api.schemas.requests import (
@@ -26,12 +27,13 @@ from neural.db.repositories import (
     TaskRepository,
 )
 from neural.exceptions import ContainerError
+from neural.security.kill_switch import get_kill_switch
 from neural.verification.workspace_manifest import valid_workspace_manifest
 
 router = APIRouter(
     prefix="/internal/worker",
     tags=["Worker protocol"],
-    dependencies=[Depends(require_worker_token)],
+    dependencies=[Depends(require_worker_token), Depends(require_execution_not_halted)],
 )
 
 
@@ -59,6 +61,7 @@ async def claim_next_task(
     container_repo: ContainerRepository = Depends(get_container_repo),
     container_manager: ContainerManager = Depends(get_container_manager),
 ):
+    get_kill_switch().guard_active()
     task = await task_repo.claim_next_task(worker_id, execution_modes=request.execution_modes)
     if task:
         workstation = await container_manager.get_desktop_by_employee_id(
@@ -87,6 +90,7 @@ async def start_task_attempt(
     container_manager: ContainerManager = Depends(get_container_manager),
     worker_id: str = Depends(require_worker_token),
 ):
+    get_kill_switch().guard_active()
     if not await task_repo.worker_claim_is_current(task_id, worker_id, request.fencing_token):
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     task = await task_repo.get_by_task_id(task_id)
@@ -145,6 +149,7 @@ async def heartbeat_task_attempt(
     task_repo: TaskRepository = Depends(get_task_repo),
     worker_id: str = Depends(require_worker_token),
 ):
+    get_kill_switch().guard_active()
     lease_expires_at = await task_repo.heartbeat_task_attempt(
         task_id,
         worker_id,
@@ -165,6 +170,7 @@ async def execute_terminal_command(
     container_repo: ContainerRepository = Depends(get_container_repo),
     container_manager: ContainerManager = Depends(get_container_manager),
 ):
+    get_kill_switch().guard_active()
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
@@ -201,6 +207,7 @@ async def submit_task_attempt(
     task_repo: TaskRepository = Depends(get_task_repo),
     worker_id: str = Depends(require_worker_token),
 ):
+    get_kill_switch().guard_active()
     submitted = await task_repo.submit_task_attempt(
         task_id,
         worker_id,
@@ -226,6 +233,7 @@ async def fail_task_attempt(
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     worker_id: str = Depends(require_worker_token),
 ):
+    get_kill_switch().guard_active()
     task = await task_repo.get_by_task_id(task_id)
     failure = await task_repo.fail_task_attempt(
         task_id,

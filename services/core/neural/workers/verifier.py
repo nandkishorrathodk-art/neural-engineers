@@ -247,7 +247,7 @@ class VerificationWorker:
                 await self.verify_item(item)
                 processed += 1
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code != 409:
+                if exc.response.status_code not in (409, 503):
                     raise
             except httpx.HTTPError:
                 continue

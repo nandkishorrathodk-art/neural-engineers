@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Optional
 
@@ -17,11 +18,16 @@ from neural.gui_intelligence.recovery.failure_detector import GUIFailureDetector
 from neural.gui_intelligence.recovery.state_recovery import GUIStateRecovery
 from neural.gui_intelligence.recovery.visibility_recovery import VisibilityRecoveryEngine
 from neural.gui_intelligence.skills.experience_recorder import ExperienceRecorder
+from neural.gui_intelligence.verification.visual_verifier import (
+    IndependentVisualVerifier,
+    VisualVerificationResult,
+)
 from neural.gui_intelligence.world_model.visual_belief import VisualBeliefStateManager
 from neural.gui_intelligence.world_model.window_state import WindowStateTracker
 from neural.logger import get_logger
 
 logger = get_logger("ancos.gui_intelligence.brain.cognitive_controller")
+MIN_POSTCONDITION_DELTA = 0.00001
 
 
 class DualBrainCognitiveController:
@@ -46,6 +52,7 @@ class DualBrainCognitiveController:
         experience_recorder: Optional[ExperienceRecorder] = None,
         window_tracker: Optional[WindowStateTracker] = None,
         detector: Optional[UIObjectDetector] = None,
+        visual_verifier: Optional[IndependentVisualVerifier] = None,
     ) -> None:
         self.capture_engine = capture_engine or ScreenCaptureEngine()
         self.deep_planner = deep_planner or System2TaskPlanner()
@@ -65,6 +72,7 @@ class DualBrainCognitiveController:
             mouse_controller=self.execution_loop.mouse_controller,
         )
         self.experience_recorder = experience_recorder
+        self.visual_verifier = visual_verifier or IndependentVisualVerifier()
 
         # Telemetry & metrics
         self.deep_brain_invocations: int = 0
@@ -92,6 +100,7 @@ class DualBrainCognitiveController:
 
         completed_steps = 0
         escalations = 0
+        verification_receipts: list[dict[str, Any]] = []
 
         target_steps = plan.steps[:max_steps]
         for step in target_steps:
@@ -158,17 +167,15 @@ class DualBrainCognitiveController:
                 self.escalation_count += 1
                 escalations += 1
                 logger.warning("Fast policy uncertainty escalation", error=str(e))
-                # System 2 takes over and dispatches guided action
-                fallback_coords = (current_frame.width // 2, current_frame.height // 2)
-                s2_action = GUIActionRequest(
-                    action_id=f"act_s2_{step.step_id}",
-                    employee_id=self.fast_policy.employee_id,
-                    action_type="MOUSE_CLICK",
-                    coordinates=fallback_coords,
-                    confidence=0.90,
-                    risk_level="LOW",
-                )
-                chunk = [s2_action]
+                # No screen-center or guessed-coordinate fallback is permitted.
+                # Without a grounded action, this step remains incomplete.
+                logger.warning("No visually grounded action available; aborting step", step=step.step_id)
+                verification_receipts.append({
+                    "step_id": step.step_id,
+                    "verified": False,
+                    "reason": "visual grounding did not produce an action",
+                })
+                continue
 
             # 3. Motor Execution Loop: Execute chunk
             chunk_receipts = self.execution_loop.execute_chunk(chunk)
@@ -197,6 +204,64 @@ class DualBrainCognitiveController:
                 logger.info("Failure diagnosed", failure_type=diag.failure_type, severity=diag.severity)
                 self.state_recovery.dismiss_modal()
                 # DO NOT increment completed_steps on failure!
+                verification_receipts.append({
+                    "step_id": step.step_id,
+                    "verified": False,
+                    "reason": "one or more GUI action receipts failed",
+                })
+                continue
+
+            # A motor receipt is not task evidence. Independently inspect the
+            # post-action raster and require a valid verifier receipt per step.
+            post_frame = self.capture_engine.capture_frame()
+            expected_text = step.input_value if step.action_intent.upper() in {"TYPE", "KEY_TYPE"} else None
+            try:
+                verification: VisualVerificationResult | None = self.visual_verifier.verify_postcondition(
+                    frame_initial=current_frame,
+                    frame_final=post_frame,
+                    expected_text=expected_text,
+                    min_delta_magnitude=MIN_POSTCONDITION_DELTA,
+                )
+            except Exception as exc:
+                verification = None
+                verification_error = str(exc)
+            else:
+                verification_error = None
+
+            valid_verification = bool(
+                isinstance(step.expected_postcondition, str)
+                and bool(step.expected_postcondition.strip())
+                and verification
+                and verification.passed is True
+                and isinstance(verification.score, (int, float))
+                and math.isfinite(verification.score)
+                and verification.score >= 0.5
+                and verification.screenshot_hash == post_frame.frame_hash
+                and isinstance(verification.postcondition_checked, str)
+                and bool(verification.postcondition_checked.strip())
+                and isinstance(verification.delta_magnitude, (int, float))
+                and math.isfinite(verification.delta_magnitude)
+                and verification.delta_magnitude >= MIN_POSTCONDITION_DELTA
+            )
+            verification_receipts.append({
+                "step_id": step.step_id,
+                "expected_postcondition": step.expected_postcondition,
+                "verified": valid_verification,
+                "score": verification.score if verification else 0.0,
+                "delta_magnitude": verification.delta_magnitude if verification else 0.0,
+                "screenshot_hash": verification.screenshot_hash if verification else None,
+                "details": verification.details if verification else verification_error,
+            })
+            if not valid_verification:
+                self.escalation_count += 1
+                escalations += 1
+                logger.warning(
+                    "Independent visual postcondition verification failed; step remains incomplete",
+                    step=step.step_id,
+                    reason=verification_error or (
+                        verification.details if verification else "visual verifier returned no receipt"
+                    ),
+                )
                 continue
 
             completed_steps += 1
@@ -210,6 +275,7 @@ class DualBrainCognitiveController:
             "plan_id": plan.plan_id,
             "total_steps_in_plan": len(plan.steps),
             "completed_steps": completed_steps,
+            "verification_receipts": verification_receipts,
             "escalations": escalations,
             "deep_brain_calls": self.deep_brain_invocations,
             "fast_brain_calls": self.fast_brain_invocations,

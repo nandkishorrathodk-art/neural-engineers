@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_container_manager, get_db_session
@@ -17,6 +19,7 @@ from neural.db.repositories import (
     ProjectRepository,
     TaskRepository,
 )
+from neural.exceptions import ContainerError
 from sqlalchemy import select
 
 WORKER_ID = "worker-start-test"
@@ -118,7 +121,12 @@ async def test_worker_start_captures_and_persists_task_workspace_baseline(async_
 
 
 @pytest.mark.asyncio
-async def test_worker_start_fails_closed_and_releases_claim_for_invalid_baseline(async_session, monkeypatch):
+@pytest.mark.parametrize("capture_error", [False, True])
+async def test_worker_start_fails_closed_and_releases_claim_for_invalid_baseline(
+    async_session,
+    monkeypatch,
+    capture_error,
+):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("WORKER_API_TOKENS", f'{{"{WORKER_ID}":"{WORKER_TOKEN}"}}')
     monkeypatch.setenv("WORKER_API_TOKEN", "")
@@ -167,6 +175,8 @@ async def test_worker_start_fails_closed_and_releases_claim_for_invalid_baseline
             return {"status": "running", "docker_id": container.docker_id}
 
         async def capture_verifier_manifest(self, _employee_id):
+            if capture_error:
+                raise ContainerError("broker snapshot unavailable")
             return {**_complete_manifest(), "complete": False, "errors": ["size limit exceeded"]}
 
     app = create_app()
@@ -268,3 +278,81 @@ async def test_worker_start_rejects_non_owner_lease_before_broker_calls(async_se
 
     assert response.status_code == 409
     assert manager.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_worker_start_rechecks_lease_after_slow_manifest_capture(async_session, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("WORKER_API_TOKENS", f'{{"{WORKER_ID}":"{WORKER_TOKEN}"}}')
+    monkeypatch.setenv("WORKER_API_TOKEN", "")
+    get_settings.cache_clear()
+
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-WORKER-START-RACE",
+        name="Worker Start Race Validation",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.IDLE,
+    )
+    container = await ContainerRepository(async_session).create(
+        docker_id="ancos-desktop-anc-emp-worker-start-race",
+        image="ancos/employee-base:latest",
+        status=ContainerStatus.RUNNING,
+        resource_limits={},
+        network_config={},
+        workspace_path="/tmp/worker-start-race-validation",
+    )
+    await employee_repo.assign_container(employee.employee_id, container.id)
+    await async_session.refresh(employee)
+    project = await ProjectRepository(async_session).create(
+        name="Worker start lease race",
+        objective="Do not start an attempt after its lease expires during manifest capture",
+    )
+    task = await TaskRepository(async_session).create(
+        task_id="TASK-WORKER-START-RACE",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Reject expired lease after capture",
+        objective="Recheck the claim when persisting task start",
+        scope="Worker route validation",
+        acceptance_criteria="Automated tests pass",
+        execution_mode=ExecutionMode.TERMINAL,
+        priority=TaskPriority.HIGH,
+        status=TaskStatus.ASSIGNED,
+    )
+    claim = await TaskRepository(async_session).claim_next_task(
+        WORKER_ID,
+        execution_modes=[ExecutionMode.TERMINAL],
+    )
+    assert claim is not None
+
+    class ContainerManagerStub:
+        async def get_desktop_by_employee_id(self, _employee_id, **_kwargs):
+            return {"status": "running", "docker_id": container.docker_id}
+
+        async def capture_verifier_manifest(self, _employee_id):
+            attempt = await async_session.get(TaskAttempt, claim["attempt_id"])
+            attempt.lease_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+            await async_session.commit()
+            return _complete_manifest()
+
+    app = create_app()
+
+    async def override_get_db_session():
+        yield async_session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_container_manager] = lambda: ContainerManagerStub()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            f"/internal/worker/tasks/{task.task_id}/start",
+            headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
+            json={"fencing_token": claim["fencing_token"]},
+        )
+    get_settings.cache_clear()
+
+    assert response.status_code == 409
+    attempt = await async_session.get(TaskAttempt, claim["attempt_id"])
+    assert attempt.status == "leased"
+    assert attempt.workspace_manifest_before is None

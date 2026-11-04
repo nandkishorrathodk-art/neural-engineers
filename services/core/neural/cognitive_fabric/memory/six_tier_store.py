@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Optional, Sequence
 
 from neural.cognitive_fabric.memory.models import (
@@ -8,6 +9,7 @@ from neural.cognitive_fabric.memory.models import (
     MemoryRecord,
     RecordVerificationStatus,
     utc_now,
+    valid_independent_verification_receipt,
 )
 from neural.cognitive_fabric.memory.permissions import MemoryAccessController
 from neural.logger import get_logger
@@ -57,6 +59,7 @@ class SixTierMemoryStore:
                 }
                 meta = dict(record.metadata)
                 meta["layer"] = record.layer.value
+                meta["category"] = record.category
                 meta["access_level"] = record.access_level.value
                 meta["verification_status"] = record.verification_status.value
                 meta["owner_employee_id"] = record.owner_employee_id
@@ -64,6 +67,13 @@ class SixTierMemoryStore:
                 meta["allowed_projects"] = record.allowed_projects
                 meta["version"] = record.version
                 meta["provenance"] = record.provenance
+                meta["record_metadata"] = record.metadata
+                meta["record_schema_version"] = 1
+                meta["record_id"] = record.id
+                meta["created_at"] = record.created_at.isoformat()
+                meta["verified_at"] = record.verified_at.isoformat() if record.verified_at else None
+                meta["related_record_ids"] = record.related_record_ids
+                meta["embedding"] = record.embedding
 
                 await self.memory_repo.create_entry(
                     category=cat_map.get(record.layer, MemoryCategory.KNOWLEDGE),
@@ -76,6 +86,65 @@ class SixTierMemoryStore:
                 logger.warning("DB write-through skipped or failed", error=str(e))
 
         return record
+
+    async def load_persisted_records(self, limit: int = 1000) -> int:
+        """Hydrate records written by this store from its relational repository.
+
+        Legacy rows without the versioned six-tier envelope are ignored instead
+        of being guessed into trusted memory.
+        """
+        if self.memory_repo is None:
+            return 0
+        rows = await self.memory_repo.list_entries(limit=max(1, min(limit, 10000)))
+        loaded = 0
+        for row in rows:
+            meta = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+            if meta.get("record_schema_version") != 1:
+                continue
+            try:
+                layer = MemoryLayer(meta["layer"])
+                verification_status = RecordVerificationStatus(meta.get("verification_status", "unverified"))
+                access_level = MemoryAccessLevel(meta.get("access_level", "internal"))
+                created_at = datetime.fromisoformat(meta["created_at"])
+                verified_at_raw = meta.get("verified_at")
+                verified_at = datetime.fromisoformat(verified_at_raw) if verified_at_raw else None
+                provenance = meta.get("provenance", {})
+                if not isinstance(provenance, dict):
+                    provenance = {}
+                receipt = provenance.get("independent_verification_receipt")
+                if verification_status == RecordVerificationStatus.VERIFIED and not valid_independent_verification_receipt(
+                    receipt,
+                    employee_id=meta.get("owner_employee_id"),
+                    task_id=meta.get("task_id"),
+                ):
+                    verification_status = RecordVerificationStatus.UNVERIFIED
+                    verified_at = None
+                record = MemoryRecord(
+                    id=str(meta["record_id"]),
+                    layer=layer,
+                    category=str(meta["category"]),
+                    source=str(row.source),
+                    content=str(row.content),
+                    created_at=created_at,
+                    verified_at=verified_at,
+                    confidence=float(row.confidence),
+                    verification_status=verification_status,
+                    access_level=access_level,
+                    owner_employee_id=meta.get("owner_employee_id"),
+                    allowed_departments=list(meta.get("allowed_departments", [])),
+                    allowed_projects=list(meta.get("allowed_projects", [])),
+                    version=int(meta.get("version", 1)),
+                    related_record_ids=list(meta.get("related_record_ids", [])),
+                    provenance=provenance,
+                    metadata=dict(meta.get("record_metadata", {})),
+                    embedding=meta.get("embedding"),
+                )
+            except (KeyError, TypeError, ValueError):
+                logger.warning("Skipping malformed persisted six-tier memory record", db_record_id=row.id)
+                continue
+            self._records[record.id] = record
+            loaded += 1
+        return loaded
 
     async def store_working(
         self,
@@ -105,8 +174,13 @@ class SixTierMemoryStore:
         summary: str,
         receipt: Optional[dict[str, Any]] = None,
         confidence: float = 1.0,
-        is_verified: bool = True,
+        verification_receipt: Optional[dict[str, Any]] = None,
     ) -> MemoryRecord:
+        is_verified = valid_independent_verification_receipt(
+            verification_receipt,
+            employee_id=employee_id,
+            task_id=task_id,
+        )
         ver_status = RecordVerificationStatus.VERIFIED if is_verified else RecordVerificationStatus.UNVERIFIED
         record = MemoryRecord(
             layer=MemoryLayer.EPISODIC,
@@ -119,7 +193,12 @@ class SixTierMemoryStore:
             access_level=MemoryAccessLevel.INTERNAL,
             owner_employee_id=employee_id,
             metadata={"outcome": outcome, "task_id": task_id, "receipt": receipt or {}},
-            provenance={"employee_id": employee_id, "outcome": outcome},
+            provenance={
+                "employee_id": employee_id,
+                "outcome": outcome,
+                "verified_by": verification_receipt.get("verifier_id") if is_verified else None,
+                "independent_verification_receipt": verification_receipt if is_verified else None,
+            },
         )
         return await self.store_record(record)
 
@@ -130,12 +209,17 @@ class SixTierMemoryStore:
         source: str = "engineering_docs",
         tags: Optional[list[str]] = None,
         verified_by: Optional[str] = None,
+        verification_receipt: Optional[dict[str, Any]] = None,
         confidence: float = 1.0,
         access_level: MemoryAccessLevel = MemoryAccessLevel.INTERNAL,
         allowed_departments: Optional[list[str]] = None,
         allowed_projects: Optional[list[str]] = None,
     ) -> MemoryRecord:
-        is_v = bool(verified_by is not None)
+        is_v = bool(
+            verified_by
+            and valid_independent_verification_receipt(verification_receipt)
+            and verification_receipt.get("verifier_id") == verified_by
+        )
         record = MemoryRecord(
             layer=MemoryLayer.SEMANTIC,
             category="technical_fact",
@@ -147,8 +231,16 @@ class SixTierMemoryStore:
             access_level=access_level,
             allowed_departments=allowed_departments or [],
             allowed_projects=allowed_projects or [],
-            metadata={"concept": concept, "tags": tags or []},
-            provenance={"author": verified_by or "system", "verified_by": verified_by},
+            metadata={
+                "concept": concept,
+                "tags": tags or [],
+                **({"task_id": source.removeprefix("task:")} if source.startswith("task:") else {}),
+            },
+            provenance={
+                "author": verified_by or "system",
+                "verified_by": verified_by if is_v else None,
+                "independent_verification_receipt": verification_receipt if is_v else None,
+            },
         )
         return await self.store_record(record)
 
@@ -158,8 +250,14 @@ class SixTierMemoryStore:
         steps: list[dict[str, Any]],
         code_recipe: Optional[str] = None,
         verified_by: Optional[str] = None,
+        verification_receipt: Optional[dict[str, Any]] = None,
+        task_id: Optional[str] = None,
     ) -> MemoryRecord:
-        is_v = bool(verified_by is not None)
+        is_v = bool(
+            verified_by
+            and valid_independent_verification_receipt(verification_receipt)
+            and verification_receipt.get("verifier_id") == verified_by
+        )
         record = MemoryRecord(
             layer=MemoryLayer.PROCEDURAL,
             category="reusable_procedure",
@@ -169,8 +267,17 @@ class SixTierMemoryStore:
             verification_status=RecordVerificationStatus.VERIFIED if is_v else RecordVerificationStatus.UNVERIFIED,
             verified_at=utc_now() if is_v else None,
             access_level=MemoryAccessLevel.INTERNAL,
-            metadata={"procedure_name": procedure_name, "steps": steps, "code_recipe": code_recipe},
-            provenance={"certified_by": verified_by},
+            metadata={
+                "procedure_name": procedure_name,
+                "steps": steps,
+                "code_recipe": code_recipe,
+                **({"task_id": task_id} if task_id else {}),
+            },
+            provenance={
+                "certified_by": verified_by if is_v else None,
+                "verified_by": verified_by if is_v else None,
+                "independent_verification_receipt": verification_receipt if is_v else None,
+            },
         )
         return await self.store_record(record)
 
@@ -266,6 +373,22 @@ class SixTierMemoryStore:
             reverse=True,
         )
         return filtered[:limit]
+
+    def query_trusted_records(self, **kwargs: Any) -> list[MemoryRecord]:
+        """Query only records carrying verified status and confidence evidence."""
+        kwargs["verified_only"] = True
+        records = self.query_records(**kwargs)
+        return [
+            record
+            for record in records
+            if valid_independent_verification_receipt(
+                record.provenance.get("independent_verification_receipt"),
+                employee_id=record.owner_employee_id,
+                task_id=record.metadata.get("task_id"),
+            )
+            and record.provenance.get("verified_by")
+            == record.provenance["independent_verification_receipt"].get("verifier_id")
+        ]
 
     def dispute_record(self, record_id: str, reason: str, disputer_id: str) -> bool:
         rec = self.get_record(record_id)

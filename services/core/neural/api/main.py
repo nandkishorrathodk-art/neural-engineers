@@ -32,7 +32,7 @@ from neural.api.routes import (
 )
 from neural.config import get_settings
 from neural.db.engine import init_db
-from neural.exceptions import ContainerError
+from neural.exceptions import ContainerError, EmergencyStopTriggered
 from neural.logger import configure_logging, get_logger
 
 logger = get_logger("ancos.api")
@@ -112,6 +112,10 @@ def create_app() -> FastAPI:
         if not isinstance(status_code, int) or not 400 <= status_code <= 599:
             status_code = 503
         return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+
+    @app.exception_handler(EmergencyStopTriggered)
+    async def emergency_stop_triggered_error(request: Request, exc: EmergencyStopTriggered):
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     @app.middleware("http")
     async def require_owner_token(request, call_next):

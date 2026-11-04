@@ -27,6 +27,7 @@ class ProjectResponse(BaseModel):
 
 
 class BossTaskAttemptReport(BaseModel):
+    attempt_id: str
     attempt_number: int
     worker_id: str
     status: str
@@ -39,6 +40,7 @@ class BossTaskAttemptReport(BaseModel):
     verifier_id: Optional[str] = None
     verification_passed: Optional[bool] = None
     verification_notes: Optional[str] = None
+    execution_model: dict[str, Any] = Field(default_factory=dict)
 
 
 class BossTaskReport(BaseModel):
@@ -61,6 +63,7 @@ class BossTaskReport(BaseModel):
     execution_health: str = "not_running"
     verification_notes: Optional[str] = None
     evidence_refs: list[str] = Field(default_factory=list)
+    verification_evidence: dict[str, Any] = Field(default_factory=dict)
     attempts: list[BossTaskAttemptReport] = Field(default_factory=list)
 
 
@@ -98,6 +101,7 @@ class EmployeeResponse(BaseModel):
     hired_at: datetime
     container_id: Optional[str] = None
     desktop_url: Optional[str] = None
+    desk_id: Optional[str] = None
 
 
 class WorkstationResponse(BaseModel):
@@ -113,6 +117,19 @@ class WorkstationResponse(BaseModel):
     workspace: str
     started_at: Optional[str] = None
     vnc_password: Optional[str] = Field(default=None, repr=False)
+    desk_id: Optional[str] = None
+
+
+class WorkstationAssignmentResponse(BaseModel):
+    id: str
+    name: str
+    department: str
+    role: str
+    desk_type: str = "single"
+    monitor_count: int = 2
+    occupant_id: Optional[str] = None
+    occupant_name: Optional[str] = None
+    occupant_status: Optional[str] = None
 
 
 class VncCredentialResponse(BaseModel):
@@ -143,6 +160,7 @@ class MeetingResponse(BaseModel):
     participants: list[str]
     agenda: list[str]
     minutes: dict[str, Any]
+    active_speaker_id: Optional[str] = None
 
 
 class MeetingDetailResponse(BaseModel):
@@ -159,6 +177,8 @@ class MeetingDetailResponse(BaseModel):
     minutes: dict[str, Any]
     decisions: list[dict[str, Any]] = []
     action_items: list[ActionItemResponse] = []
+    active_speaker_id: Optional[str] = None
+    activity_log: list[dict[str, Any]] = []
 
 
 class ExecutiveBriefingResponse(BaseModel):

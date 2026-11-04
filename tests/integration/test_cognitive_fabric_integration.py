@@ -30,6 +30,24 @@ from neural.resource_scheduler.resource_monitor import ResourceMonitor
 from neural.resource_scheduler.scheduler import DesktopResourceScheduler
 
 
+def _trusted_retrieval_metadata(source: str) -> dict:
+    return {
+        "source": source,
+        "access_level": "internal",
+        "verification_status": "verified",
+        "verified_at": "2026-11-04T00:00:00",
+        "provenance": {
+            "verified_by": "independent-verifier",
+            "independent_verification_receipt": {
+                "attempt_id": f"attempt-{source}",
+                "verifier_id": "independent-verifier",
+                "passed": True,
+                "evidence_refs": [f"verifier:{source}:tests"],
+            },
+        },
+    }
+
+
 @pytest.fixture(autouse=True)
 def fake_desktop_containers(monkeypatch):
     """Keep capacity integration tests independent of an installed Docker engine."""
@@ -122,7 +140,7 @@ async def test_end_to_end_cognitive_fabric_lifecycle():
         hybrid_retriever.index_document(
             "doc-incident-9-rca",
             "Root Cause Analysis: Connection pool exhaustion occurred when background worker threads failed to release SQLite connections under burst traffic.",
-            metadata={"source": "incident_9_rca", "is_verified": True, "access_level": "internal"},
+            metadata=_trusted_retrieval_metadata("incident_9_rca"),
         )
 
         # 3. Step A: Boss investigates incident using Agentic RAG and GraphRAG
@@ -185,6 +203,13 @@ async def test_end_to_end_cognitive_fabric_lifecycle():
             outcome="success",
             receipt=receipt,
             verifier_id="BossAI",
+            verification_receipt={
+                "task_id": "TASK-FIX-POOL",
+                "attempt_id": "attempt-verified-memory-01",
+                "verifier_id": "BossAI",
+                "passed": True,
+                "evidence_refs": ["verifier:tests-passed", "workspace-delta:sha256:abc"],
+            },
         )
 
         assert cons_res["consolidated_records_count"] >= 2
@@ -355,9 +380,15 @@ async def test_ancos_cognitive_benchmark_runner():
 
     # 1. Retrieval Benchmark
     retriever = HybridRetrievalEngine()
-    retriever.index_document("doc1", "FastAPI web server with asynchronous endpoints", metadata={"is_verified": True})
-    retriever.index_document("doc2", "PostgreSQL database indexing and query tuning", metadata={"is_verified": True})
-    retriever.index_document("doc3", "Redis in-memory caching and session store", metadata={"is_verified": True})
+    retriever.index_document(
+        "doc1", "FastAPI web server with asynchronous endpoints", metadata=_trusted_retrieval_metadata("doc1")
+    )
+    retriever.index_document(
+        "doc2", "PostgreSQL database indexing and query tuning", metadata=_trusted_retrieval_metadata("doc2")
+    )
+    retriever.index_document(
+        "doc3", "Redis in-memory caching and session store", metadata=_trusted_retrieval_metadata("doc3")
+    )
 
     eval_data = [
         {"query": "FastAPI async", "relevant_ids": ["doc1"]},

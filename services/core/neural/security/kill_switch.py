@@ -57,6 +57,13 @@ class GlobalEmergencyKillSwitch:
     def register_worker_task(self, task: asyncio.Task[Any]) -> None:
         self._worker_tasks.add(task)
 
+    def sync_state(self, state: dict[str, Any]) -> None:
+        """Refresh the process-local latch from the durable shared state."""
+        self.is_halted = bool(state.get("active"))
+        self.halt_reason = state.get("reason")
+        self.halted_by = state.get("changed_by")
+        self.halt_timestamp = state.get("changed_at")
+
     def guard_active(self) -> None:
         """Raises EmergencyStopTriggered if the global kill switch is currently active."""
         if self.is_halted:
@@ -71,6 +78,7 @@ class GlobalEmergencyKillSwitch:
         actor: str = "operator",
         audit_repo: Optional[Any] = None,
         message_bus: Optional[Any] = None,
+        state_repo: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
         Instantly halts all autonomous operations, cancelling active tasks and freezing workstations.
@@ -78,6 +86,11 @@ class GlobalEmergencyKillSwitch:
         """
         start_time = time.perf_counter()
         logger.critical("EMERGENCY KILL SWITCH ACTIVATED", reason=reason, actor=actor)
+
+        # Persist the halt before local side effects. If the shared database is
+        # unavailable, callers must not report a successful global halt.
+        if state_repo is not None:
+            await state_repo.set_state(active=True, actor=actor, reason=reason)
 
         self.is_halted = True
         self.halt_timestamp = utc_now()
@@ -182,11 +195,19 @@ class GlobalEmergencyKillSwitch:
         task_repo: Optional[Any] = None,
         audit_repo: Optional[Any] = None,
         message_bus: Optional[Any] = None,
+        state_repo: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
         Resumes the system from an emergency halt.
         Recovers state for interrupted tasks and unfreezes schedulers.
         """
+        if state_repo is not None:
+            durable_state = await state_repo.get_state()
+            self.is_halted = bool(durable_state["active"])
+            self.halt_reason = durable_state["reason"]
+            self.halted_by = durable_state["changed_by"]
+            self.halt_timestamp = durable_state["changed_at"]
+
         if not self.is_halted:
             return {"resumed": False, "message": "System is not currently halted."}
 
@@ -217,7 +238,6 @@ class GlobalEmergencyKillSwitch:
                     cm.unfreeze_all_workstations()
 
 
-        self.is_halted = False
         resumed_at = utc_now()
         duration_halted_seconds = (
             (resumed_at - self.halt_timestamp).total_seconds() if self.halt_timestamp else 0.0
@@ -232,6 +252,12 @@ class GlobalEmergencyKillSwitch:
             "duration_halted_seconds": duration_halted_seconds,
             "recovered_tasks_count": recovered_tasks_count,
         }
+
+        # Keep the durable latch active until recovery/unfreeze work is done.
+        # Persist failure leaves both this instance and all other replicas halted.
+        if state_repo is not None:
+            await state_repo.set_state(active=False, actor=actor, reason=None)
+        self.is_halted = False
 
         if message_bus:
             try:

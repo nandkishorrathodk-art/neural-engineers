@@ -381,6 +381,19 @@ class DisasterRecoveryManager:
         start_time = time.perf_counter()
         target_dir = os.path.abspath(target_dir)
         os.makedirs(target_dir, exist_ok=True)
+
+        archive_size = os.path.getsize(archive_path) if os.path.isfile(archive_path) else 0
+        min_required_bytes = archive_size * 2
+        try:
+            free_space = shutil.disk_usage(target_dir).free
+            if free_space < min_required_bytes:
+                raise StorageError(
+                    f"Insufficient disk space in target directory '{target_dir}': "
+                    f"required at least {min_required_bytes} bytes, available {free_space} bytes."
+                )
+        except OSError:
+            pass
+
         stage_dir = tempfile.mkdtemp(prefix=".ancos-restore-", dir=target_dir)
         manifest_data: dict[str, Any] = {}
         verified_count = 0
@@ -388,6 +401,18 @@ class DisasterRecoveryManager:
 
         try:
             with tarfile.open(archive_path, "r:gz") as tar:
+                total_uncompressed = sum(m.size for m in tar.getmembers() if m.isreg())
+                uncompressed_required = int(total_uncompressed * 1.1)
+                try:
+                    free_space = shutil.disk_usage(target_dir).free
+                    if free_space < uncompressed_required:
+                        raise StorageError(
+                            f"Insufficient disk space in target directory '{target_dir}': "
+                            f"required at least {uncompressed_required} bytes for uncompressed payload, available {free_space} bytes."
+                        )
+                except OSError:
+                    pass
+
                 tar.extractall(path=stage_dir, filter=self._safe_archive_filter)
 
             root = self._find_backup_root(stage_dir)
@@ -439,7 +464,12 @@ class DisasterRecoveryManager:
                 status="SUCCESS" if success else "FAILED",
                 details={"manifest": manifest_data},
             )
-        except (OSError, tarfile.TarError, ValueError, TypeError, KeyError, StorageError) as exc:
+        except StorageError as exc:
+            if "Insufficient disk space" in str(exc):
+                raise
+            logger.error("Rejected backup archive during restore", error=str(exc))
+            raise StorageError("Backup archive failed safe extraction or validation.") from exc
+        except (OSError, tarfile.TarError, ValueError, TypeError, KeyError) as exc:
             logger.error("Rejected backup archive during restore", error=str(exc))
             raise StorageError("Backup archive failed safe extraction or validation.") from exc
         finally:

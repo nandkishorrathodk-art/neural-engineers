@@ -45,7 +45,22 @@ async def test_controlled_retrieval_loop_convergence_and_refinement():
     retriever.index_document(
         "doc-sqlite-leak",
         "SQLite connection leak caused by missing close calls in worker loops under high concurrency.",
-        metadata={"is_verified": True, "source": "postmortem-10"},
+        metadata={
+            "verification_status": "verified",
+            "verified_at": "2026-11-04T12:00:00",
+            "source": "postmortem-10",
+            "provenance": {
+                "verified_by": "independent-verifier",
+                "independent_verification_receipt": {
+                    "passed": True,
+                    "task_id": "TASK-SQLITE-10",
+                    "attempt_id": "attempt-sqlite-10",
+                    "verifier_id": "independent-verifier",
+                    "evidence_refs": ["test:sqlite-leak"],
+                },
+            },
+            "task_id": "TASK-SQLITE-10",
+        },
     )
 
     loop = ControlledRetrievalLoop(retriever=retriever, max_iterations=3, sufficiency_threshold=0.6)
@@ -138,7 +153,43 @@ async def test_controlled_memory_loop_consolidation():
     # Verify semantic fact was stored
     memories = store.query_records(query="LBKeepaliveTimeout", requester_id="BossAI")
     assert len(memories) == 1
-    assert memories[0].is_verified
+    assert not memories[0].is_verified
+    assert store.query_trusted_records(query="LBKeepaliveTimeout", requester_id="BossAI") == []
+
+
+@pytest.mark.asyncio
+async def test_controlled_memory_loop_requires_independent_receipt_to_trust_memory():
+    store = SixTierMemoryStore()
+    loop = ControlledMemoryLoop(memory_store=store)
+    task_receipt = {
+        "summary": "Updated load balancer keepalive settings",
+        "technical_claims": [
+            {
+                "concept": "LBKeepaliveTimeout",
+                "statement": "Keepalive timeout set to 65s prevents 502 bad gateway spikes.",
+            }
+        ],
+    }
+    independent_receipt = {
+        "passed": True,
+        "task_id": "TASK-LB-VERIFIED",
+        "attempt_id": "attempt-lb-verified",
+        "verifier_id": "independent-verifier",
+        "evidence_refs": ["verifier:attempt-lb-verified:test:1"],
+    }
+
+    result = await loop.execute(
+        task_id="TASK-LB-VERIFIED",
+        employee_id="EMP-NET-2",
+        outcome="success",
+        receipt=task_receipt,
+        verification_receipt=independent_receipt,
+    )
+
+    assert result["status"] == "consolidated"
+    trusted = store.query_trusted_records(query="LBKeepaliveTimeout", requester_id="BossAI")
+    assert len(trusted) == 1
+    assert trusted[0].provenance["verified_by"] == "independent-verifier"
 
 
 @pytest.mark.asyncio

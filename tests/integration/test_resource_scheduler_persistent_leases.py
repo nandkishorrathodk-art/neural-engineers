@@ -112,7 +112,7 @@ async def test_durable_resource_lease_fences_competing_scheduler_and_releases_fo
 
 
 @pytest.mark.asyncio
-async def test_provision_failure_releases_claimed_durable_lease(async_session, tmp_path):
+async def test_provision_failure_quarantines_claimed_durable_lease_until_cleanup(async_session, tmp_path):
     repository = ResourceLeaseRepository(async_session)
     scheduler = make_scheduler(
         repository,
@@ -125,8 +125,37 @@ async def test_provision_failure_releases_claimed_durable_lease(async_session, t
 
     lease = await async_session.scalar(select(ResourceLease))
     assert lease is not None
-    assert lease.status == "released"
+    assert lease.status == "active"
     assert scheduler.get_stats()["active_desktops_count"] == 0
+
+    # Another request must not reuse the physical slot while the failed
+    # provisioning outcome may have left a broker desktop behind.
+    retry = await scheduler.request_desktop_session("ANC-EMP-RETRY", "TASK-RETRY")
+    assert retry["status"] == "queued_standby"
+
+    lease.lease_expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+    await async_session.commit()
+    assert await repository.claim(
+        resource_key=lease.resource_key,
+        employee_id="ANC-EMP-RETRY",
+        lease_seconds=30,
+    ) is None
+    await async_session.refresh(lease)
+    assert lease.status == "expired"
+
+    # Only broker-backed cleanup that verifies absence may free the fence.
+    cleaned = await reconcile_quarantined_desktop_leases(
+        repository,
+        FakeBrokerManager(),
+        resource_pool_id="test-host",
+    )
+    assert cleaned == 1
+    await async_session.refresh(lease)
+    assert lease.status == "released"
+    scheduler.slot_pool.container_manager.provision_error = None
+    replacement = await scheduler.request_desktop_session("ANC-EMP-RETRY", "TASK-RETRY")
+    assert replacement["status"] == "active"
+    assert replacement["resource_lease"]["fencing_token"] == lease.fencing_token + 1
 
 
 @pytest.mark.asyncio

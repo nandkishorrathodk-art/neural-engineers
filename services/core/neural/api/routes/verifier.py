@@ -5,6 +5,7 @@ from neural.api.deps import (
     get_employee_repo,
     get_service_heartbeat_repo,
     get_task_repo,
+    require_execution_not_halted,
     require_verifier_token,
 )
 from neural.api.schemas.requests import (
@@ -21,11 +22,12 @@ from neural.db.repositories import (
     ServiceHeartbeatRepository,
     TaskRepository,
 )
+from neural.security.kill_switch import get_kill_switch
 
 router = APIRouter(
     prefix="/internal/verifier",
     tags=["Independent verification"],
-    dependencies=[Depends(require_verifier_token)],
+    dependencies=[Depends(require_verifier_token), Depends(require_execution_not_halted)],
 )
 
 
@@ -48,6 +50,7 @@ async def list_verification_queue(
     limit: int = Query(default=50, ge=1, le=200),
     task_repo: TaskRepository = Depends(get_task_repo),
 ):
+    get_kill_switch().guard_active()
     return {"items": await task_repo.list_pending_verification(limit)}
 
 
@@ -61,6 +64,7 @@ async def execute_verifier_test(
     container_repo: ContainerRepository = Depends(get_container_repo),
     container_manager: ContainerManager = Depends(get_container_manager),
 ):
+    get_kill_switch().guard_active()
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
@@ -99,6 +103,7 @@ async def capture_verifier_manifest(
     container_repo: ContainerRepository = Depends(get_container_repo),
     container_manager: ContainerManager = Depends(get_container_manager),
 ):
+    get_kill_switch().guard_active()
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
@@ -128,6 +133,7 @@ async def review_task_attempt(
     task_repo: TaskRepository = Depends(get_task_repo),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
 ):
+    get_kill_switch().guard_active()
     receipt = decision.model_dump()
     outcome = await task_repo.review_task_attempt(task_id, attempt_id, verifier_id, receipt)
     if outcome is None:

@@ -55,12 +55,19 @@ class LayaAdapter(BaseLayaAdapter):
         self._init_runtime()
 
     def _detect_runtime(self) -> ModelRuntime:
-        # Check if ONNX model is available and onnxruntime is installed
+        # Treat a local ONNX file as executable input: verify its pinned digest
+        # before importing the runtime or allowing a session to load it.
         if self.checkpoint_metadata.onnx_path and os.path.exists(self.checkpoint_metadata.onnx_path):
             try:
+                self._verify_onnx_checkpoint()
                 import onnxruntime  # noqa: F401
                 return ModelRuntime.ONNX
-            except ImportError:
+            except Exception as exc:
+                logger.warning(
+                    "ONNX checkpoint unavailable or failed integrity verification; trying other runtimes",
+                    model=self.checkpoint_metadata.name,
+                    error=str(exc),
+                )
                 pass
 
         # Check if PyTorch model is requested/available
@@ -87,9 +94,24 @@ class LayaAdapter(BaseLayaAdapter):
 
         return ModelRuntime.FALLBACK
 
+    def _verify_onnx_checkpoint(self) -> bool:
+        """Require a well-formed pinned digest and verify the selected ONNX artifact."""
+        expected_digest = self.checkpoint_metadata.sha256_hash
+        if not isinstance(expected_digest, str) or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None:
+            raise ValueError("ONNX checkpoint requires a configured lowercase SHA-256 digest.")
+        if not self.checkpoint_metadata.onnx_path:
+            raise ValueError("ONNX checkpoint path is not configured.")
+        return self.registry.verify_checkpoint_file(
+            self.checkpoint_metadata.name,
+            self.checkpoint_metadata.onnx_path,
+        )
+
     def _init_runtime(self) -> None:
         if self.runtime == ModelRuntime.ONNX and self.checkpoint_metadata.onnx_path:
             try:
+                # Recheck immediately before loading to reduce the verify/load
+                # race between runtime detection and session construction.
+                self._verify_onnx_checkpoint()
                 import onnxruntime as ort
                 self._onnx_session = ort.InferenceSession(self.checkpoint_metadata.onnx_path)
                 logger.info("Initialized ONNX Runtime session", model=self.checkpoint_metadata.name)

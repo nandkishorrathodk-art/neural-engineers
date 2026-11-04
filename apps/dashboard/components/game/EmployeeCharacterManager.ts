@@ -190,13 +190,34 @@ export function syncEmployeesToCharacters(
           existing.animState = 'idle';
         }
       }
+      if (emp.desk_id && existing.assignedDeskId !== emp.desk_id) {
+        const oldWs = workstations.find((w) => w.id === existing.assignedDeskId);
+        if (oldWs && oldWs.occupantId === emp.employee_id) {
+          oldWs.occupantId = null;
+        }
+        const newWs = workstations.find((w) => w.id === emp.desk_id);
+        if (newWs) {
+          newWs.occupantId = emp.employee_id;
+          existing.assignedDeskId = newWs.id;
+          existing.targetGridX = newWs.seatGridX;
+          existing.targetGridY = newWs.seatGridY;
+        } else {
+          existing.assignedDeskId = emp.desk_id;
+        }
+      }
     } else {
       // Recruited employee!
       const role = inferRole(emp.department, emp.title);
       const theme = generateCharacterTheme(role, emp.employee_id + emp.name);
 
-      const ws = allocateWorkstation(role, workstations);
-      const assignedDeskId = ws ? ws.id : null;
+      let ws: WorkstationDef | null = null;
+      if (emp.desk_id) {
+        ws = workstations.find((w) => w.id === emp.desk_id) || null;
+      }
+      if (!ws) {
+        ws = allocateWorkstation(role, workstations);
+      }
+      const assignedDeskId = ws ? ws.id : (emp.desk_id || null);
       if (ws) {
         ws.occupantId = emp.employee_id;
       }
@@ -212,9 +233,9 @@ export function syncEmployeesToCharacters(
         : 'No active task';
 
       // Bootstrap at the assigned desk; later recruits walk in from the entry.
-      const startAtDesk = isInitialBootstrap && ws;
-      const startX = startAtDesk ? ws.seatGridX : spawnPoint.x;
-      const startY = startAtDesk ? ws.seatGridY : spawnPoint.y;
+      const startAtDesk = Boolean(isInitialBootstrap && ws);
+      const startX = (isInitialBootstrap && ws) ? ws.seatGridX : spawnPoint.x;
+      const startY = (isInitialBootstrap && ws) ? ws.seatGridY : spawnPoint.y;
 
       const newChar: GameCharacter = {
         id: emp.employee_id,

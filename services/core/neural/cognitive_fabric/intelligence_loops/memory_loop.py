@@ -40,7 +40,8 @@ class ControlledMemoryLoop:
         employee_id: str,
         outcome: str,
         receipt: dict[str, Any],
-        verifier_id: str = "BossAI",
+        verifier_id: Optional[str] = None,
+        verification_receipt: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         guard = ControlledLoopGuard(
             loop_name=f"MemoryLoop-{task_id}",
@@ -60,6 +61,7 @@ class ControlledMemoryLoop:
                     outcome=outcome,
                     receipt=receipt,
                     verifier_id=verifier_id,
+                    verification_receipt=verification_receipt,
                 )
 
                 # Record consolidation state with CycleGuard

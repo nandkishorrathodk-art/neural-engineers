@@ -147,6 +147,85 @@ async def test_audit_log_detects_tampered_records(async_session: AsyncSession):
     with pytest.raises(AuditIntegrityError):
         AuditLogChainVerifier.enforce_integrity(records)
 
+    # Reset actor and verify clean again
+    e1.actor = "operator"
+    valid_restored, _ = AuditLogChainVerifier.verify_records(records)
+    assert valid_restored is True
+
+    # Tamper with e1 details
+    e1.details = {"unauthorized_override": True}
+    valid_details_tampered, details_issues = AuditLogChainVerifier.verify_records(records)
+    assert valid_details_tampered is False
+    assert len(details_issues) > 0
+    assert any("payload/details integrity violation" in issue.lower() for issue in details_issues)
+    with pytest.raises(AuditIntegrityError):
+        AuditLogChainVerifier.enforce_integrity(records)
+
+    # Reset details and tamper with payload
+    e1.details = {}
+    e1.payload = {"unauthorized_payload": 123}
+    valid_payload_tampered, payload_issues = AuditLogChainVerifier.verify_records(records)
+    assert valid_payload_tampered is False
+    assert len(payload_issues) > 0
+    assert any("payload/details integrity violation" in issue.lower() for issue in payload_issues)
+    with pytest.raises(AuditIntegrityError):
+        AuditLogChainVerifier.enforce_integrity(records)
+
+    # Reset payload -> clean chain passes
+    e1.payload = None
+    valid_final, final_issues = AuditLogChainVerifier.verify_records(records)
+    assert valid_final is True
+    assert len(final_issues) == 0
+
+    # Test dual payload and details tampering:
+    e_dual = await repo.log(
+        actor="dual_actor",
+        action="DUAL_ACTION",
+        resource_type="type_dual",
+        resource_id="id_dual",
+        details={"approved": False, "role": "viewer"},
+        payload={"command": "inspect"},
+    )
+    dual_chain = [e1, e2, e_dual]
+    valid_dual_init, _ = AuditLogChainVerifier.verify_records(dual_chain)
+    assert valid_dual_init is True
+
+    # Tamper with details when payload is non-empty
+    e_dual.details = {"approved": True, "role": "admin"}
+    valid_dual_tamper_det, dual_issues_det = AuditLogChainVerifier.verify_records(dual_chain)
+    assert valid_dual_tamper_det is False
+    assert any("payload/details integrity violation" in issue.lower() for issue in dual_issues_det)
+
+    # Reset details and tamper with payload
+    e_dual.details = {"approved": False, "role": "viewer"}
+    e_dual.payload = {"command": "drop_tables"}
+    valid_dual_tamper_pay, dual_issues_pay = AuditLogChainVerifier.verify_records(dual_chain)
+    assert valid_dual_tamper_pay is False
+    assert any("payload/details integrity violation" in issue.lower() for issue in dual_issues_pay)
+
+    # Restore clean payload
+    e_dual.payload = {"command": "inspect"}
+    valid_dual_clean, _ = AuditLogChainVerifier.verify_records(dual_chain)
+    assert valid_dual_clean is True
+
+    # Attacking last block: wipe signature = None
+    saved_sig = e_dual.signature
+    e_dual.signature = None
+    valid_none_sig, none_sig_issues = AuditLogChainVerifier.verify_records(dual_chain)
+    assert valid_none_sig is False
+    assert any("signature mismatch" in issue.lower() for issue in none_sig_issues)
+    e_dual.signature = saved_sig
+
+    # Attacking last block: wipe request_hash and forge signature
+    saved_req_hash = e_dual.request_hash
+    e_dual.request_hash = None
+    e_dual.signature = AuditLogChainVerifier.compute_signature(e_dual)
+    valid_forged, forged_issues = AuditLogChainVerifier.verify_records(dual_chain)
+    assert valid_forged is False
+    assert any("payload/details integrity violation" in issue.lower() for issue in forged_issues)
+    e_dual.request_hash = saved_req_hash
+    e_dual.signature = saved_sig
+
 
 def test_audit_log_order_chain_traversal():
     """Validates that order_chain reconstructs correct linear order even when records are shuffled or have identical timestamps."""

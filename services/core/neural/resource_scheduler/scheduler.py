@@ -184,7 +184,12 @@ class DesktopResourceScheduler:
                 )
             except Exception:
                 if durable_lease:
-                    await self._release_resource_lease(free_slot.slot_id)
+                    # A provisioning error may occur after the broker created
+                    # the desktop but before its database record was saved.
+                    # Keep the durable fence until the broker-backed reaper
+                    # proves absence; do not renew it locally because there is
+                    # no successfully allocated slot to heartbeat.
+                    self._resource_leases.pop(free_slot.slot_id, None)
                 raise
             break
 

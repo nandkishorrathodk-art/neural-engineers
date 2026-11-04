@@ -9,6 +9,7 @@ from neural.constants import SkillLevel
 from neural.db.models import Employee
 from neural.db.repositories import EmployeeRepository
 from neural.logger import get_logger
+from neural.workstations.assignment import WorkstationAssignmentService
 
 logger = get_logger("ancos.employees.factory")
 
@@ -65,6 +66,7 @@ class EmployeeFactory:
         communication_style: Optional[str] = None,
         initial_skills: Optional[list[str]] = None,
         recruitment_origin: Optional[str] = None,
+        desk_id: Optional[str] = None,
     ) -> Employee:
         role_cfg = self._load_role_config(role_id) if role_id else None
 
@@ -91,7 +93,7 @@ class EmployeeFactory:
         if role_cfg:
             model_config_data = {
                 "preferred_model_tier": role_cfg.get("preferred_model_tier", "coding"),
-                "container_template": role_cfg.get("container_template", "employee-swe")
+                "container_template": role_cfg.get("container_template", "employee-swe"),
             }
         if recruitment_origin:
             model_config_data["recruitment_origin"] = recruitment_origin
@@ -99,6 +101,23 @@ class EmployeeFactory:
         # Ensure workspace directory exists on host
         workspace_base = os.path.abspath(self.settings.EMPLOYEE_WORKSPACE_BASE)
         os.makedirs(os.path.join(workspace_base, employee_id), exist_ok=True)
+
+        # Allocate desk if not explicitly provided, or validate explicit desk
+        assigned_desk = desk_id
+        if hasattr(self.repo, "list_occupied_desks"):
+            occupied = await self.repo.list_occupied_desks()
+            if assigned_desk is not None:
+                if assigned_desk in occupied:
+                    raise ValueError(
+                        f"Workstation desk '{assigned_desk}' is already assigned to an active employee"
+                    )
+            else:
+                assigned_desk = WorkstationAssignmentService.allocate_desk(
+                    department=effective_dept,
+                    title=effective_title,
+                    occupied_desks=occupied,
+                    employee_id=employee_id,
+                )
 
         employee = await self.repo.create(
             employee_id=employee_id,
@@ -110,7 +129,8 @@ class EmployeeFactory:
             system_prompt=system_prompt,
             approved_tools=approved_tools,
             model_config_data=model_config_data,
-            performance_summary={"completed_tasks": 0, "verified_skills": []}
+            performance_summary={"completed_tasks": 0, "verified_skills": []},
+            desk_id=assigned_desk,
         )
 
         # Resolve skill levels from role configuration if available

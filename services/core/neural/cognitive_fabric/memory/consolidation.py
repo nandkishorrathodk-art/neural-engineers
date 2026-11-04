@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from neural.cognitive_fabric.memory.models import (
     MemoryLayer,
     utc_now,
+    valid_independent_verification_receipt,
 )
 from neural.cognitive_fabric.memory.six_tier_store import SixTierMemoryStore
 from neural.logger import get_logger
@@ -28,7 +29,8 @@ class MemoryConsolidationEngine:
         employee_id: str,
         outcome: str,
         receipt: dict[str, Any],
-        verifier_id: str = "BossAI",
+        verifier_id: Optional[str] = None,
+        verification_receipt: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """
         Consolidates completed task execution into:
@@ -39,7 +41,17 @@ class MemoryConsolidationEngine:
         logger.info("Consolidating task experience", task_id=task_id, outcome=outcome)
 
         summary = receipt.get("summary", f"Task {task_id} completed with outcome {outcome}")
-        is_success = outcome.lower() in ("success", "passed", "completed")
+        reports_success = outcome.lower() in ("success", "passed", "completed")
+        has_valid_receipt = valid_independent_verification_receipt(
+            verification_receipt,
+            employee_id=employee_id,
+            task_id=task_id,
+        )
+        has_independent_verification = has_valid_receipt and (
+            not verifier_id or verification_receipt.get("verifier_id") == verifier_id
+        )
+        effective_verifier_id = verification_receipt.get("verifier_id") if has_independent_verification else None
+        is_success = reports_success and has_independent_verification
 
         # 1. Store episodic record
         episodic_rec = await self.memory_store.store_episodic(
@@ -48,7 +60,7 @@ class MemoryConsolidationEngine:
             outcome=outcome,
             summary=summary,
             receipt=receipt,
-            is_verified=is_success,
+            verification_receipt=verification_receipt if is_success else None,
         )
 
         consolidated_items = [episodic_rec.id]
@@ -95,8 +107,9 @@ class MemoryConsolidationEngine:
                 explanation=statement,
                 source=f"task:{task_id}",
                 tags=claim.get("tags", []),
-                verified_by=verifier_id if is_success else None,
+                verified_by=effective_verifier_id if is_success else None,
                 confidence=claim.get("confidence", 0.9 if is_success else 0.5),
+                verification_receipt=verification_receipt if is_success else None,
             )
             consolidated_items.append(sem_rec.id)
 
@@ -109,7 +122,9 @@ class MemoryConsolidationEngine:
                 procedure_name=p_name,
                 steps=p_steps,
                 code_recipe=procedure.get("code"),
-                verified_by=verifier_id,
+                verified_by=effective_verifier_id,
+                verification_receipt=verification_receipt,
+                task_id=task_id,
             )
             consolidated_items.append(proc_rec.id)
 

@@ -86,6 +86,18 @@ class ServiceHeartbeat(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
 
 
+class EmergencyStopState(Base):
+    """Durable shared emergency-stop state read by every API instance."""
+
+    __tablename__ = "emergency_stop_state"
+
+    state_key: Mapped[str] = mapped_column(String(64), primary_key=True, default="global")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    changed_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class Employee(Base):
     __tablename__ = "employees"
 
@@ -104,6 +116,7 @@ class Employee(Base):
     )
     performance_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     hired_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    desk_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     container_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("containers.id"), nullable=True
@@ -372,6 +385,7 @@ class Meeting(Base):
     scheduled_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     concluded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    active_speaker_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     action_items: Mapped[list["ActionItem"]] = relationship(
         "ActionItem", back_populates="meeting", cascade="all, delete-orphan"

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Optional, Sequence
 
-from neural.cognitive_fabric.memory.models import MemoryRecord
+from neural.cognitive_fabric.memory.models import (
+    MemoryRecord,
+    valid_independent_verification_receipt,
+)
 from neural.cognitive_fabric.memory.permissions import MemoryAccessController
 from neural.cognitive_fabric.memory.six_tier_store import SixTierMemoryStore
 from neural.cognitive_fabric.retrieval.bm25_index import BM25Index
@@ -33,15 +36,25 @@ class HybridRetrievalEngine:
         self.reranker = reranker or ReciprocalRankFusionReranker()
         self.access_controller = MemoryAccessController()
 
-    def index_record(self, record: MemoryRecord) -> None:
+    def index_record(self, record: MemoryRecord, *, allow_unverified: bool = False) -> bool:
+        if not allow_unverified and not self._has_trusted_provenance(record.to_dict()):
+            return False
         meta = record.to_dict()
         self.vector_store.add_document(record.id, record.content, metadata=meta)
         self.bm25_index.add_document(record.id, record.content, metadata=meta)
+        return True
 
     def index_document(self, doc_id: str, text: str, metadata: Optional[dict[str, Any]] = None) -> None:
         meta = metadata or {}
         self.vector_store.add_document(doc_id, text, metadata=meta)
         self.bm25_index.add_document(doc_id, text, metadata=meta)
+
+    async def restore_persisted_memory(self, limit: int = 1000) -> int:
+        """Hydrate the backing memory store and index only receipt-verified records."""
+        loaded = await self.memory_store.load_persisted_records(limit=limit)
+        for record in self.memory_store.query_trusted_records(requester_id="BossAI", limit=limit):
+            self.index_record(record)
+        return loaded
 
     def retrieve(
         self,
@@ -51,6 +64,7 @@ class HybridRetrievalEngine:
         department: Optional[str] = None,
         projects: Optional[Sequence[str]] = None,
         metadata_filter: Optional[dict[str, Any]] = None,
+        include_unverified: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Executes hybrid retrieval:
@@ -67,18 +81,42 @@ class HybridRetrievalEngine:
         filtered_dense = []
         for doc_id, score, doc in dense_results:
             meta = doc.get("metadata", {})
+            if not include_unverified and not self._has_trusted_provenance(meta):
+                continue
             if self._check_access(meta, requester_id, department, projects):
                 filtered_dense.append((doc_id, score, doc))
 
         filtered_bm25 = []
         for doc_id, score, doc in bm25_results:
             meta = doc.get("metadata", {})
+            if not include_unverified and not self._has_trusted_provenance(meta):
+                continue
             if self._check_access(meta, requester_id, department, projects):
                 filtered_bm25.append((doc_id, score, doc))
 
         # Reciprocal Rank Fusion
         fused = self.reranker.fuse(filtered_dense, filtered_bm25, top_k=top_k)
         return fused
+
+    @staticmethod
+    def _has_trusted_provenance(meta: dict[str, Any]) -> bool:
+        if meta.get("verification_status") != "verified" or not meta.get("verified_at"):
+            return False
+        provenance = meta.get("provenance")
+        if not isinstance(provenance, dict):
+            return False
+        verifier_id = provenance.get("verified_by") or provenance.get("verifier_id")
+        receipt = provenance.get("independent_verification_receipt")
+        return bool(
+            verifier_id
+            and isinstance(receipt, dict)
+            and receipt.get("verifier_id") == verifier_id
+            and valid_independent_verification_receipt(
+                receipt,
+                employee_id=meta.get("owner_employee_id"),
+                task_id=(meta.get("metadata") or {}).get("task_id") or meta.get("task_id"),
+            )
+        )
 
     def _check_access(
         self,

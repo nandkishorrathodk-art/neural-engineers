@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Sequence
+import json
+from typing import Any, Sequence
 
 from neural.db.models import AuditLog
 from neural.exceptions import AuditIntegrityError
@@ -17,7 +18,20 @@ class AuditLogChainVerifier:
     1. The genesis block links to 'GENESIS_AUDIT_BLOCK'.
     2. Every subsequent block links to the preceding block's signature via `previous_hash`.
     3. Every block's signature matches the re-computed SHA-256 hash of its payload, action, actor, and previous_hash.
+    4. Every block's payload and details match the stored cryptographic request_hash.
     """
+
+    @classmethod
+    def compute_payload_hash(cls, payload: Any, details: Any) -> str:
+        """Computes the deterministic SHA-256 hash of the payload and details object."""
+        actual_payload = payload if payload is not None else {}
+        actual_details = details if details is not None else {}
+        if actual_payload and actual_details:
+            target = {"details": actual_details, "payload": actual_payload}
+        else:
+            target = actual_payload or actual_details
+        payload_str = json.dumps(target, sort_keys=True, default=str)
+        return hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
 
     @classmethod
     def compute_signature(cls, record: AuditLog) -> str:
@@ -87,8 +101,16 @@ class AuditLogChainVerifier:
                         f"expected previous_hash '{expected_prev}', got '{rec.previous_hash}'"
                     )
 
+            if rec.payload is not None or rec.details is not None:
+                expected_req_hash = cls.compute_payload_hash(rec.payload, rec.details)
+                if rec.request_hash != expected_req_hash:
+                    issues.append(
+                        f"Payload/details integrity violation at record id={rec.id}: "
+                        f"stored request_hash '{rec.request_hash}' does not match recomputed '{expected_req_hash}'"
+                    )
+
             computed_sig = cls.compute_signature(rec)
-            if rec.signature and rec.signature != computed_sig:
+            if not rec.signature or rec.signature != computed_sig:
                 issues.append(
                     f"Signature mismatch at record id={rec.id}: "
                     f"expected '{computed_sig}', got '{rec.signature}'"

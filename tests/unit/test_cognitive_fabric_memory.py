@@ -10,6 +10,18 @@ from neural.cognitive_fabric.memory.models import (
 )
 from neural.cognitive_fabric.memory.permissions import MemoryAccessController
 from neural.cognitive_fabric.memory.six_tier_store import SixTierMemoryStore
+from neural.cognitive_fabric.retrieval.hybrid_retrieval import HybridRetrievalEngine
+from neural.db.repositories import MemoryRepository
+
+
+def _verification_receipt(task_id: str, verifier_id: str = "independent-verifier") -> dict:
+    return {
+        "task_id": task_id,
+        "attempt_id": f"attempt-{task_id}",
+        "verifier_id": verifier_id,
+        "passed": True,
+        "evidence_refs": [f"verifier:{task_id}:tests", f"workspace-delta:{task_id}"],
+    }
 
 
 @pytest.mark.asyncio
@@ -35,7 +47,7 @@ async def test_six_tier_memory_layers_storage():
         outcome="success",
         summary="Fixed DB leak by lowering pool idle timeout to 300s",
         receipt={"exit_code": 0, "fixed": True},
-        is_verified=True,
+        verification_receipt=_verification_receipt("TASK-001", "LeadVerifier"),
     )
     assert ep.layer == MemoryLayer.EPISODIC
     assert ep.is_verified
@@ -47,6 +59,7 @@ async def test_six_tier_memory_layers_storage():
         explanation="Idle connections must terminate within 300s to avoid pool starvation.",
         source="doc:architecture-v2",
         verified_by="BossAI",
+        verification_receipt=_verification_receipt("DOC-CONNECTION-POOL", "BossAI"),
         confidence=0.95,
         access_level=MemoryAccessLevel.INTERNAL,
         allowed_departments=["Engineering"],
@@ -64,6 +77,7 @@ async def test_six_tier_memory_layers_storage():
         ],
         code_recipe="def restart(): pass",
         verified_by="LeadEngineer",
+        verification_receipt=_verification_receipt("PROC-RESTART-POOL", "LeadEngineer"),
     )
     assert proc.layer == MemoryLayer.PROCEDURAL
     assert proc.is_verified
@@ -204,6 +218,7 @@ async def test_six_tier_store_query_and_filtering():
         concept="FastAPI Routing",
         explanation="Use APIRouter for modular sub-applications.",
         verified_by="BossAI",
+        verification_receipt=_verification_receipt("DOC-FASTAPI", "BossAI"),
         allowed_departments=["Engineering"],
     )
     await store.store_semantic(
@@ -259,6 +274,7 @@ async def test_memory_consolidation_contradictions_and_superseding():
         outcome="success",
         receipt=receipt_with_conflict,
         verifier_id="BossAI",
+        verification_receipt=_verification_receipt("TASK-PERF-1", "BossAI"),
     )
 
     assert result["consolidated_records_count"] >= 2
@@ -294,3 +310,85 @@ async def test_memory_consolidation_contradictions_and_superseding():
     newest = store.query_records(query="500 seconds", requester_id="BossAI")
     assert len(newest) == 1
     assert not newest[0].is_verified
+
+
+@pytest.mark.asyncio
+async def test_success_outcome_without_independent_receipt_stays_untrusted_and_does_not_promote():
+    store = SixTierMemoryStore()
+    engine = MemoryConsolidationEngine(store)
+
+    result = await engine.consolidate_task_experience(
+        task_id="TASK-UNVERIFIED-SUCCESS",
+        employee_id="ANC-EMP-WORKER",
+        outcome="success",
+        receipt={
+            "summary": "Worker reports a successful database optimization.",
+            "technical_claims": [{"concept": "UnsafeClaim", "statement": "The change is correct."}],
+            "reusable_procedure": {"name": "UnsafeRecipe", "steps": [{"step": 1}]},
+        },
+        verifier_id="BossAI",
+    )
+
+    episodic, = store.query_records(layer=MemoryLayer.EPISODIC, requester_id="BossAI")
+    assert not episodic.is_verified
+    assert store.query_trusted_records(layer=MemoryLayer.EPISODIC, requester_id="BossAI") == []
+    assert result["consolidated_records_count"] == 2  # episode plus an unverified semantic draft
+    assert store.query_records(layer=MemoryLayer.PROCEDURAL, requester_id="BossAI") == []
+    semantic, = store.query_records(layer=MemoryLayer.SEMANTIC, requester_id="BossAI")
+    assert not semantic.is_verified
+
+
+@pytest.mark.asyncio
+async def test_task_derived_memory_requires_a_distinct_verifier_and_matching_receipt():
+    store = SixTierMemoryStore()
+    worker_receipt = _verification_receipt("TASK-SAME-ACTOR", "ANC-EMP-WORKER")
+    episodic = await store.store_episodic(
+        task_id="TASK-SAME-ACTOR",
+        employee_id="ANC-EMP-WORKER",
+        outcome="success",
+        summary="Worker asserted success without independent review.",
+        verification_receipt=worker_receipt,
+    )
+    mismatched_receipt = _verification_receipt("TASK-OTHER")
+    mismatched = await store.store_episodic(
+        task_id="TASK-CURRENT",
+        employee_id="ANC-EMP-WORKER",
+        outcome="success",
+        summary="Receipt belongs to a different task.",
+        verification_receipt=mismatched_receipt,
+    )
+
+    assert not episodic.is_verified
+    assert not mismatched.is_verified
+    assert store.query_trusted_records(layer=MemoryLayer.EPISODIC, requester_id="BossAI") == []
+
+
+@pytest.mark.asyncio
+async def test_six_tier_memory_records_reload_from_relational_repository(async_session):
+    repository = MemoryRepository(async_session)
+    original = SixTierMemoryStore(memory_repo=repository)
+    trusted = await original.store_episodic(
+        task_id="TASK-PERSISTED",
+        employee_id="ANC-EMP-PERSISTED",
+        outcome="success",
+        summary="Verified outcome survives a fresh store instance.",
+        receipt={"worker_command": "tests passed"},
+        verification_receipt=_verification_receipt("TASK-PERSISTED"),
+    )
+    await original.store_episodic(
+        task_id="TASK-PERSISTED-UNVERIFIED",
+        employee_id="ANC-EMP-PERSISTED",
+        outcome="success",
+        summary="Unverified result stays out of trusted memory after reload.",
+    )
+
+    restored = SixTierMemoryStore(memory_repo=repository)
+    retriever = HybridRetrievalEngine(memory_store=restored)
+    count = await retriever.restore_persisted_memory()
+
+    assert count == 2
+    trusted_after_restart = restored.get_record(trusted.id)
+    assert trusted_after_restart is not None and trusted_after_restart.is_verified
+    assert [r.id for r in restored.query_trusted_records(layer=MemoryLayer.EPISODIC, requester_id="BossAI")] == [trusted.id]
+    retrieved = retriever.retrieve("verified outcome survives", requester_id="BossAI")
+    assert [record["id"] for record in retrieved] == [trusted.id]

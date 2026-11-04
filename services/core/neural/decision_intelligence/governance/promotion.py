@@ -25,6 +25,9 @@ class PromotionCriteria(BaseModel):
 class PromotionAssessment(BaseModel):
     category: str
     eligible_for_promotion: bool
+    activation_status: str = Field(
+        description="Evaluation never activates a category; eligible results still require a separate owner approval workflow."
+    )
     episode_count: int
     accuracy: float = Field(ge=0.0, le=1.0)
     ece: float = Field(ge=0.0, le=1.0)
@@ -34,8 +37,9 @@ class PromotionAssessment(BaseModel):
 
 class PromotionManager:
     """
-    Automated criteria checker for production rollout out of Shadow Mode (Section 11 & 13).
+    Evidence assessor for a possible production rollout out of Shadow Mode.
     Requires >= 96.0% accuracy, ECE <= 0.08, P95 < 40ms across >= 100 consecutive episodes.
+    This assessment is not an activation approval. It never changes runtime mode.
     """
 
     def __init__(
@@ -95,13 +99,20 @@ class PromotionManager:
 
         eligible = len(rejection_reasons) == 0
 
+        # `auto_promote` is retained for API compatibility with older callers, but
+        # metric eligibility alone cannot authorize a live behavior change. The
+        # owner approval and promotion lifecycle must be a separate operation.
+        activation_status = "approval_required" if eligible else "not_eligible"
         if eligible and auto_promote:
-            self.shadow_manager.set_shadow_mode(category, enabled=False)
-            logger.info("Category successfully promoted out of shadow mode to live System 1", category=category)
+            logger.warning(
+                "Ignoring legacy auto_promote request; evaluation cannot activate a category",
+                category=category,
+            )
 
         return PromotionAssessment(
             category=category,
             eligible_for_promotion=eligible,
+            activation_status=activation_status,
             episode_count=n,
             accuracy=round(accuracy, 4),
             ece=round(ece, 4),

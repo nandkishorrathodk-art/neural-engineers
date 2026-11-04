@@ -10,6 +10,7 @@ from neural.db.repositories import (
     ContainerRepository,
     DecisionLedgerRepository,
     DecisionRecordRepository,
+    EmergencyStopRepository,
     EmployeeRepository,
     EvolutionRepository,
     MeetingRepository,
@@ -26,6 +27,7 @@ from neural.db.repositories import (
     ToolRepository,
     VoteRepository,
 )
+from neural.security.kill_switch import get_kill_switch
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -41,6 +43,25 @@ async def get_resource_lease_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> ResourceLeaseRepository:
     return ResourceLeaseRepository(session)
+
+
+async def require_execution_not_halted(
+    session: AsyncSession = Depends(get_db_session),
+) -> None:
+    """Read the shared emergency-stop latch before any worker/verifier operation."""
+    try:
+        state = await EmergencyStopRepository(session).get_state()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Emergency-stop state is unavailable; worker and verifier execution is blocked.",
+        ) from exc
+    get_kill_switch().sync_state(state)
+    if state["active"]:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Emergency stop is active: {state['reason'] or 'operator halt'}.",
+        )
 
 
 async def require_worker_token(authorization: str | None = Header(default=None)) -> str:

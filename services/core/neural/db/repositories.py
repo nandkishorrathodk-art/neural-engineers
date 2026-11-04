@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from neural.cognitive_fabric.memory.models import valid_independent_verification_receipt
 from neural.constants import (
     ActionItemStatus,
     ApprovalStatus,
@@ -35,6 +36,7 @@ from neural.db.models import (
     Container,
     DecisionLedgerEntry,
     DecisionRecord,
+    EmergencyStopState,
     Employee,
     EmployeeSkill,
     EvolutionRecord,
@@ -769,6 +771,14 @@ class TaskRepository:
                 await self.session.rollback()
                 return None
 
+            # Bind provenance to the authenticated verifier and the active DB attempt.
+            # These values must never be accepted from the verifier's request body.
+            verification_receipt = {
+                **verification_receipt,
+                "verifier_id": verifier_id,
+                "attempt_id": attempt.id,
+                "task_id": task.task_id,
+            }
             passed = verification_receipt["passed"]
             attempt.status = "verified" if passed else "rejected"
             attempt.verification_receipt = verification_receipt
@@ -834,6 +844,59 @@ class TaskRepository:
                         submitted_at=now,
                     )
                 )
+                employee_id = employee.employee_id if employee else task.assigned_to
+                if employee_id and valid_independent_verification_receipt(
+                    verification_receipt,
+                    employee_id=employee_id,
+                    task_id=task.task_id,
+                ):
+                    # Persist the verified episodic memory in the same transaction as
+                    # task completion. A stable record ID makes recovery/retries safe.
+                    record_id = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"ancos:verified-task:{task.id}:{attempt.id}",
+                        )
+                    )
+                    record_provenance = {
+                        "employee_id": employee_id,
+                        "outcome": "success",
+                        "verified_by": verifier_id,
+                        "independent_verification_receipt": verification_receipt,
+                    }
+                    self.session.add(
+                        MemoryEntry(
+                            id=record_id,
+                            category=MemoryCategory.EPISODE,
+                            source=f"task-attempt:{attempt.id}",
+                            content=str(verification_receipt["notes"]),
+                            confidence=1.0,
+                            metadata_json={
+                                "record_schema_version": 1,
+                                "record_id": record_id,
+                                "layer": "episodic",
+                                "category": "task_receipt",
+                                "access_level": "internal",
+                                "verification_status": "verified",
+                                "owner_employee_id": employee_id,
+                                "allowed_departments": [],
+                                "allowed_projects": [],
+                                "version": 1,
+                                "provenance": record_provenance,
+                                "record_metadata": {
+                                    "task_id": task.task_id,
+                                    "attempt_id": attempt.id,
+                                    "outcome": "success",
+                                    "test_summary": verification_receipt.get("test_summary", {}),
+                                },
+                                "created_at": now.isoformat(),
+                                "verified_at": now.isoformat(),
+                                "related_record_ids": [],
+                                "embedding": None,
+                                "task_id": task.task_id,
+                            },
+                        )
+                    )
                 retrying = False
                 retry_after_seconds = 0
             else:
@@ -1494,6 +1557,60 @@ class ResourceLeaseRepository:
         return [self._as_dict(lease) for lease in result.scalars().all()]
 
 
+class EmergencyStopRepository:
+    """Read/write the single durable ANCOS emergency-stop state."""
+
+    STATE_KEY = "global"
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_state(self) -> dict[str, Any]:
+        state = await self.session.get(EmergencyStopState, self.STATE_KEY)
+        if state is None:
+            return {
+                "active": False,
+                "reason": None,
+                "changed_by": None,
+                "changed_at": None,
+            }
+        return {
+            "active": state.active,
+            "reason": state.reason,
+            "changed_by": state.changed_by,
+            "changed_at": state.changed_at,
+        }
+
+    async def set_state(self, *, active: bool, actor: str, reason: str | None) -> dict[str, Any]:
+        now = utc_now()
+        values = {
+            "active": active,
+            "reason": reason,
+            "changed_by": actor,
+            "changed_at": now,
+        }
+        result = await self.session.execute(
+            update(EmergencyStopState)
+            .where(EmergencyStopState.state_key == self.STATE_KEY)
+            .values(**values)
+        )
+        if result.rowcount == 0:
+            self.session.add(EmergencyStopState(state_key=self.STATE_KEY, **values))
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            # Concurrent first writers can race to create the singleton row.
+            # Roll back and apply the requested state to the now-existing row.
+            await self.session.rollback()
+            await self.session.execute(
+                update(EmergencyStopState)
+                .where(EmergencyStopState.state_key == self.STATE_KEY)
+                .values(**values)
+            )
+            await self.session.commit()
+        return {**values}
+
+
 class ServiceHeartbeatRepository:
     """Persists the latest authenticated liveness receipt per service identity."""
 
@@ -1781,7 +1898,56 @@ class EmployeeRepository:
             "hired_at": emp.hired_at.isoformat() if emp.hired_at else None,
             "skills": skills_info,
             "performance_summary": emp.performance_summary or {},
+            "desk_id": emp.desk_id,
         }
+
+    async def assign_desk(self, employee_id: str, desk_id: str) -> Optional[Employee]:
+        emp = await self.get_by_employee_id(employee_id)
+        if not emp:
+            raise ValueError(f"Employee {employee_id} not found")
+
+        stmt = (
+            select(Employee)
+            .where(
+                Employee.desk_id == desk_id,
+                Employee.id != emp.id,
+                Employee.employee_id != emp.employee_id,
+                Employee.status != EmployeeStatus.TERMINATED,
+            )
+        )
+        existing = (await self.session.execute(stmt)).scalar_one_or_none()
+        if existing:
+            raise ValueError(f"Workstation desk '{desk_id}' is already assigned to active employee '{existing.employee_id}'")
+
+        emp.desk_id = desk_id
+        await self.session.commit()
+        await self.session.refresh(emp)
+        return emp
+
+    async def release_desk(self, employee_id: str) -> Optional[Employee]:
+        emp = await self.get_by_employee_id(employee_id)
+        if not emp:
+            raise ValueError(f"Employee {employee_id} not found")
+        emp.desk_id = None
+        await self.session.commit()
+        await self.session.refresh(emp)
+        return emp
+
+    async def get_by_desk_id(self, desk_id: str) -> Optional[Employee]:
+        stmt = (
+            select(Employee)
+            .where(Employee.desk_id == desk_id, Employee.status != EmployeeStatus.TERMINATED)
+            .options(selectinload(Employee.skills))
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def list_occupied_desks(self) -> set[str]:
+        stmt = select(Employee.desk_id).where(
+            Employee.desk_id.isnot(None),
+            Employee.status != EmployeeStatus.TERMINATED,
+        )
+        result = await self.session.execute(stmt)
+        return {r[0] for r in result.all() if r[0]}
 
 
 
@@ -1904,6 +2070,15 @@ class MeetingRepository:
         if not meeting:
             return None
         meeting.minutes = minutes
+        await self.session.commit()
+        await self.session.refresh(meeting)
+        return meeting
+
+    async def update_speaker(self, meeting_id: str, speaker_id: Optional[str]) -> Optional[Meeting]:
+        meeting = await self.get_by_meeting_id(meeting_id)
+        if not meeting:
+            return None
+        meeting.active_speaker_id = speaker_id
         await self.session.commit()
         await self.session.refresh(meeting)
         return meeting
@@ -2153,9 +2328,14 @@ class AuditRepository:
     ) -> AuditLog:
         """Stage a hash-chained record in the current transaction without committing."""
         actual_payload = payload if payload is not None else {}
+        actual_details = details if details is not None else {}
         actual_request_hash = request_hash
         if not actual_request_hash:
-            payload_str = json.dumps(actual_payload or details, sort_keys=True, default=str)
+            if actual_payload and actual_details:
+                target = {"details": actual_details, "payload": actual_payload}
+            else:
+                target = actual_payload or actual_details
+            payload_str = json.dumps(target, sort_keys=True, default=str)
             actual_request_hash = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
 
         # Fetch last entry for cryptographic chain link

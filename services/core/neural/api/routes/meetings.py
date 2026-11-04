@@ -1,4 +1,6 @@
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from neural.api.deps import (
     get_action_item_repo,
@@ -6,15 +8,18 @@ from neural.api.deps import (
     get_audit_repo,
     get_employee_repo,
     get_meeting_repo,
+    get_message_bus,
     get_perf_repo,
     get_project_repo,
     get_task_repo,
 )
 from neural.api.schemas.requests import (
     ConductMeetingRequest,
+    ConductOperationalReviewRequest,
     CreateActionItemRequest,
     RecordDecisionRequest,
     ScheduleMeetingRequest,
+    SetMeetingSpeakerRequest,
     SubmitProgressReportRequest,
     TriggerBlockerMeetingRequest,
     TriggerPhaseMeetingRequest,
@@ -47,6 +52,10 @@ from neural.meetings.scheduler import MeetingScheduler
 router = APIRouter(prefix="/meetings", tags=["Boardroom & Meetings"])
 
 
+def utc_now() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 def serialize_action_item_model(ai) -> ActionItemResponse:
     return ActionItemResponse(
         id=ai.id,
@@ -60,26 +69,48 @@ def serialize_action_item_model(ai) -> ActionItemResponse:
     )
 
 
+def serialize_meeting_model(m) -> MeetingResponse:
+    return MeetingResponse(
+        id=m.id,
+        meeting_id=m.meeting_id,
+        title=m.title,
+        meeting_type=m.meeting_type,
+        status=m.status,
+        scheduled_at=m.scheduled_at,
+        participants=m.participants,
+        agenda=m.agenda,
+        minutes=m.minutes,
+        active_speaker_id=getattr(m, "active_speaker_id", None),
+    )
+
+
+def serialize_meeting_detail_model(m, action_items) -> MeetingDetailResponse:
+    return MeetingDetailResponse(
+        id=m.id,
+        meeting_id=m.meeting_id,
+        title=m.title,
+        meeting_type=m.meeting_type,
+        status=m.status,
+        scheduled_at=m.scheduled_at,
+        started_at=m.started_at,
+        concluded_at=m.concluded_at,
+        participants=m.participants,
+        agenda=m.agenda,
+        minutes=m.minutes,
+        decisions=m.decisions or [],
+        action_items=[serialize_action_item_model(ai) for ai in action_items],
+        active_speaker_id=getattr(m, "active_speaker_id", None),
+        activity_log=(m.minutes or {}).get("activity_log", []),
+    )
+
+
 @router.get("/", response_model=list[MeetingResponse])
 async def list_meetings(
     limit: int = Query(20, ge=1, le=100),
     meeting_repo: MeetingRepository = Depends(get_meeting_repo)
 ):
     meetings = await meeting_repo.list_recent(limit=limit)
-    return [
-        MeetingResponse(
-            id=m.id,
-            meeting_id=m.meeting_id,
-            title=m.title,
-            meeting_type=m.meeting_type,
-            status=m.status,
-            scheduled_at=m.scheduled_at,
-            participants=m.participants,
-            agenda=m.agenda,
-            minutes=m.minutes
-        )
-        for m in meetings
-    ]
+    return [serialize_meeting_model(m) for m in meetings]
 
 
 @router.post("/schedule", response_model=MeetingResponse)
@@ -104,17 +135,7 @@ async def schedule_meeting(
         details={"title": meeting.title, "type": meeting.meeting_type.value}
     )
 
-    return MeetingResponse(
-        id=meeting.id,
-        meeting_id=meeting.meeting_id,
-        title=meeting.title,
-        meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_at=meeting.scheduled_at,
-        participants=meeting.participants,
-        agenda=meeting.agenda,
-        minutes=meeting.minutes
-    )
+    return serialize_meeting_model(meeting)
 
 
 @router.get("/briefing", response_model=ExecutiveBriefingResponse)
@@ -217,17 +238,7 @@ async def trigger_standup(
         task_repo=task_repo
     )
     meeting = await scheduler.trigger_daily_standup(project_id=project_id, department=department)
-    return MeetingResponse(
-        id=meeting.id,
-        meeting_id=meeting.meeting_id,
-        title=meeting.title,
-        meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_at=meeting.scheduled_at,
-        participants=meeting.participants,
-        agenda=meeting.agenda,
-        minutes=meeting.minutes
-    )
+    return serialize_meeting_model(meeting)
 
 
 @router.post("/trigger/blocker", response_model=MeetingResponse)
@@ -250,17 +261,7 @@ async def trigger_blocker_meeting(
         blocker_reason=payload.blocker_reason,
         project_id=payload.project_id
     )
-    return MeetingResponse(
-        id=meeting.id,
-        meeting_id=meeting.meeting_id,
-        title=meeting.title,
-        meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_at=meeting.scheduled_at,
-        participants=meeting.participants,
-        agenda=meeting.agenda,
-        minutes=meeting.minutes
-    )
+    return serialize_meeting_model(meeting)
 
 
 @router.post("/trigger/phase", response_model=MeetingResponse)
@@ -285,17 +286,41 @@ async def trigger_phase_meeting(
         phase_id=payload.phase_id,
         completed_tasks=payload.completed_tasks
     )
-    return MeetingResponse(
-        id=meeting.id,
-        meeting_id=meeting.meeting_id,
-        title=meeting.title,
-        meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_at=meeting.scheduled_at,
-        participants=meeting.participants,
-        agenda=meeting.agenda,
-        minutes=meeting.minutes
-    )
+    return serialize_meeting_model(meeting)
+
+
+@router.post("/operational-review", response_model=MeetingDetailResponse)
+async def conduct_operational_review_endpoint(
+    payload: ConductOperationalReviewRequest,
+    meeting_repo: MeetingRepository = Depends(get_meeting_repo),
+    action_item_repo: ActionItemRepository = Depends(get_action_item_repo),
+    bus = Depends(get_message_bus)
+):
+    conductor = MeetingConductor(meeting_repo, action_item_repo=action_item_repo, message_bus=bus)
+    deadline = utc_now() + timedelta(hours=payload.action_item_deadline_hours or 24)
+    try:
+        meeting = await conductor.conduct_operational_review(
+            task_id=payload.task_id,
+            reporting_employee_id=payload.reporting_employee_id,
+            what_was_done=payload.what_was_done,
+            what_remains=payload.what_remains,
+            what_is_blocking=payload.what_is_blocking,
+            verification_receipt=payload.verification_receipt,
+            decision_topic=payload.decision_topic,
+            decision_text=payload.decision_text,
+            decision_rationale=payload.decision_rationale,
+            action_item_description=payload.action_item_description,
+            action_item_assigned_to=payload.action_item_assigned_to,
+            action_item_deadline=deadline,
+            project_id=payload.project_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FabricatedProgressError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    action_items = await action_item_repo.list_by_meeting(meeting.id)
+    return serialize_meeting_detail_model(meeting, action_items)
 
 
 @router.get("/{meeting_id}", response_model=MeetingDetailResponse)
@@ -309,21 +334,7 @@ async def get_meeting_details(
         raise HTTPException(status_code=404, detail="Meeting not found")
 
     action_items = await action_item_repo.list_by_meeting(meeting.id)
-    return MeetingDetailResponse(
-        id=meeting.id,
-        meeting_id=meeting.meeting_id,
-        title=meeting.title,
-        meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_at=meeting.scheduled_at,
-        started_at=meeting.started_at,
-        concluded_at=meeting.concluded_at,
-        participants=meeting.participants,
-        agenda=meeting.agenda,
-        minutes=meeting.minutes,
-        decisions=meeting.decisions or [],
-        action_items=[serialize_action_item_model(ai) for ai in action_items]
-    )
+    return serialize_meeting_detail_model(meeting, action_items)
 
 
 @router.post("/{meeting_id}/start", response_model=MeetingResponse)
@@ -337,17 +348,7 @@ async def start_meeting(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    return MeetingResponse(
-        id=meeting.id,
-        meeting_id=meeting.meeting_id,
-        title=meeting.title,
-        meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_at=meeting.scheduled_at,
-        participants=meeting.participants,
-        agenda=meeting.agenda,
-        minutes=meeting.minutes
-    )
+    return serialize_meeting_model(meeting)
 
 
 @router.post("/{meeting_id}/reports")
@@ -390,6 +391,26 @@ async def record_decision(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.post("/{meeting_id}/speaker", response_model=MeetingResponse)
+async def set_meeting_speaker(
+    meeting_id: str,
+    payload: SetMeetingSpeakerRequest,
+    meeting_repo: MeetingRepository = Depends(get_meeting_repo),
+    bus = Depends(get_message_bus),
+):
+    conductor = MeetingConductor(meeting_repo, message_bus=bus)
+    try:
+        meeting = await conductor.set_speaker(
+            meeting_id=meeting_id,
+            speaker_id=payload.speaker_id,
+            reason=payload.reason or "",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return serialize_meeting_model(meeting)
+
+
 @router.post("/{meeting_id}/conclude", response_model=MeetingDetailResponse)
 async def conclude_meeting(
     meeting_id: str,
@@ -404,21 +425,7 @@ async def conclude_meeting(
         raise HTTPException(status_code=404, detail=str(e))
 
     action_items = await action_item_repo.list_by_meeting(meeting.id)
-    return MeetingDetailResponse(
-        id=meeting.id,
-        meeting_id=meeting.meeting_id,
-        title=meeting.title,
-        meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_at=meeting.scheduled_at,
-        started_at=meeting.started_at,
-        concluded_at=meeting.concluded_at,
-        participants=meeting.participants,
-        agenda=meeting.agenda,
-        minutes=meeting.minutes,
-        decisions=meeting.decisions or [],
-        action_items=[serialize_action_item_model(ai) for ai in action_items]
-    )
+    return serialize_meeting_detail_model(meeting, action_items)
 
 
 @router.post("/{meeting_id}/conduct", response_model=MeetingDetailResponse)
@@ -443,18 +450,4 @@ async def conduct_meeting(
         raise HTTPException(status_code=400, detail=str(e))
 
     action_items = await action_item_repo.list_by_meeting(meeting.id)
-    return MeetingDetailResponse(
-        id=meeting.id,
-        meeting_id=meeting.meeting_id,
-        title=meeting.title,
-        meeting_type=meeting.meeting_type,
-        status=meeting.status,
-        scheduled_at=meeting.scheduled_at,
-        started_at=meeting.started_at,
-        concluded_at=meeting.concluded_at,
-        participants=meeting.participants,
-        agenda=meeting.agenda,
-        minutes=meeting.minutes,
-        decisions=meeting.decisions or [],
-        action_items=[serialize_action_item_model(ai) for ai in action_items]
-    )
+    return serialize_meeting_detail_model(meeting, action_items)

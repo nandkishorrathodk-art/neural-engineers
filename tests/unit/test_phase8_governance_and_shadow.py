@@ -95,8 +95,10 @@ def test_promotion_manager_criteria_checker():
     )
     assert res_success.eligible_for_promotion is True
     assert len(res_success.rejection_reasons) == 0
-    # Shadow mode should have been disabled
-    assert shadow_mgr.is_in_shadow_mode("gui_selection") is False
+    # Metrics only make the category eligible; they are not an authorization
+    # to change live behavior, even when a legacy caller asks to auto-promote.
+    assert res_success.activation_status == "approval_required"
+    assert shadow_mgr.is_in_shadow_mode("gui_selection") is True
 
 
 def test_rollback_engine():

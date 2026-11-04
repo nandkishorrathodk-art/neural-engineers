@@ -160,7 +160,7 @@ class TerminalWorker:
                 },
             )
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 409:
+            if exc.response.status_code in (409, 503):
                 return
             if started:
                 await self._report_failure(task_id, fence, str(exc))
@@ -183,7 +183,7 @@ class TerminalWorker:
                 {"fencing_token": fencing_token, "error_message": message[:4000]},
             )
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 409:
+            if exc.response.status_code not in (409, 503):
                 raise
 
     async def run(self) -> None:

@@ -72,6 +72,31 @@ class UpdateActionItemRequest(BaseModel):
     deadline: Optional[datetime] = None
 
 
+class AssignDeskRequest(BaseModel):
+    desk_id: str = Field(..., min_length=2, max_length=64, description="Canonical workstation desk identifier")
+
+
+class SetMeetingSpeakerRequest(BaseModel):
+    speaker_id: str = Field(..., min_length=1, max_length=64, description="Participant employee ID or BossAI")
+    reason: Optional[str] = Field(None, max_length=256, description="Context or agenda topic for speaker transition")
+
+
+class ConductOperationalReviewRequest(BaseModel):
+    project_id: Optional[str] = Field(default=None, description="Optional associated project ID")
+    task_id: str = Field(..., min_length=1)
+    reporting_employee_id: str = Field(..., min_length=1)
+    what_was_done: str = Field(..., min_length=3)
+    what_remains: str = Field(..., min_length=3)
+    what_is_blocking: str = Field(..., min_length=3)
+    verification_receipt: dict[str, Any] = Field(..., description="Factual verification proof")
+    decision_topic: str = Field(..., min_length=3)
+    decision_text: str = Field(..., min_length=3)
+    decision_rationale: str = Field(..., min_length=3)
+    action_item_description: str = Field(..., min_length=3)
+    action_item_assigned_to: str = Field(..., min_length=1)
+    action_item_deadline_hours: Optional[int] = Field(default=24, ge=1, le=720)
+
+
 class RecordDecisionRequest(BaseModel):
     topic: str
     decision: str

@@ -11,6 +11,34 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def valid_independent_verification_receipt(
+    receipt: Any,
+    *,
+    employee_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> bool:
+    """Validate the minimum provenance needed to trust a task-derived memory."""
+    if not isinstance(receipt, dict) or receipt.get("passed") is not True:
+        return False
+    verifier_id = receipt.get("verifier_id")
+    attempt_id = receipt.get("attempt_id")
+    evidence_refs = receipt.get("evidence_refs")
+    if not isinstance(verifier_id, str) or not verifier_id.strip():
+        return False
+    if employee_id and verifier_id.strip().casefold() == employee_id.strip().casefold():
+        return False
+    if not isinstance(attempt_id, str) or not attempt_id.strip():
+        return False
+    if not isinstance(evidence_refs, list) or not evidence_refs:
+        return False
+    if not all(isinstance(ref, str) and ref.strip() for ref in evidence_refs):
+        return False
+    receipt_task_id = receipt.get("task_id")
+    if task_id and receipt_task_id != task_id:
+        return False
+    return True
+
+
 class MemoryLayer(str, Enum):
     """
     Six complementary organizational memory layers:

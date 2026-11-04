@@ -18,6 +18,7 @@ export interface Employee {
   hired_at: string;
   container_id?: string | null;
   desktop_url?: string | null;
+  desk_id?: string | null;
 }
 
 export interface Workstation {
@@ -76,6 +77,7 @@ export interface Meeting {
   scheduled_at: string;
   started_at?: string | null;
   concluded_at?: string | null;
+  active_speaker_id?: string | null;
   participants: string[];
   agenda: string[];
   minutes?: {
@@ -96,9 +98,21 @@ export interface Meeting {
     }>;
     decisions?: Decision[];
     action_items?: any[];
+    activity_log?: Array<{
+      timestamp: string;
+      event: string;
+      speaker_id?: string | null;
+      data?: any;
+    }>;
   };
   decisions?: Decision[];
   action_items?: ActionItem[];
+  activity_log?: Array<{
+    timestamp: string;
+    event: string;
+    speaker_id?: string | null;
+    data?: any;
+  }>;
 }
 
 export interface ExecutiveBriefing {

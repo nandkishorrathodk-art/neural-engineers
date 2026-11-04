@@ -1,12 +1,33 @@
 from __future__ import annotations
 
 import pytest
+from neural.cognitive_fabric.memory.six_tier_store import SixTierMemoryStore
 from neural.cognitive_fabric.retrieval.agentic_rag import AgenticRAGEngine
 from neural.cognitive_fabric.retrieval.bm25_index import BM25Index, tokenize
 from neural.cognitive_fabric.retrieval.evidence_evaluator import EvidenceEvaluator
 from neural.cognitive_fabric.retrieval.hybrid_retrieval import HybridRetrievalEngine
 from neural.cognitive_fabric.retrieval.reranker import ReciprocalRankFusionReranker
 from neural.cognitive_fabric.retrieval.vector_store import DenseVectorStore
+
+
+def _trusted_metadata(source: str) -> dict:
+    task_id = f"task-{source}"
+    return {
+        "access_level": "public",
+        "verification_status": "verified",
+        "verified_at": "2026-11-04T00:00:00",
+        "provenance": {
+            "verified_by": "independent-verifier",
+            "independent_verification_receipt": {
+                "task_id": task_id,
+                "attempt_id": f"attempt-{source}",
+                "verifier_id": "independent-verifier",
+                "passed": True,
+                "evidence_refs": [f"verifier:{source}:tests"],
+            },
+        },
+        "metadata": {"task_id": task_id},
+    }
 
 
 def test_bm25_tokenizer_and_scoring():
@@ -154,21 +175,25 @@ def test_hybrid_retrieval_rbac_filtering():
     )
 
     # Bob (QA) querying
-    bob_results = engine.retrieve("credentials guidelines salary", requester_id="bob", department="QA")
+    bob_results = engine.retrieve(
+        "credentials guidelines salary", requester_id="bob", department="QA", include_unverified=True
+    )
     bob_ids = [r["id"] for r in bob_results]
     assert "public-1" in bob_ids
     assert "eng-1" not in bob_ids
     assert "private-alice" not in bob_ids
 
     # Alice (Engineering) querying
-    alice_results = engine.retrieve("credentials guidelines salary", requester_id="alice", department="Engineering")
+    alice_results = engine.retrieve(
+        "credentials guidelines salary", requester_id="alice", department="Engineering", include_unverified=True
+    )
     alice_ids = [r["id"] for r in alice_results]
     assert "public-1" in alice_ids
     assert "eng-1" in alice_ids
     assert "private-alice" in alice_ids  # Alice can access her own restricted notes
 
     # Boss querying
-    boss_results = engine.retrieve("credentials guidelines salary", requester_id="BossAI")
+    boss_results = engine.retrieve("credentials guidelines salary", requester_id="BossAI", include_unverified=True)
     boss_ids = [r["id"] for r in boss_results]
     assert "public-1" in boss_ids
     assert "eng-1" in boss_ids
@@ -181,12 +206,12 @@ async def test_agentic_rag_bounded_cycles_and_decomposition():
     retriever.index_document(
         "doc-fail-1",
         "The Redis cache cluster experienced a failover failure due to split-brain network partition.",
-        metadata={"is_verified": True, "source": "postmortem-redis", "access_level": "public"},
+        metadata={**_trusted_metadata("postmortem-redis"), "source": "postmortem-redis"},
     )
     retriever.index_document(
         "doc-fail-2",
         "Task failure logs indicate worker nodes were unable to reconnect to Redis master within 15s timeout.",
-        metadata={"is_verified": True, "source": "task-failure-log-88", "access_level": "public"},
+        metadata={**_trusted_metadata("task-failure-log-88"), "source": "task-failure-log-88"},
     )
 
     agentic_rag = AgenticRAGEngine(retriever=retriever, max_rounds=3, sufficiency_threshold=0.7)
@@ -219,14 +244,66 @@ def test_hybrid_retrieval_confidential_access_leak_prevention():
     )
 
     # Ordinary employee querying without explicit authorization MUST NOT access it
-    results_emp = engine.retrieve("compensation acquisition", requester_id="emp-1", department="Engineering")
+    results_emp = engine.retrieve(
+        "compensation acquisition", requester_id="emp-1", department="Engineering", include_unverified=True
+    )
     assert not any(r["id"] == "conf-exec" for r in results_emp)
 
     # Owner can access it
-    results_owner = engine.retrieve("compensation acquisition", requester_id="ceo")
+    results_owner = engine.retrieve("compensation acquisition", requester_id="ceo", include_unverified=True)
     assert any(r["id"] == "conf-exec" for r in results_owner)
 
     # Boss can access it
-    results_boss = engine.retrieve("compensation acquisition", requester_id="BossAI")
+    results_boss = engine.retrieve("compensation acquisition", requester_id="BossAI", include_unverified=True)
     assert any(r["id"] == "conf-exec" for r in results_boss)
+
+
+def test_hybrid_retrieval_defaults_to_independent_verification_evidence():
+    engine = HybridRetrievalEngine()
+    engine.index_document(
+        "worker-claim",
+        "The worker says this database migration succeeded.",
+        metadata={"is_verified": True, "access_level": "public"},
+    )
+    engine.index_document(
+        "verified-receipt",
+        "Independent verifier confirmed the database migration passed tests.",
+        metadata={**_trusted_metadata("memory-receipt"), "is_verified": True},
+    )
+
+    trusted_results = engine.retrieve("database migration", requester_id="BossAI")
+    assert [record["id"] for record in trusted_results] == ["verified-receipt"]
+
+    exploratory_results = engine.retrieve("database migration", requester_id="BossAI", include_unverified=True)
+    assert {record["id"] for record in exploratory_results} == {"worker-claim", "verified-receipt"}
+
+
+@pytest.mark.asyncio
+async def test_unverified_episode_cannot_enter_trusted_hybrid_index():
+    memory = SixTierMemoryStore()
+    unverified = await memory.store_episodic(
+        task_id="TASK-RAW-EPISODE",
+        employee_id="ANC-EMP-RAW",
+        outcome="success",
+        summary="Worker claims this migration improved database performance.",
+    )
+    verified = await memory.store_episodic(
+        task_id="TASK-VERIFIED-EPISODE",
+        employee_id="ANC-EMP-VERIFIED",
+        outcome="success",
+        summary="Independent review confirms the database performance migration passed tests.",
+        verification_receipt={
+            "task_id": "TASK-VERIFIED-EPISODE",
+            "attempt_id": "attempt-independent-review",
+            "verifier_id": "independent-verifier",
+            "passed": True,
+            "evidence_refs": ["verifier:attempt-independent-review:tests"],
+        },
+    )
+    retriever = HybridRetrievalEngine()
+
+    assert not retriever.index_record(unverified)
+    assert retriever.index_record(verified)
+    results = retriever.retrieve("database performance migration", requester_id="BossAI")
+    assert [result["id"] for result in results] == [verified.id]
 

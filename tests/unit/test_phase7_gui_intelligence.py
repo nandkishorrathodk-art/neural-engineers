@@ -18,8 +18,13 @@ from neural.gui_intelligence.benchmarks.performance_report import PerformanceRep
 from neural.gui_intelligence.benchmarks.success_metrics import GUISuccessMetrics
 from neural.gui_intelligence.brain.cognitive_controller import DualBrainCognitiveController
 from neural.gui_intelligence.brain.fast_policy import System1FastPolicy
-from neural.gui_intelligence.brain.task_planner import PlanStep, System2TaskPlanner
+from neural.gui_intelligence.brain.task_planner import (
+    CompiledExecutionPlan,
+    PlanStep,
+    System2TaskPlanner,
+)
 from neural.gui_intelligence.models import (
+    GUIActionReceipt,
     GUIActionRequest,
     ScreenFrame,
     VisualElement,
@@ -40,7 +45,10 @@ from neural.gui_intelligence.skills.skill_compiler import GUISkillCompiler
 from neural.gui_intelligence.skills.skill_registry import GUISkillRegistry
 from neural.gui_intelligence.skills.skill_validator import SkillValidator
 from neural.gui_intelligence.verification.task_completion import TaskCompletionCertificateGenerator
-from neural.gui_intelligence.verification.visual_verifier import IndependentVisualVerifier
+from neural.gui_intelligence.verification.visual_verifier import (
+    IndependentVisualVerifier,
+    VisualVerificationResult,
+)
 from neural.gui_intelligence.world_model.screen_state import ScreenStateManager
 from neural.gui_intelligence.world_model.transition_tracker import VisualTransitionTracker
 from neural.gui_intelligence.world_model.visual_belief import VisualBeliefStateManager
@@ -429,6 +437,140 @@ async def test_dual_brain_cognitive_controller_execution():
     assert result["deep_brain_calls"] >= 1
     assert result["fast_brain_calls"] >= 1
     assert result["total_actions_dispatched"] >= 1
+    assert result["verification_receipts"]
+    assert all(receipt["verified"] for receipt in result["verification_receipts"])
+
+
+class _ControllerTestPlanner(System2TaskPlanner):
+    async def create_plan(self, task_objective, belief_state=None):
+        return CompiledExecutionPlan(
+            plan_id="plan_test",
+            task_objective=task_objective,
+            steps=[PlanStep(
+                step_id="step_test",
+                phase_name="Test visual completion",
+                action_intent="CLICK",
+                target_descriptor="button[text='Save']",
+                expected_postcondition="Save confirmation appears",
+            )],
+        )
+
+
+class _ControllerTestFastPolicy:
+    employee_id = "emp_gui_test"
+
+    def __init__(self, *, uncertain=False):
+        self.uncertain = uncertain
+
+    def select_action_chunk(self, step, frame, belief_state=None):
+        if self.uncertain:
+            raise VisualUncertaintyError("No confident visual target")
+        return [GUIActionRequest(
+            action_id="act_test",
+            employee_id=self.employee_id,
+            action_type="MOUSE_CLICK",
+            coordinates=(10, 10),
+            confidence=0.95,
+        )]
+
+
+class _ControllerTestExecutionLoop:
+    def __init__(self):
+        self.dispatched = []
+        self.mouse_controller = MouseController()
+        self.keyboard_controller = KeyboardController()
+
+    def execute_chunk(self, chunk):
+        self.dispatched.extend(chunk)
+        return [GUIActionReceipt(
+            action_id=request.action_id,
+            employee_id=request.employee_id,
+            status="SUCCESS",
+            execution_time_ms=1.0,
+            screen_settled=True,
+            pixel_delta_magnitude=0.1,
+            observed_postcondition="action received",
+            signature="test-signature",
+        ) for request in chunk]
+
+
+class _ControllerTestCapture:
+    def __init__(self):
+        self.frames = [
+            ScreenCaptureEngine().render_synthetic_desktop(),
+            ScreenCaptureEngine().render_synthetic_desktop(background_color=(41, 44, 52)),
+        ]
+
+    def capture_frame(self):
+        if len(self.frames) > 1:
+            return self.frames.pop(0)
+        return self.frames[0]
+
+
+class _ControllerTestVerifier:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def verify_postcondition(self, frame_initial, frame_final, expected_text=None, min_delta_magnitude=0.0001):
+        self.calls.append((frame_initial, frame_final, expected_text))
+        if self.result is None:
+            return None
+        return VisualVerificationResult(
+            passed=self.result in {True, "mismatched_hash"},
+            score=1.0 if self.result in {True, "mismatched_hash"} else 0.0,
+            delta_magnitude=0.2,
+            postcondition_checked="Visual state transition",
+            details="test receipt",
+            screenshot_hash=("0" * 64 if self.result == "mismatched_hash" else frame_final.frame_hash),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("verification_result", "expected_success"),
+    [(True, True), (False, False), (None, False), ("mismatched_hash", False)],
+)
+async def test_controller_requires_independent_visual_receipt_per_step(verification_result, expected_success):
+    capture = _ControllerTestCapture()
+    execution = _ControllerTestExecutionLoop()
+    verifier = _ControllerTestVerifier(verification_result)
+    controller = DualBrainCognitiveController(
+        deep_planner=_ControllerTestPlanner(),
+        fast_policy=_ControllerTestFastPolicy(),
+        execution_loop=execution,
+        capture_engine=capture,
+        visual_verifier=verifier,
+    )
+
+    result = await controller.execute_task("Save document")
+
+    assert result["success"] is expected_success
+    assert result["completed_steps"] == (1 if expected_success else 0)
+    assert len(verifier.calls) == 1
+    assert result["verification_receipts"][0]["verified"] is expected_success
+    assert len(execution.dispatched) == 1
+
+
+@pytest.mark.asyncio
+async def test_controller_does_not_center_click_when_visual_grounding_is_uncertain():
+    capture = _ControllerTestCapture()
+    execution = _ControllerTestExecutionLoop()
+    verifier = _ControllerTestVerifier(True)
+    controller = DualBrainCognitiveController(
+        deep_planner=_ControllerTestPlanner(),
+        fast_policy=_ControllerTestFastPolicy(uncertain=True),
+        execution_loop=execution,
+        capture_engine=capture,
+        visual_verifier=verifier,
+    )
+
+    result = await controller.execute_task("Save document")
+
+    assert result["success"] is False
+    assert result["completed_steps"] == 0
+    assert execution.dispatched == []
+    assert verifier.calls == []
 
 
 # ---------------------------------------------------------------------------
