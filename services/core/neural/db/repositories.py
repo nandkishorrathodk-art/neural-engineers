@@ -573,6 +573,17 @@ class TaskRepository:
                 else None
             )
             alternate_assignee = await self._select_retry_assignee(task) if should_retry else None
+            if alternate_assignee:
+                reserve_employee = await self.session.execute(
+                    update(Employee)
+                    .where(
+                        Employee.id == alternate_assignee.id,
+                        Employee.status == EmployeeStatus.IDLE,
+                    )
+                    .values(status=EmployeeStatus.WORKING)
+                )
+                if reserve_employee.rowcount != 1:
+                    alternate_assignee = None
             attempt_update = await self.session.execute(
                 update(TaskAttempt)
                 .where(

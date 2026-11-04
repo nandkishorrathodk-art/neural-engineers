@@ -648,10 +648,12 @@ async def test_retryable_worker_failure_reassigns_to_idle_employee_with_live_des
     }
     persisted = await task_repo.get_by_task_id(task.task_id)
     old_employee = await employee_repo.get_by_employee_id(failed_employee.employee_id)
+    reserved_employee = await employee_repo.get_by_employee_id(recovery_employee.employee_id)
     assert persisted.status == TaskStatus.ASSIGNED
     assert persisted.assigned_to == recovery_employee.id
     assert persisted.fencing_token == 8
     assert old_employee.status == EmployeeStatus.IDLE
+    assert reserved_employee.status == EmployeeStatus.WORKING
 
 
 @pytest.mark.asyncio
