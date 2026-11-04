@@ -740,6 +740,49 @@ class TaskRepository:
             attempt.verification_receipt = verification_receipt
             attempt.verified_by = verifier_id
             attempt.verified_at = now
+            employee = await self.session.get(Employee, task.assigned_to) if task.assigned_to else None
+            execution_receipt = attempt.execution_receipt if isinstance(attempt.execution_receipt, dict) else {}
+            model_receipt = execution_receipt.get("model", {})
+            if not isinstance(model_receipt, dict):
+                model_receipt = {}
+            try:
+                cost_tokens = max(
+                    0,
+                    int(model_receipt.get("input_tokens", 0))
+                    + int(model_receipt.get("output_tokens", 0)),
+                )
+                cost_usd = max(0.0, float(model_receipt.get("cost_usd", 0.0)))
+            except (TypeError, ValueError):
+                cost_tokens = 0
+                cost_usd = 0.0
+            duration_seconds = (
+                max(0.0, (now - attempt.started_at).total_seconds())
+                if attempt.started_at
+                else 0.0
+            )
+            if employee:
+                self.session.add(
+                    PerformanceRecord(
+                        id=str(uuid.uuid4()),
+                        employee_id=employee.id,
+                        task_id=task.task_id,
+                        completion_time_seconds=duration_seconds,
+                        retry_count=task.retry_count,
+                        quality_score=1.0 if passed else 0.0,
+                        cost_tokens=cost_tokens,
+                        cost_usd=cost_usd,
+                        outcome="success" if passed else "failure",
+                        recorded_at=now,
+                    )
+                )
+                summary = dict(employee.performance_summary or {})
+                summary["verification_attempts"] = int(summary.get("verification_attempts", 0)) + 1
+                counter = "verified_tasks" if passed else "verification_rejections"
+                summary[counter] = int(summary.get(counter, 0)) + 1
+                summary["last_verified_task_id"] = task.task_id
+                summary["last_verifier_id"] = verifier_id
+                summary["last_verification_passed"] = passed
+                employee.performance_summary = summary
             if passed:
                 task.status = TaskStatus.COMPLETED
                 task.completed_at = now

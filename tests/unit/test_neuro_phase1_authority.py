@@ -26,6 +26,7 @@ from neural.db.repositories import (
     AuditRepository,
     ContainerRepository,
     EmployeeRepository,
+    PerformanceRepository,
     ProjectRepository,
     TaskRepository,
 )
@@ -249,6 +250,129 @@ async def test_worker_claim_does_not_unlock_dependency_with_unverified_completio
     persisted = await task_repo.get_by_task_id(dependent.task_id)
     assert persisted.status == TaskStatus.PENDING
     assert persisted.assigned_to is None
+
+
+@pytest.mark.asyncio
+async def test_independent_verifier_receipts_persist_employee_performance_history(async_session):
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-VERIFIER-PERFORMANCE",
+        name="Verified Performance Employee",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.WORKING,
+    )
+    project = await ProjectRepository(async_session).create(
+        name="Verified workforce performance",
+        objective="Persist employee performance from independent verifier outcomes",
+    )
+    task_repo = TaskRepository(async_session)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    passing_task = await task_repo.create(
+        task_id="TASK-PERFORMANCE-PASS",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Verified passing attempt",
+        objective="Store a successful verifier-backed performance record",
+        scope="Performance validation",
+        acceptance_criteria="Automated tests pass",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        fencing_token=1,
+    )
+    passing_attempt = TaskAttempt(
+        task_id=passing_task.id,
+        attempt_number=1,
+        worker_id="worker-performance-test",
+        fencing_token=1,
+        status="submitted",
+        started_at=now - timedelta(seconds=37),
+        finished_at=now,
+        lease_expires_at=now,
+        execution_receipt={
+            "model": {"input_tokens": 125, "output_tokens": 41, "cost_usd": 0.0042}
+        },
+    )
+    async_session.add(passing_attempt)
+    await async_session.commit()
+
+    accepted = await task_repo.review_task_attempt(
+        passing_task.task_id,
+        passing_attempt.id,
+        "verifier-performance-test",
+        {
+            "passed": True,
+            "notes": "Independent replay passed.",
+            "evidence_refs": ["verifier:performance-pass"],
+            "checks": [{"name": "tests", "passed": True}],
+            "test_summary": {"independent_test_runs": 1},
+        },
+    )
+    assert accepted is not None and accepted["attempt_status"] == "verified"
+
+    performance_repo = PerformanceRepository(async_session)
+    passing_records = await performance_repo.list_by_employee(employee.employee_id)
+    assert len(passing_records) == 1
+    assert passing_records[0].task_id == passing_task.task_id
+    assert passing_records[0].outcome == "success"
+    assert passing_records[0].quality_score == 1.0
+    assert passing_records[0].completion_time_seconds == pytest.approx(37.0, abs=0.1)
+    assert passing_records[0].cost_tokens == 166
+    assert passing_records[0].cost_usd == pytest.approx(0.0042)
+
+    rejected_task = await task_repo.create(
+        task_id="TASK-PERFORMANCE-REJECT",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Verifier rejected attempt",
+        objective="Record a failed independent verification",
+        scope="Performance validation",
+        acceptance_criteria="Automated tests pass",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        fencing_token=4,
+    )
+    rejected_attempt = TaskAttempt(
+        task_id=rejected_task.id,
+        attempt_number=1,
+        worker_id="worker-performance-test",
+        fencing_token=4,
+        status="submitted",
+        started_at=now - timedelta(seconds=8),
+        lease_expires_at=now,
+        execution_receipt={"model": {"input_tokens": 20, "output_tokens": 7, "cost_usd": 0.001}},
+    )
+    async_session.add(rejected_attempt)
+    await async_session.commit()
+
+    rejected = await task_repo.review_task_attempt(
+        rejected_task.task_id,
+        rejected_attempt.id,
+        "verifier-performance-test",
+        {
+            "passed": False,
+            "notes": "Independent replay failed.",
+            "evidence_refs": ["verifier:performance-reject"],
+            "checks": [{"name": "tests", "passed": False}],
+            "test_summary": {"independent_test_runs": 1},
+        },
+    )
+    assert rejected is not None and rejected["attempt_status"] == "rejected"
+
+    records = await performance_repo.list_by_employee(employee.employee_id)
+    assert len(records) == 2
+    rejected_record = next(record for record in records if record.task_id == rejected_task.task_id)
+    assert rejected_record.outcome == "failure"
+    assert rejected_record.quality_score == 0.0
+    assert rejected_record.cost_tokens == 27
+    persisted_employee = await employee_repo.get_by_employee_id(employee.employee_id)
+    assert persisted_employee is not None
+    assert persisted_employee.performance_summary["verification_attempts"] == 2
+    assert persisted_employee.performance_summary["verified_tasks"] == 1
+    assert persisted_employee.performance_summary["verification_rejections"] == 1
+    assert persisted_employee.performance_summary["last_verified_task_id"] == rejected_task.task_id
+    assert persisted_employee.performance_summary["last_verifier_id"] == "verifier-performance-test"
+    assert persisted_employee.performance_summary["last_verification_passed"] is False
 
 
 @pytest.mark.asyncio
