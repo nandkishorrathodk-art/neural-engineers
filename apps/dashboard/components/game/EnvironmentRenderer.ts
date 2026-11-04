@@ -9,8 +9,6 @@ import {
 } from './OfficeLayout';
 import {
   gridToScreen,
-  drawPixelFloorTile,
-  drawPixelFurnitureBlock,
   TILE_WIDTH,
   TILE_HEIGHT,
   TILE_HALF_W,
@@ -40,91 +38,105 @@ export function drawFloorAndArchitecture(
   originY: number,
   time: number
 ): void {
-  // 1. Draw the orthogonal office floor as independent pixel tiles.
-  for (let gy = 0; gy < GRID_SIZE_Y; gy++) {
-    for (let gx = 0; gx < GRID_SIZE_X; gx++) {
-      const zone = getZoneAt(gx, gy);
-      const { screenX, screenY } = gridToScreen(gx, gy, 0, originX, originY);
+  const left = originX - TILE_HALF_W;
+  const top = originY - TILE_HALF_H;
+  const width = GRID_SIZE_X * TILE_WIDTH;
+  const height = GRID_SIZE_Y * TILE_HEIGHT;
 
-      let floorColor = '#55575b';
-      let strokeColor = '#66686b';
+  // One continuous warm floor keeps the rooms feeling like a shared studio.
+  ctx.save();
+  ctx.shadowColor = 'rgba(18, 25, 31, 0.28)';
+  ctx.shadowBlur = 24;
+  ctx.shadowOffsetY = 12;
+  ctx.fillStyle = '#d7d2c6';
+  ctx.fillRect(left, top, width, height);
+  ctx.restore();
 
-      if (zone) {
-        floorColor = zone.floorColor;
-        strokeColor = zone.gridLineColor;
-      } else {
-        // Hallway / corridor styling with subtle grid
-        const isPathway = (gx >= 10 && gx <= 12) || (gy >= 10 && gy <= 12);
-        if (isPathway) {
-          floorColor = '#62605c';
-          strokeColor = '#77736b';
-        }
-      }
+  const floorWash = ctx.createLinearGradient(left, top, left + width, top + height);
+  floorWash.addColorStop(0, '#e7e0d2');
+  floorWash.addColorStop(0.52, '#d5d0c5');
+  floorWash.addColorStop(1, '#c8c8c2');
+  ctx.fillStyle = floorWash;
+  ctx.fillRect(left, top, width, height);
 
-      drawPixelFloorTile(ctx, screenX, screenY, floorColor, strokeColor, 1);
-
-      if (!zone && (gx * 7 + gy * 11) % 5 === 0) {
-        ctx.fillStyle = 'rgba(235, 220, 190, 0.14)';
-        ctx.fillRect(screenX - 12, screenY - 7, 3, 2);
-        ctx.fillStyle = 'rgba(24, 29, 32, 0.13)';
-        ctx.fillRect(screenX + 9, screenY + 5, 4, 2);
-      }
+  // Soft department rugs and quiet grout lines replace the hard pixel grid.
+  for (const zone of ROOM_ZONES) {
+    const x = originX + zone.minX * TILE_WIDTH - TILE_HALF_W;
+    const y = originY + zone.minY * TILE_HEIGHT - TILE_HALF_H;
+    const w = (zone.maxX - zone.minX + 1) * TILE_WIDTH;
+    const h = (zone.maxY - zone.minY + 1) * TILE_HEIGHT;
+    const tint = ctx.createLinearGradient(x, y, x + w, y + h);
+    tint.addColorStop(0, `${zone.floorColor}e8`);
+    tint.addColorStop(1, `${zone.floorColor}c8`);
+    ctx.fillStyle = tint;
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = 'rgba(255,255,255,0.14)';
+    for (let gx = 1; gx < zone.maxX - zone.minX + 1; gx++) {
+      ctx.fillRect(x + gx * TILE_WIDTH, y + 5, 1, h - 10);
     }
+    for (let gy = 1; gy < zone.maxY - zone.minY + 1; gy++) {
+      ctx.fillRect(x + 5, y + gy * TILE_HEIGHT, w - 10, 1);
+    }
+    ctx.strokeStyle = 'rgba(84, 73, 61, 0.2)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
   }
 
-  // Framed room edge keeps the whole floor readable as one connected place.
-  ctx.save();
-  ctx.strokeStyle = '#303337';
-  ctx.lineWidth = 10;
-  ctx.strokeRect(
-    originX - TILE_HALF_W,
-    originY - TILE_HALF_H,
-    GRID_SIZE_X * TILE_WIDTH,
-    GRID_SIZE_Y * TILE_HEIGHT
-  );
-  ctx.strokeStyle = '#b7a889';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(
-    originX - TILE_HALF_W + 5,
-    originY - TILE_HALF_H + 5,
-    GRID_SIZE_X * TILE_WIDTH - 10,
-    GRID_SIZE_Y * TILE_HEIGHT - 10
-  );
-  ctx.restore();
+  // Subtle corridor runner guides movement through the center of the office.
+  const runnerX = originX + 9.5 * TILE_WIDTH;
+  const runnerY = originY + 9.5 * TILE_HEIGHT;
+  ctx.fillStyle = 'rgba(249, 245, 236, 0.32)';
+  ctx.fillRect(runnerX, runnerY, 6 * TILE_WIDTH, 5 * TILE_HEIGHT);
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([6, 8]);
+  ctx.beginPath();
+  ctx.moveTo(runnerX + 3 * TILE_WIDTH, runnerY + 8);
+  ctx.lineTo(runnerX + 3 * TILE_WIDTH, runnerY + 5 * TILE_HEIGHT - 8);
+  ctx.stroke();
+  ctx.setLineDash([]);
 
-  // 2. Pixel entrance pad and sliding doors
+  // Warm wood skirting frames the floor without a heavy UI-like border.
+  ctx.strokeStyle = '#89765d';
+  ctx.lineWidth = 8;
+  ctx.strokeRect(left, top, width, height);
+  ctx.strokeStyle = 'rgba(255, 246, 224, 0.72)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(left + 5, top + 5, width - 10, height - 10);
+
+  // Reception entrance and glazed doors.
   const elevPos = gridToScreen(ELEVATOR_SPAWN.x, ELEVATOR_SPAWN.y, 0, originX, originY);
   ctx.save();
-  // Elevator floor indicator pad
-  ctx.fillStyle = '#ad956c';
-  ctx.fillRect(elevPos.screenX - 27, elevPos.screenY - 12, 54, 24);
-  ctx.strokeStyle = '#594f41';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(elevPos.screenX - 27, elevPos.screenY - 12, 54, 24);
-
-  // Sliding double doors back wall
-  drawPixelFurnitureBlock(
-    ctx,
-    elevPos.screenX - 16,
-    elevPos.screenY - 14,
-    0.6,
-    0.6,
-    34,
-    '#88775c',
-    '#a98f65',
-    '#8b7250',
-    '#e2c78e'
-  );
-  ctx.fillStyle = '#f1e4c8';
-  ctx.font = 'bold 9px monospace';
+  ctx.fillStyle = 'rgba(72, 93, 90, 0.16)';
+  ctx.beginPath();
+  ctx.ellipse(elevPos.screenX, elevPos.screenY + 2, 40, 18, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const doorGradient = ctx.createLinearGradient(elevPos.screenX - 28, elevPos.screenY - 15, elevPos.screenX + 28, elevPos.screenY + 15);
+  doorGradient.addColorStop(0, '#617f7c');
+  doorGradient.addColorStop(0.48, '#d8e6df');
+  doorGradient.addColorStop(0.52, '#bed3cc');
+  doorGradient.addColorStop(1, '#55736f');
+  ctx.fillStyle = doorGradient;
+  ctx.beginPath();
+  ctx.roundRect(elevPos.screenX - 28, elevPos.screenY - 14, 56, 28, 8);
+  ctx.fill();
+  ctx.strokeStyle = '#f7efdc';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(45, 71, 70, 0.55)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(elevPos.screenX, elevPos.screenY - 10);
+  ctx.lineTo(elevPos.screenX, elevPos.screenY + 10);
+  ctx.stroke();
+  ctx.fillStyle = '#415d59';
+  ctx.font = '600 9px sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('HQ ENTRANCE', elevPos.screenX, elevPos.screenY - 24);
+  ctx.fillText('ANCOS HQ', elevPos.screenX, elevPos.screenY - 24);
   ctx.restore();
 
-  // 3. Room walls and door openings
+  // Glass walls, room name plaques, and independent furnishings stay layered.
   drawGlassPartitions(ctx, originX, originY);
-
-  // 4. Room labels and independent office props
   drawNeonSignboards(ctx, originX, originY, time);
   drawOfficeProps(ctx, originX, originY, time);
 }
@@ -138,64 +150,103 @@ function drawOfficeProps(ctx: CanvasRenderingContext2D, originX: number, originY
   for (const [gx, gy] of plants) {
     const { screenX: x, screenY: y } = gridToScreen(gx, gy, 0, originX, originY);
     ctx.save();
-    ctx.fillStyle = 'rgba(20, 24, 25, 0.28)';
-    ctx.fillRect(x - 12, y + 5, 26, 7);
-    ctx.fillStyle = '#9b6245';
-    ctx.fillRect(x - 9, y - 1, 18, 13);
-    ctx.fillStyle = '#c2875c';
-    ctx.fillRect(x - 7, y - 1, 14, 3);
-    const sway = Math.round(Math.sin(time * 1.2 + gx) * 1.5);
-    ctx.fillStyle = '#335b45';
-    ctx.fillRect(x - 3, y - 22 + sway, 6, 22);
-    ctx.fillStyle = '#4f8a5e';
-    ctx.fillRect(x - 15, y - 19 + sway, 10, 7);
-    ctx.fillRect(x + 5, y - 18 - sway, 11, 7);
-    ctx.fillRect(x - 12, y - 29 - sway, 9, 8);
-    ctx.fillRect(x + 3, y - 29 + sway, 10, 8);
-    ctx.fillStyle = '#78a86b';
-    ctx.fillRect(x - 10, y - 26 - sway, 4, 3);
-    ctx.fillRect(x + 7, y - 26 + sway, 4, 3);
+    ctx.fillStyle = 'rgba(52, 55, 43, 0.2)';
+    ctx.beginPath();
+    ctx.ellipse(x, y + 5, 15, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const pot = ctx.createLinearGradient(x - 10, y, x + 10, y + 12);
+    pot.addColorStop(0, '#b98b67');
+    pot.addColorStop(1, '#795d4d');
+    ctx.fillStyle = pot;
+    ctx.beginPath();
+    ctx.roundRect(x - 9, y - 2, 18, 14, [3, 3, 7, 7]);
+    ctx.fill();
+    ctx.strokeStyle = '#e1bd8d';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    const sway = Math.sin(time * 1.2 + gx) * 1.5;
+    const leaves = [
+      [-10, -19, -0.7], [-4, -26, -0.25], [5, -21, 0.45], [11, -28, 0.7], [1, -34, 0.1],
+    ];
+    for (const [dx, dy, tilt] of leaves) {
+      ctx.save();
+      ctx.translate(x + dx + sway, y + dy);
+      ctx.rotate(tilt + sway * 0.025);
+      ctx.fillStyle = '#517f5d';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 5, 10, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(217, 228, 177, 0.55)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(0, 7);
+      ctx.lineTo(0, -6);
+      ctx.stroke();
+      ctx.restore();
+    }
     ctx.restore();
   }
 
-  // Low bookshelf along the executive office's far wall.
+  // Warm bookcase in the Boss Office.
   const shelf = gridToScreen(21, 3, 0, originX, originY);
   ctx.save();
-  ctx.fillStyle = '#493a33';
-  ctx.fillRect(shelf.screenX - 15, shelf.screenY - 14, 27, 66);
-  ctx.fillStyle = '#6d4e3b';
-  ctx.fillRect(shelf.screenX - 12, shelf.screenY - 11, 21, 59);
+  ctx.shadowColor = 'rgba(38, 31, 25, 0.3)';
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = '#79583f';
+  ctx.beginPath();
+  ctx.roundRect(shelf.screenX - 18, shelf.screenY - 14, 36, 67, 4);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  const shelfWood = ctx.createLinearGradient(shelf.screenX - 15, shelf.screenY, shelf.screenX + 15, shelf.screenY);
+  shelfWood.addColorStop(0, '#a77951');
+  shelfWood.addColorStop(0.5, '#d1a477');
+  shelfWood.addColorStop(1, '#8e694a');
+  ctx.fillStyle = shelfWood;
+  ctx.beginPath();
+  ctx.roundRect(shelf.screenX - 14, shelf.screenY - 10, 28, 58, 2);
+  ctx.fill();
   for (let row = 0; row < 3; row++) {
     const y = shelf.screenY - 7 + row * 18;
     ctx.fillStyle = '#b78954';
-    ctx.fillRect(shelf.screenX - 12, y + 12, 21, 3);
+    ctx.fillRect(shelf.screenX - 14, y + 12, 28, 3);
     const bookColors = ['#668878', '#c98559', '#d5bd82', '#7a7790'];
     for (let col = 0; col < 4; col++) {
       ctx.fillStyle = bookColors[(row + col) % bookColors.length];
-      ctx.fillRect(shelf.screenX - 10 + col * 5, y + (col % 2), 4, 11 - (col % 2));
+      ctx.beginPath();
+      ctx.roundRect(shelf.screenX - 11 + col * 6, y + (col % 2), 5, 11 - (col % 2), [1, 1, 0, 0]);
+      ctx.fill();
     }
   }
   ctx.restore();
 
-  // Cozy break-room sofa and coffee table in the creative lounge.
+  // A soft sofa and coffee table make the Creative Studio feel lived in.
   const sofa = gridToScreen(5.5, 20, 0, originX, originY);
   ctx.save();
-  ctx.fillStyle = '#4a3934';
-  ctx.fillRect(sofa.screenX - 47, sofa.screenY - 17, 94, 35);
-  ctx.fillStyle = '#9b705d';
-  ctx.fillRect(sofa.screenX - 42, sofa.screenY - 14, 84, 26);
-  ctx.fillStyle = '#b58a72';
-  ctx.fillRect(sofa.screenX - 39, sofa.screenY - 12, 34, 19);
-  ctx.fillRect(sofa.screenX + 5, sofa.screenY - 12, 34, 19);
-  ctx.fillStyle = '#725449';
-  ctx.fillRect(sofa.screenX - 35, sofa.screenY + 12, 5, 7);
-  ctx.fillRect(sofa.screenX + 30, sofa.screenY + 12, 5, 7);
-  ctx.fillStyle = '#7b6046';
-  ctx.fillRect(sofa.screenX - 24, sofa.screenY + 35, 48, 18);
-  ctx.fillStyle = '#b79a70';
-  ctx.fillRect(sofa.screenX - 21, sofa.screenY + 36, 42, 3);
-  ctx.fillStyle = '#f0d5a2';
-  ctx.fillRect(sofa.screenX - 3, sofa.screenY + 40, 7, 6);
+  ctx.fillStyle = 'rgba(47, 38, 39, 0.2)';
+  ctx.beginPath();
+  ctx.ellipse(sofa.screenX, sofa.screenY + 19, 53, 11, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const sofaFabric = ctx.createLinearGradient(sofa.screenX - 42, sofa.screenY - 18, sofa.screenX + 42, sofa.screenY + 17);
+  sofaFabric.addColorStop(0, '#c59b91');
+  sofaFabric.addColorStop(0.55, '#a87872');
+  sofaFabric.addColorStop(1, '#805b5a');
+  ctx.fillStyle = sofaFabric;
+  ctx.beginPath();
+  ctx.roundRect(sofa.screenX - 45, sofa.screenY - 19, 90, 37, 11);
+  ctx.fill();
+  ctx.fillStyle = '#d7b5a8';
+  ctx.beginPath();
+  ctx.roundRect(sofa.screenX - 36, sofa.screenY - 15, 34, 24, 8);
+  ctx.roundRect(sofa.screenX + 2, sofa.screenY - 15, 34, 24, 8);
+  ctx.fill();
+  ctx.fillStyle = '#705144';
+  ctx.beginPath();
+  ctx.roundRect(sofa.screenX - 22, sofa.screenY + 29, 44, 18, 5);
+  ctx.fill();
+  ctx.fillStyle = '#c8a778';
+  ctx.beginPath();
+  ctx.roundRect(sofa.screenX - 19, sofa.screenY + 29, 38, 4, 2);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -225,6 +276,12 @@ function drawGlassPartitions(
     { start: { x: 20, y: 9 }, end: { x: 22, y: 9 }, color: '#f1d291' },
     { start: { x: 16, y: 2 }, end: { x: 16, y: 9 }, color: '#f1d291' },
     { start: { x: 22, y: 2 }, end: { x: 22, y: 9 }, color: '#f1d291' },
+    // Infrastructure & DevOps room, with one clear doorway into the hall.
+    { start: { x: 17, y: 9 }, end: { x: 22, y: 9 }, color: '#8eb4b1' },
+    { start: { x: 17, y: 9 }, end: { x: 17, y: 10.5 }, color: '#8eb4b1' },
+    { start: { x: 17, y: 12.5 }, end: { x: 17, y: 13 }, color: '#8eb4b1' },
+    { start: { x: 22, y: 9 }, end: { x: 22, y: 13 }, color: '#8eb4b1' },
+    { start: { x: 17, y: 13 }, end: { x: 22, y: 13 }, color: '#8eb4b1' },
     // Creative studio and research floor.
     { start: { x: 2, y: 14 }, end: { x: 5, y: 14 }, color: '#ddbfdf' },
     { start: { x: 7, y: 14 }, end: { x: 9, y: 14 }, color: '#ddbfdf' },
@@ -241,28 +298,31 @@ function drawGlassPartitions(
     const p2 = gridToScreen(part.end.x, part.end.y, 0, originX, originY);
 
     const heightPx = 18;
-    ctx.fillStyle = 'rgba(39, 43, 44, 0.88)';
-    ctx.strokeStyle = part.color;
-    ctx.lineWidth = 3;
-
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(65, 74, 73, 0.23)';
+    ctx.lineWidth = 7;
     ctx.beginPath();
-    ctx.moveTo(p1.screenX, p1.screenY);
-    ctx.lineTo(p2.screenX, p2.screenY);
-    ctx.lineTo(p2.screenX, p2.screenY - heightPx);
-    ctx.lineTo(p1.screenX, p1.screenY - heightPx);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(p1.screenX + 2, p1.screenY + 2);
+    ctx.lineTo(p2.screenX + 2, p2.screenY + 2);
     ctx.stroke();
-
-    // Glowing top neon rail
-    ctx.strokeStyle = part.color;
-    ctx.shadowColor = part.color;
-    ctx.shadowBlur = 2;
+    const glass = ctx.createLinearGradient(p1.screenX, p1.screenY - heightPx, p2.screenX, p2.screenY);
+    glass.addColorStop(0, 'rgba(246, 248, 239, 0.72)');
+    glass.addColorStop(0.5, 'rgba(180, 202, 197, 0.44)');
+    glass.addColorStop(1, 'rgba(129, 154, 152, 0.58)');
+    ctx.strokeStyle = glass;
+    ctx.lineWidth = 6;
     ctx.beginPath();
     ctx.moveTo(p1.screenX, p1.screenY - heightPx);
     ctx.lineTo(p2.screenX, p2.screenY - heightPx);
     ctx.stroke();
-    ctx.shadowBlur = 0;
+    ctx.strokeStyle = part.color;
+    ctx.globalAlpha = 0.75;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(p1.screenX, p1.screenY - heightPx - 2);
+    ctx.lineTo(p2.screenX, p2.screenY - heightPx - 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 
   ctx.restore();
@@ -285,31 +345,35 @@ function drawNeonSignboards(
 
     const posY = screenY + floatBob;
 
-    // Glowing signboard badge
     ctx.save();
-    ctx.fillStyle = 'rgba(39, 43, 44, 0.94)';
+    ctx.font = '700 12px sans-serif';
+    const textWidth = ctx.measureText(zone.label).width + 32;
+    const boxW = Math.max(textWidth, 120);
+    const boxH = 28;
+    ctx.shadowColor = 'rgba(39, 46, 44, 0.23)';
+    ctx.shadowBlur = 7;
+    ctx.shadowOffsetY = 3;
+    const plaque = ctx.createLinearGradient(screenX, posY - boxH / 2, screenX, posY + boxH / 2);
+    plaque.addColorStop(0, '#fffaf0');
+    plaque.addColorStop(1, '#e8dfcf');
+    ctx.fillStyle = plaque;
+    ctx.beginPath();
+    ctx.roundRect(screenX - boxW / 2, posY - boxH / 2, boxW, boxH, 7);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
     ctx.strokeStyle = zone.neonColor;
     ctx.lineWidth = 1.2;
-    ctx.shadowColor = zone.neonColor;
-    ctx.shadowBlur = 2;
-
-    const textWidth = ctx.measureText(zone.label).width + 24;
-    const boxW = Math.max(textWidth, 80);
-    const boxH = 18;
-
-    ctx.beginPath();
-    ctx.rect(screenX - boxW / 2, posY - boxH / 2, boxW, boxH);
-    ctx.fill();
     ctx.stroke();
-
-    // Neon typography
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 9px monospace';
+    ctx.fillStyle = zone.neonColor;
+    ctx.beginPath();
+    ctx.arc(screenX - boxW / 2 + 10, posY, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#3d4543';
+    ctx.font = '700 11px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.shadowColor = zone.neonColor;
-    ctx.shadowBlur = 4;
-    ctx.fillText(zone.label, screenX, posY);
+    ctx.fillText(zone.label, screenX + 4, posY, boxW - 24);
     ctx.restore();
   }
   ctx.restore();
@@ -327,64 +391,81 @@ export function drawCentralAIHub(
   const { screenX, screenY } = gridToScreen(12, 12, 0, originX, originY);
 
   ctx.save();
-
-  // Pixel sign on the reception wall gives the office a clear company identity.
-  ctx.fillStyle = '#263a3c';
-  ctx.fillRect(screenX - 100, screenY - 102, 200, 48);
-  ctx.fillStyle = '#a8c8b3';
-  ctx.fillRect(screenX - 96, screenY - 98, 192, 40);
-  ctx.fillStyle = '#29444a';
-  ctx.font = 'bold 28px monospace';
+  // A calm reception plinth makes the AI Core the visual anchor of the floor.
+  ctx.fillStyle = 'rgba(66, 84, 78, 0.17)';
+  ctx.beginPath();
+  ctx.ellipse(screenX, screenY + 5, 76, 25, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const sign = ctx.createLinearGradient(screenX - 92, screenY - 90, screenX + 92, screenY - 48);
+  sign.addColorStop(0, '#f5f0e2');
+  sign.addColorStop(0.5, '#dbe5d8');
+  sign.addColorStop(1, '#b9d0c5');
+  ctx.fillStyle = sign;
+  ctx.beginPath();
+  ctx.roundRect(screenX - 92, screenY - 94, 184, 44, 12);
+  ctx.fill();
+  ctx.strokeStyle = '#7d9f8f';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = '#355b54';
+  ctx.font = '700 25px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('ANCOS', screenX, screenY - 79);
-  ctx.fillStyle = '#e5d7b9';
-  ctx.font = 'bold 7px monospace';
-  ctx.fillText('AUTONOMOUS COMPANY OS', screenX, screenY - 62);
+  ctx.fillText('ANCOS AI CORE', screenX, screenY - 77);
+  ctx.fillStyle = '#61766c';
+  ctx.font = '600 8px sans-serif';
+  ctx.fillText('LIVE NEURAL SYSTEM', screenX, screenY - 60);
 
-  // 1. Multi-tier concentric holographic base rings on floor
-  const pulse = Math.sin(time * 3) * 3;
-  ctx.strokeStyle = '#9bd2bd';
-  ctx.lineWidth = 3;
-  ctx.shadowColor = '#9bd2bd';
-  ctx.shadowBlur = 4;
+  // Soft concentric rings pulse around the independently animated core.
+  const pulse = Math.sin(time * 2.4) * 3;
+  ctx.strokeStyle = 'rgba(88, 153, 134, 0.65)';
+  ctx.lineWidth = 2.4;
+  ctx.shadowColor = '#8abca5';
+  ctx.shadowBlur = 8;
   ctx.beginPath();
   ctx.ellipse(screenX, screenY, 48 + pulse, 24 + pulse * 0.5, 0, 0, Math.PI * 2);
   ctx.stroke();
 
-  ctx.strokeStyle = '#f1d599';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(202, 160, 102, 0.72)';
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.ellipse(screenX, screenY, 32 - pulse * 0.5, 16 - pulse * 0.25, 0, 0, Math.PI * 2);
   ctx.stroke();
 
-  // 2. Central Metallic Pedestal Column
-  drawPixelFurnitureBlock(
-    ctx,
-    screenX,
-    screenY - 14,
-    0.7,
-    0.7,
-    18,
-    '#447267',
-    '#314c47',
-    '#375c53',
-    '#b3dfc8'
-  );
-
-  // 3. Floating 3D Holographic Neural Core Sphere
-  const coreY = screenY - 34 + Math.sin(time * 2.5) * 4;
-  ctx.fillStyle = '#f0cc75';
-  ctx.shadowColor = '#f0cc75';
-  ctx.shadowBlur = 8;
+  const plinth = ctx.createLinearGradient(screenX - 18, screenY - 8, screenX + 18, screenY + 10);
+  plinth.addColorStop(0, '#e7ede0');
+  plinth.addColorStop(0.5, '#8fae9f');
+  plinth.addColorStop(1, '#58786d');
+  ctx.fillStyle = plinth;
   ctx.beginPath();
-  ctx.arc(screenX, coreY, 9, 0, Math.PI * 2);
+  ctx.ellipse(screenX, screenY - 5, 23, 12, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#56786c';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Floating neural core orb with a glint and rotating halo.
+  const coreY = screenY - 34 + Math.sin(time * 2.5) * 4;
+  const orb = ctx.createRadialGradient(screenX - 4, coreY - 5, 1, screenX, coreY, 12);
+  orb.addColorStop(0, '#fff9d8');
+  orb.addColorStop(0.38, '#f0d48b');
+  orb.addColorStop(1, '#86b8a5');
+  ctx.fillStyle = orb;
+  ctx.shadowColor = '#d9c47e';
+  ctx.shadowBlur = 14;
+  ctx.beginPath();
+  ctx.arc(screenX, coreY, 11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.beginPath();
+  ctx.ellipse(screenX - 4, coreY - 5, 3, 1.8, -0.5, 0, Math.PI * 2);
   ctx.fill();
 
   // Rotating holographic wireframe ring
   ctx.save();
-  ctx.strokeStyle = '#d3e4a5';
-  ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(255, 247, 205, 0.88)';
+    ctx.lineWidth = 1.2;
   const rotAngle = time * 2;
   ctx.translate(screenX, coreY);
   ctx.rotate(rotAngle);
@@ -398,8 +479,10 @@ export function drawCentralAIHub(
     const pOffset = ((time * 30 + i * 15) % 40);
     const px = screenX + Math.sin(i * 1.5 + time) * 14;
     const py = coreY + 12 - pOffset;
-    ctx.fillStyle = i % 2 === 0 ? '#38bdf8' : '#10b981';
-    ctx.fillRect(px, py, 2, 2);
+    ctx.fillStyle = i % 2 === 0 ? '#79b8a3' : '#dbaf67';
+    ctx.beginPath();
+    ctx.arc(px, py, 1.8, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   ctx.restore();
@@ -419,64 +502,129 @@ export function drawWorkstation(
   const isOccupied = ws.occupantId !== null;
 
   ctx.save();
-
-  // 1. Workstation Desk
-  const isExec = ws.deskType === 'executive';
-  const deskWidthRatio = isExec ? 1.4 : 1.1;
-  const deskDepthRatio = 0.8;
-  const deskHeight = 14;
-
-  drawPixelFurnitureBlock(
-    ctx,
-    screenX,
-    screenY - 10,
-    deskWidthRatio,
-    deskDepthRatio,
-    deskHeight,
-    isExec ? '#a87d51' : '#98734f',
-    isExec ? '#674b38' : '#604b3a',
-    isExec ? '#7e5e41' : '#795b40',
-    isOccupied ? '#d8c39b' : '#75624e'
-  );
-
-  // 2. Monitors & Screen Displays
-  const monitorY = screenY - 18;
-
-  if (ws.monitorCount >= 2) {
-    // Dual monitor setup
-    // Left Monitor
-    drawMonitor(ctx, screenX - 16, monitorY - 4, isOccupied, time, '#a8d2c0', 22, 16);
-    // Right Monitor
-    drawMonitor(ctx, screenX + 16, monitorY - 4, isOccupied, time, '#d8c181', 22, 16);
-  } else {
-    // Single wide curved monitor
-    drawMonitor(ctx, screenX, monitorY - 4, isOccupied, time, '#a8d2c0', 28, 17);
-  }
-
-  // 3. Ergonomic Office Swivel Chair
   const chairPos = gridToScreen(ws.seatGridX, ws.seatGridY, 0, originX, originY);
-  ctx.save();
-  // Chair base caster shadow
-  ctx.fillStyle = '#00000044';
-  ctx.beginPath();
-  ctx.ellipse(chairPos.screenX, chairPos.screenY + 2, 8, 4, 0, 0, Math.PI * 2);
-  ctx.fill();
+  drawOfficeChair(ctx, chairPos.screenX, chairPos.screenY, isOccupied, isOccupied ? '#739b8c' : '#7f8581');
 
-  // Chair seat cushion
-  ctx.fillStyle = '#1e293b';
-  ctx.strokeStyle = isOccupied ? '#38bdf8' : '#334155';
+  // Rounded wood desk with a shaded fascia and slim legs.
+  const isExec = ws.deskType === 'executive';
+  const deskCenterY = screenY - 7;
+  const deskW = isExec ? 112 : 78;
+  const deskH = isExec ? 38 : 31;
+  ctx.fillStyle = 'rgba(65, 49, 36, 0.23)';
+  ctx.beginPath();
+  ctx.ellipse(screenX + 2, deskCenterY + 17, deskW * 0.48, 13, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#77563c';
+  ctx.beginPath();
+  ctx.roundRect(screenX - deskW / 2 + 5, deskCenterY - 3, deskW - 10, 22, 5);
+  ctx.fill();
+  const desktop = ctx.createLinearGradient(screenX, deskCenterY - deskH / 2, screenX, deskCenterY + deskH / 2);
+  desktop.addColorStop(0, isExec ? '#d8b887' : '#c9a77c');
+  desktop.addColorStop(0.58, isExec ? '#bc9569' : '#aa835d');
+  desktop.addColorStop(1, isExec ? '#986f4e' : '#8b684c');
+  ctx.fillStyle = desktop;
+  ctx.beginPath();
+  ctx.roundRect(screenX - deskW / 2, deskCenterY - deskH / 2, deskW, deskH, 7);
+  ctx.fill();
+  ctx.strokeStyle = isOccupied ? '#719f8b' : '#826c55';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255, 242, 212, 0.5)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.ellipse(chairPos.screenX, chairPos.screenY - 4, 6, 4, 0, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.moveTo(screenX - deskW / 2 + 8, deskCenterY - deskH / 2 + 3);
+  ctx.lineTo(screenX + deskW / 2 - 8, deskCenterY - deskH / 2 + 3);
   ctx.stroke();
 
-  // Chair backrest
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(chairPos.screenX - 5, chairPos.screenY - 12, 10, 8);
-  ctx.strokeRect(chairPos.screenX - 5, chairPos.screenY - 12, 10, 8);
-  ctx.restore();
+  // Monitor stands and the slim keyboard sit on the desktop.
+  const monitorY = screenY - 18;
+  if (ws.monitorCount >= 2) {
+    drawMonitor(ctx, screenX - 17, monitorY - 3, isOccupied, time, '#a8d2c0', 26, 19);
+    drawMonitor(ctx, screenX + 17, monitorY - 3, isOccupied, time, '#d8c181', 26, 19);
+  } else {
+    drawMonitor(ctx, screenX, monitorY - 3, isOccupied, time, '#a8d2c0', 34, 20);
+  }
+  const keyboardY = screenY + 1;
+  ctx.fillStyle = '#4e5451';
+  ctx.beginPath();
+  ctx.roundRect(screenX - 12, keyboardY - 3, 24, 6, 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(242, 235, 218, 0.72)';
+  ctx.lineWidth = 0.7;
+  for (let key = 0; key < 5; key++) {
+    ctx.beginPath();
+    ctx.moveTo(screenX - 9 + key * 4.5, keyboardY - 1);
+    ctx.lineTo(screenX - 9 + key * 4.5, keyboardY + 1);
+    ctx.stroke();
+  }
 
+  ctx.restore();
+}
+
+function drawOfficeChair(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  occupied: boolean,
+  accent: string,
+  scale = 1
+): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = 'rgba(40, 45, 44, 0.2)';
+  ctx.beginPath();
+  ctx.ellipse(0, 6, 15, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Star base, stem, and small caster wheels make the chair unmistakable.
+  ctx.strokeStyle = '#68716e';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(0, 1);
+  ctx.lineTo(0, 9);
+  ctx.moveTo(-10, 7);
+  ctx.lineTo(10, 7);
+  ctx.moveTo(-7, 3);
+  ctx.lineTo(7, 11);
+  ctx.moveTo(7, 3);
+  ctx.lineTo(-7, 11);
+  ctx.stroke();
+  for (const dx of [-10, 10, -7, 7]) {
+    ctx.fillStyle = '#505a56';
+    ctx.beginPath();
+    ctx.arc(dx, dx === -10 || dx === 10 ? 7 : (dx < 0 ? 3 : 3), 1.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const upholstery = occupied ? accent : '#78817e';
+  ctx.fillStyle = '#596460';
+  ctx.beginPath();
+  ctx.roundRect(-11, -20, 22, 17, [8, 8, 4, 4]);
+  ctx.fill();
+  ctx.strokeStyle = '#f4eee0';
+  ctx.lineWidth = 0.9;
+  ctx.stroke();
+  const cushion = ctx.createLinearGradient(-8, -7, 8, 3);
+  cushion.addColorStop(0, occupied ? '#a7c4b4' : '#aab0a8');
+  cushion.addColorStop(1, upholstery);
+  ctx.fillStyle = cushion;
+  ctx.beginPath();
+  ctx.roundRect(-10, -7, 20, 12, [5, 5, 6, 6]);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(60, 69, 65, 0.65)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-8, -4);
+  ctx.quadraticCurveTo(0, -1, 8, -4);
+  ctx.stroke();
+
+  // A restrained seat highlight keeps the silhouette readable at floor zoom.
+  ctx.fillStyle = occupied ? '#d3e5d4' : '#e1e1d8';
+  ctx.beginPath();
+  ctx.ellipse(-4, -4, 2.1, 1, -0.3, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -500,32 +648,46 @@ function drawMonitor(
   ctx.fillRect(x - 4, y + h / 2 + 5, 8, 2);
 
   // Monitor frame
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(x - w / 2, y - h / 2, w, h);
+  ctx.fillStyle = '#35443f';
+  ctx.beginPath();
+  ctx.roundRect(x - w / 2, y - h / 2, w, h, 3);
+  ctx.fill();
   ctx.strokeStyle = isOccupied ? activeColor : '#334155';
   ctx.lineWidth = 1;
-  ctx.strokeRect(x - w / 2, y - h / 2, w, h);
+  ctx.stroke();
 
   // Monitor Screen
   if (isOccupied) {
-    ctx.fillStyle = '#071224';
-    ctx.fillRect(x - w / 2 + 1, y - h / 2 + 1, w - 2, h - 2);
+    const screen = ctx.createLinearGradient(x, y - h / 2, x, y + h / 2);
+    screen.addColorStop(0, '#344f4d');
+    screen.addColorStop(1, '#203735');
+    ctx.fillStyle = screen;
+    ctx.beginPath();
+    ctx.roundRect(x - w / 2 + 1.5, y - h / 2 + 1.5, w - 3, h - 3, 2);
+    ctx.fill();
 
-    // Glowing animated syntax code lines or graphs
+    // Glowing animated syntax lines or graph traces.
     ctx.fillStyle = activeColor;
-    const scanLine = (Math.sin(time * 8) + 1) * 2;
     for (let l = 0; l < 3; l++) {
       const lineLen = ((l * 4 + time * 10) % (w - 4)) + 2;
-      ctx.fillRect(x - w / 2 + 2, y - h / 2 + 2 + l * 2.2, lineLen, 1.2);
+      ctx.globalAlpha = 0.68;
+      ctx.beginPath();
+      ctx.roundRect(x - w / 2 + 3, y - h / 2 + 4 + l * 3, Math.min(lineLen, w - 7), 1.4, 1);
+      ctx.fill();
     }
+    ctx.globalAlpha = 1;
   } else {
     // Standby: dark screen with subtle amber/green standby power LED
-    ctx.fillStyle = '#050811';
-    ctx.fillRect(x - w / 2 + 1, y - h / 2 + 1, w - 2, h - 2);
+    ctx.fillStyle = '#26322f';
+    ctx.beginPath();
+    ctx.roundRect(x - w / 2 + 1.5, y - h / 2 + 1.5, w - 3, h - 3, 2);
+    ctx.fill();
 
     const ledBlink = Math.sin(time * 2) > 0;
     ctx.fillStyle = ledBlink ? '#10b981' : '#064e3b';
-    ctx.fillRect(x + w / 2 - 3, y + h / 2 - 3, 1.5, 1.5);
+    ctx.beginPath();
+    ctx.arc(x + w / 2 - 4, y + h / 2 - 4, 1.2, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   ctx.restore();
@@ -549,8 +711,30 @@ export function drawServerRacks(
 
   for (const loc of rackLocations) {
     const { screenX, screenY } = gridToScreen(loc.gx, loc.gy, 0, originX, originY);
-    // Draw tall server rack cabinet
-    drawPixelFurnitureBlock(ctx, screenX, screenY - 14, 0.9, 0.9, 28, '#665344', '#43382f', '#56483c', '#d2b17b');
+    // Rounded equipment cabinets with vented glass doors.
+    const rackY = screenY - 14;
+    ctx.fillStyle = 'rgba(35, 48, 47, 0.24)';
+    ctx.beginPath();
+    ctx.ellipse(screenX + 2, screenY + 10, 25, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const rack = ctx.createLinearGradient(screenX - 20, rackY - 18, screenX + 20, rackY + 18);
+    rack.addColorStop(0, '#9aaba4');
+    rack.addColorStop(0.32, '#566a67');
+    rack.addColorStop(1, '#344744');
+    ctx.fillStyle = rack;
+    ctx.beginPath();
+    ctx.roundRect(screenX - 21, rackY - 18, 42, 61, 5);
+    ctx.fill();
+    ctx.strokeStyle = '#e4ddc8';
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(20, 34, 33, 0.7)';
+    ctx.beginPath();
+    ctx.roundRect(screenX - 15, rackY - 13, 30, 51, 3);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(217, 231, 220, 0.38)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
 
     // Draw multi-bay LED banks
     for (let r = 0; r < 4; r++) {
@@ -563,9 +747,14 @@ export function drawServerRacks(
         else if (blinkVal < -0.7) ledColor = '#f59e0b'; // amber cache activity
 
         ctx.fillStyle = ledColor;
-        ctx.fillRect(ledX, ledY, 2, 2);
+        ctx.shadowColor = ledColor;
+        ctx.shadowBlur = 4;
+        ctx.beginPath();
+        ctx.arc(ledX, ledY, 1.5, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
+    ctx.shadowBlur = 0;
   }
 
   ctx.restore();
@@ -586,42 +775,72 @@ export function drawBoardroomTable(
 
   ctx.save();
 
-  // Shared planning board mounted on the meeting-room wall.
+  // Shared planning board with independently drawn notes and diagram.
   const board = gridToScreen(12, 3, 0, originX, originY);
-  ctx.fillStyle = '#473f37';
-  ctx.fillRect(board.screenX - 66, board.screenY - 20, 132, 44);
-  ctx.fillStyle = '#eee4ce';
-  ctx.fillRect(board.screenX - 62, board.screenY - 16, 124, 36);
-  ctx.fillStyle = '#668c7a';
-  ctx.fillRect(board.screenX - 52, board.screenY - 8, 22, 3);
-  ctx.fillRect(board.screenX - 52, board.screenY - 1, 35, 3);
+  ctx.fillStyle = 'rgba(67, 58, 47, 0.22)';
+  ctx.beginPath();
+  ctx.roundRect(board.screenX - 68, board.screenY - 20, 136, 45, 6);
+  ctx.fill();
+  const boardSurface = ctx.createLinearGradient(board.screenX, board.screenY - 18, board.screenX, board.screenY + 18);
+  boardSurface.addColorStop(0, '#f8f5e9');
+  boardSurface.addColorStop(1, '#dbe5db');
+  ctx.fillStyle = boardSurface;
+  ctx.beginPath();
+  ctx.roundRect(board.screenX - 64, board.screenY - 18, 128, 38, 4);
+  ctx.fill();
+  ctx.strokeStyle = '#95856a';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#668c7a';
+  ctx.beginPath();
+  ctx.moveTo(board.screenX - 51, board.screenY - 8);
+  ctx.lineTo(board.screenX - 32, board.screenY - 8);
+  ctx.moveTo(board.screenX - 51, board.screenY - 1);
+  ctx.lineTo(board.screenX - 18, board.screenY - 1);
+  ctx.stroke();
+  ctx.strokeStyle = '#c58c54';
+  ctx.beginPath();
+  ctx.moveTo(board.screenX + 25, board.screenY - 8);
+  ctx.lineTo(board.screenX + 48, board.screenY - 8);
+  ctx.moveTo(board.screenX + 25, board.screenY - 1);
+  ctx.lineTo(board.screenX + 42, board.screenY - 1);
+  ctx.stroke();
   ctx.fillStyle = '#7293a1';
-  ctx.fillRect(board.screenX - 9, board.screenY - 8, 25, 14);
-  ctx.fillStyle = '#c58c54';
-  ctx.fillRect(board.screenX + 23, board.screenY - 8, 25, 3);
-  ctx.fillRect(board.screenX + 23, board.screenY - 1, 18, 3);
+  ctx.beginPath();
+  ctx.roundRect(board.screenX - 8, board.screenY - 9, 24, 14, 3);
+  ctx.fill();
   ctx.fillStyle = '#7a6254';
-  ctx.fillRect(board.screenX - 3, board.screenY + 24, 6, 12);
+  ctx.fillRect(board.screenX - 3, board.screenY + 20, 6, 15);
 
-  // Long conference table in the pixel office.
-  drawPixelFurnitureBlock(
-    ctx,
-    screenX,
-    screenY - 8,
-    2.2,
-    1.4,
-    12,
-    '#856246',
-    '#533b2d',
-    '#715039',
-    '#d2b17b'
-  );
+  // Oval boardroom table, softly lit along its edge.
+  ctx.fillStyle = 'rgba(55, 42, 33, 0.2)';
+  ctx.beginPath();
+  ctx.ellipse(screenX + 2, screenY + 1, 75, 29, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const table = ctx.createLinearGradient(screenX, screenY - 22, screenX, screenY + 21);
+  table.addColorStop(0, '#d0ad7f');
+  table.addColorStop(0.45, '#a87e56');
+  table.addColorStop(1, '#805d43');
+  ctx.fillStyle = table;
+  ctx.beginPath();
+  ctx.ellipse(screenX, screenY - 8, 71, 26, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#f0d6a9';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255, 245, 215, 0.48)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(screenX, screenY - 8, 63, 20, 0, Math.PI * 1.12, Math.PI * 1.88);
+  ctx.stroke();
 
   // Central Hologram Tabletop Projector
   const projY = screenY - 14;
-  ctx.fillStyle = '#78bba8';
-  ctx.shadowColor = '#78bba8';
-  ctx.shadowBlur = meetingActive ? 8 : 1;
+  ctx.fillStyle = '#a6c8b2';
+  ctx.shadowColor = '#88b8a4';
+  ctx.shadowBlur = meetingActive ? 10 : 3;
   ctx.beginPath();
   ctx.ellipse(screenX, projY, 14, 7, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -636,25 +855,21 @@ export function drawBoardroomTable(
     ctx.save();
     ctx.translate(screenX, holoY);
     ctx.rotate(time * 1.5);
-    ctx.strokeRect(-8, -8, 16, 16);
+    ctx.beginPath();
+    ctx.roundRect(-8, -8, 16, 16, 3);
+    ctx.stroke();
     ctx.restore();
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 8px monospace';
+    ctx.font = '600 9px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(meetingTitle.slice(0, 24), screenX, holoY - 14);
   }
 
-  // Draw Conference Chairs around table
+  // Draw six visible rolling chairs around the boardroom table.
   for (const seat of MEETING_SEATS) {
     const chairPos = gridToScreen(seat.gridX, seat.gridY, 0, originX, originY);
-    ctx.fillStyle = '#1e1b38';
-    ctx.strokeStyle = seat.occupantId ? '#c084fc' : '#475569';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.ellipse(chairPos.screenX, chairPos.screenY - 3, 5, 3.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+    drawOfficeChair(ctx, chairPos.screenX, chairPos.screenY, Boolean(seat.occupantId), '#b28fba', 0.72);
   }
 
   ctx.restore();

@@ -1,16 +1,129 @@
-import { GameCharacter, HeadingDirection } from './types';
+import { GameCharacter } from './types';
 import { gridToScreen } from './IsometricMath';
 
+const TAU = Math.PI * 2;
+
+function pathLimb(
+  ctx: CanvasRenderingContext2D,
+  points: Array<[number, number]>,
+  color: string,
+  width: number,
+  handColor?: string
+): void {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  ctx.stroke();
+  if (handColor) {
+    const [x, y] = points[points.length - 1];
+    ctx.fillStyle = handColor;
+    ctx.beginPath();
+    ctx.arc(x, y, width * 0.38, 0, TAU);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawShoes(ctx: CanvasRenderingContext2D, x: number, y: number, color: string): void {
+  ctx.fillStyle = '#f3e9d8';
+  ctx.beginPath();
+  ctx.ellipse(x + 1, y, 5.4, 2.7, -0.08, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(x + 2, y - 0.8, 3.6, 1.6, -0.08, Math.PI, TAU);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(61, 59, 54, 0.5)';
+  ctx.lineWidth = 0.7;
+  ctx.beginPath();
+  ctx.moveTo(x - 2, y + 1.1);
+  ctx.quadraticCurveTo(x + 1, y + 2.2, x + 5, y + 1);
+  ctx.stroke();
+}
+
+function drawLeg(
+  ctx: CanvasRenderingContext2D,
+  hipX: number,
+  hipY: number,
+  angle: number,
+  pantColor: string,
+  shoeColor: string,
+  length = 22
+): void {
+  ctx.save();
+  ctx.translate(hipX, hipY);
+  ctx.rotate(angle);
+  ctx.strokeStyle = pantColor;
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(1, length * 0.52, 1, length - 3);
+  ctx.stroke();
+  drawShoes(ctx, 0, length - 1, shoeColor);
+  ctx.restore();
+}
+
+function drawStatusBadge(ctx: CanvasRenderingContext2D, x: number, y: number, state: string): void {
+  const badgeColor = state === 'warning' ? '#d59036' : state === 'celebrating' ? '#71a886' : '#81aeb3';
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 251, 239, 0.96)';
+  ctx.strokeStyle = badgeColor;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.roundRect(x - 10, y - 7, 20, 14, 6);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = badgeColor;
+  ctx.beginPath();
+  if (state === 'warning') {
+    ctx.moveTo(x, y - 4);
+    ctx.lineTo(x + 4, y + 3);
+    ctx.lineTo(x - 4, y + 3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#fff9ec';
+    ctx.fillRect(x - 0.6, y - 1.5, 1.2, 2.5);
+  } else if (state === 'celebrating') {
+    ctx.beginPath();
+    ctx.arc(x - 2, y - 1, 1.1, 0, TAU);
+    ctx.arc(x + 2, y - 1, 1.1, 0, TAU);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y + 1, 2.7, 0.1, Math.PI - 0.1);
+    ctx.strokeStyle = badgeColor;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(x - 2.6, y - 1, 1.1, 0, TAU);
+    ctx.arc(x + 2.6, y - 1, 1.1, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = badgeColor;
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.arc(x, y + 3, 2.2, Math.PI, TAU);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 /**
- * Draws an independently articulated 2D anime character sprite on the canvas
+ * Draw an independently animated anime-inspired employee in the live world.
+ * All identity, appearance, and status details come from the synced employee record.
  */
 export function drawCharacter(
   ctx: CanvasRenderingContext2D,
   char: GameCharacter,
   originX: number,
   originY: number,
-  isSelected: boolean = false,
-  isHovered: boolean = false
+  isSelected = false,
+  isHovered = false
 ): void {
   const { screenX, screenY } = gridToScreen(char.gridX, char.gridY, 0, originX, originY);
   const time = char.animTime;
@@ -24,444 +137,336 @@ export function drawCharacter(
   const isWarning = char.animState === 'warning';
 
   ctx.save();
-
-  // 1. Selection & Hover Rings on the Floor
   if (isSelected || isHovered) {
-    ctx.save();
-    ctx.strokeStyle = isSelected ? '#38bdf8' : '#10b981';
-    ctx.lineWidth = 2;
-    ctx.shadowColor = isSelected ? '#38bdf8' : '#10b981';
-    ctx.shadowBlur = 10;
+    ctx.strokeStyle = isSelected ? '#4f8f9c' : '#7f9b79';
+    ctx.lineWidth = isSelected ? 2.4 : 1.6;
+    ctx.shadowColor = isSelected ? '#6daeb7' : '#9ebc93';
+    ctx.shadowBlur = 9;
+    const pulse = Math.sin(time * 4) * 2;
     ctx.beginPath();
-    const ringPulse = Math.sin(time * 5) * 2;
-    ctx.ellipse(screenX, screenY + 4, 18 + ringPulse, 9 + ringPulse * 0.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(screenX, screenY + 8, 22 + pulse, 10 + pulse * 0.35, 0, 0, TAU);
     ctx.stroke();
-    ctx.restore();
+    ctx.shadowBlur = 0;
   }
 
-  // 2. Ground Shadow
-  ctx.save();
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-  const shadowW = isWalking ? 14 + Math.cos(time * 8) * 2 : 16;
-  const shadowH = shadowW * 0.5;
+  ctx.fillStyle = 'rgba(50, 48, 43, 0.24)';
   ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 4, shadowW, shadowH, 0, 0, Math.PI * 2);
+  ctx.ellipse(screenX, screenY + 7, isWalking ? 13 : 15, 5.5, 0, 0, TAU);
   ctx.fill();
-  ctx.restore();
 
-  // 3. Warning Alert Aura
   if (isWarning) {
-    ctx.save();
-    ctx.strokeStyle = '#f59e0b';
+    ctx.strokeStyle = 'rgba(205, 143, 50, 0.8)';
     ctx.lineWidth = 1.5;
-    ctx.shadowColor = '#f59e0b';
-    ctx.shadowBlur = 8;
-    const warnRadius = 20 + Math.sin(time * 6) * 3;
     ctx.beginPath();
-    ctx.ellipse(screenX, screenY + 4, warnRadius, warnRadius * 0.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(screenX, screenY + 7, 24 + Math.sin(time * 5) * 2, 11, 0, 0, TAU);
     ctx.stroke();
-    ctx.restore();
   }
 
-  // Calculate Articulation Offsets
-  let bobY = 0;
-  if (isWalking) {
-    bobY = -Math.abs(Math.sin(time * 8)) * 3;
-  } else if (isCelebrating) {
-    bobY = -Math.abs(Math.sin(time * 6)) * 6;
-  } else {
-    // Breathing idle bob
-    bobY = Math.sin(time * 2.5) * 0.8;
-  }
+  const bob = isWalking
+    ? -Math.abs(Math.sin(time * 8)) * 2.6
+    : isCelebrating
+      ? -Math.abs(Math.sin(time * 6)) * 5
+      : Math.sin(time * 2.2) * 0.7;
+  const seatLift = isSitting ? 5 : 0;
+  const baseY = screenY - 1 + bob + seatLift;
+  const faceBack = char.heading === 'up';
+  const flip = char.heading === 'left';
 
-  const sitOffset = isSitting ? 5 : 0;
-  const baseY = screenY - 2 + bobY + sitOffset;
-
-  // Directional mirroring (flip horizontally if facing left)
-  const isFacingLeft = char.heading === 'left';
-  const isFacingUp = char.heading === 'up';
-
+  ctx.save();
   ctx.translate(screenX, baseY);
-  ctx.scale(isFacingLeft ? -1.6 : 1.6, 1);
+  ctx.scale(flip ? -1.42 : 1.42, 1.38);
 
-  // ─── LEGS & SHOES ───
-  ctx.save();
-  const legColor = '#0f172a';
-  const shoeColor = char.theme.accentColor;
+  const skin = char.theme.skinTone;
+  const hair = char.theme.hairColor;
+  const suit = char.theme.suitColor;
+  const accent = char.theme.accentColor;
+  const trouser = '#41494b';
+  const stride = isWalking ? Math.sin(time * 8) * 0.42 : 0;
 
-  if (isWalking) {
-    const legAngle = Math.sin(time * 8) * 0.45;
-    // Left Leg
-    ctx.save();
-    ctx.translate(-4, -14);
-    ctx.rotate(legAngle);
-    ctx.fillStyle = legColor;
-    ctx.fillRect(-2, 0, 4, 14);
-    ctx.fillStyle = shoeColor;
-    ctx.fillRect(-2.5, 12, 6, 3.5);
-    ctx.restore();
-
-    // Right Leg
-    ctx.save();
-    ctx.translate(4, -14);
-    ctx.rotate(-legAngle);
-    ctx.fillStyle = legColor;
-    ctx.fillRect(-2, 0, 4, 14);
-    ctx.fillStyle = shoeColor;
-    ctx.fillRect(-2.5, 12, 6, 3.5);
-    ctx.restore();
-  } else if (isSitting) {
-    // Legs bent forward horizontally under desk
-    ctx.fillStyle = legColor;
-    ctx.fillRect(-5, -10, 4, 8);
-    ctx.fillRect(1, -10, 4, 8);
-    ctx.fillStyle = shoeColor;
-    ctx.fillRect(-5, -3, 6, 3.5);
-    ctx.fillRect(1, -3, 6, 3.5);
+  // Legs animate from the hip; seated employees tuck their feet under the desk.
+  if (isSitting) {
+    ctx.fillStyle = trouser;
+    ctx.beginPath();
+    ctx.roundRect(-9, -20, 7, 14, [3, 3, 5, 5]);
+    ctx.roundRect(2, -20, 7, 14, [3, 3, 5, 5]);
+    ctx.fill();
+    pathLimb(ctx, [[-5, -9], [-7, -5], [-4, -2]], trouser, 5);
+    pathLimb(ctx, [[5, -9], [7, -5], [4, -2]], trouser, 5);
+    drawShoes(ctx, -4, -1, accent);
+    drawShoes(ctx, 4, -1, accent);
   } else {
-    // Standing Idle
-    ctx.fillStyle = legColor;
-    ctx.fillRect(-5, -15, 4, 15);
-    ctx.fillRect(1, -15, 4, 15);
-    ctx.fillStyle = shoeColor;
-    ctx.fillRect(-6, -2, 5.5, 3.5);
-    ctx.fillRect(1, -2, 5.5, 3.5);
+    drawLeg(ctx, -4, -23, stride, trouser, accent);
+    drawLeg(ctx, 4, -23, -stride, trouser, accent);
   }
-  ctx.restore();
 
-  // ─── TORSO & CLOTHING ───
-  ctx.save();
-  const torsoY = -28;
-  // Suit Body
-  ctx.fillStyle = char.theme.suitColor;
+  // Neck and tailored jacket, shaded with gentle gradients instead of block fills.
+  ctx.fillStyle = skin;
   ctx.beginPath();
-  ctx.roundRect(-8, torsoY, 16, 16, [4, 4, 2, 2]);
+  ctx.roundRect(-3.3, -57, 6.6, 9, 2);
   ctx.fill();
-  ctx.strokeStyle = char.theme.accentColor;
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Cyber Collar & Tie / Circuit line
-  ctx.fillStyle = '#1e293b';
+  const jacket = ctx.createLinearGradient(-12, -55, 12, -27);
+  jacket.addColorStop(0, suit);
+  jacket.addColorStop(0.52, char.role === 'creative' ? '#90736f' : '#657773');
+  jacket.addColorStop(1, suit);
+  ctx.fillStyle = jacket;
   ctx.beginPath();
-  ctx.moveTo(-3, torsoY);
-  ctx.lineTo(0, torsoY + 6);
-  ctx.lineTo(3, torsoY);
+  ctx.moveTo(-8, -53);
+  ctx.quadraticCurveTo(-13, -51, -12, -43);
+  ctx.lineTo(-10, -28);
+  ctx.quadraticCurveTo(0, -24, 10, -28);
+  ctx.lineTo(12, -43);
+  ctx.quadraticCurveTo(13, -51, 8, -53);
+  ctx.lineTo(4, -55);
+  ctx.lineTo(0, -49);
+  ctx.lineTo(-4, -55);
   ctx.closePath();
   ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 245, 223, 0.7)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
 
-  // Holographic Cyber Badge
-  ctx.fillStyle = char.theme.accentColor;
-  ctx.fillRect(-6, torsoY + 4, 3, 4);
-
-  ctx.restore();
-
-  // ─── ARMS & HANDS ───
-  ctx.save();
-  const armColor = char.theme.suitColor;
-  const handColor = char.theme.skinTone;
-
-  if (isWorking) {
-    // Typing animation: hands rapid oscillation over keyboard
-    const typeSwing = Math.sin(time * 20) * 2;
-    // Left arm
-    ctx.fillStyle = armColor;
-    ctx.fillRect(-11, -26, 4, 10);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(-7, -16 + typeSwing, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Right arm
-    ctx.fillStyle = armColor;
-    ctx.fillRect(7, -26, 4, 10);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(7, -16 - typeSwing, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Tiny typing keystroke particle sparks
-    if (Math.sin(time * 30) > 0.4) {
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillRect(-4 + (time * 100) % 8, -17, 1.5, 1.5);
-    }
-  } else if (isCelebrating) {
-    // Both arms raised high in victory
-    ctx.fillStyle = armColor;
-    ctx.save();
-    ctx.translate(-8, -26);
-    ctx.rotate(-0.8);
-    ctx.fillRect(-2, -12, 4, 12);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(0, -13, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    ctx.save();
-    ctx.translate(8, -26);
-    ctx.rotate(0.8);
-    ctx.fillStyle = armColor;
-    ctx.fillRect(-2, -12, 4, 12);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(0, -13, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  } else if (isThinking) {
-    // Right hand to chin, left resting
-    ctx.fillStyle = armColor;
-    ctx.fillRect(-11, -26, 4, 12);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(-9, -13, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Right arm raised to chin
-    ctx.fillStyle = armColor;
-    ctx.save();
-    ctx.translate(8, -24);
-    ctx.rotate(-1.2);
-    ctx.fillRect(-2, -10, 4, 10);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(0, -11, 2.8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  } else if (isSpeaking) {
-    // Right arm gesturing forward
-    const gesture = Math.sin(time * 4) * 0.2;
-    ctx.fillStyle = armColor;
-    ctx.fillRect(-11, -26, 4, 12);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(-9, -13, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.save();
-    ctx.translate(8, -24);
-    ctx.rotate(0.5 + gesture);
-    ctx.fillStyle = armColor;
-    ctx.fillRect(-2, 0, 4, 11);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(0, 12, 2.8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  } else if (isWalking) {
-    // Natural walking arm swing opposite to legs
-    const armSwing = Math.sin(time * 8) * 0.5;
-    ctx.save();
-    ctx.translate(-8, -26);
-    ctx.rotate(-armSwing);
-    ctx.fillStyle = armColor;
-    ctx.fillRect(-2, 0, 4, 12);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(0, 13, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    ctx.save();
-    ctx.translate(8, -26);
-    ctx.rotate(armSwing);
-    ctx.fillStyle = armColor;
-    ctx.fillRect(-2, 0, 4, 12);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(0, 13, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  } else {
-    // Idle hanging arms
-    ctx.fillStyle = armColor;
-    ctx.fillRect(-11, -26, 3.5, 12);
-    ctx.fillRect(7.5, -26, 3.5, 12);
-    ctx.fillStyle = handColor;
-    ctx.beginPath();
-    ctx.arc(-9.2, -13, 2.3, 0, Math.PI * 2);
-    ctx.arc(9.2, -13, 2.3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.restore();
-
-  // ─── HEAD & ANIME FACE ───
-  ctx.save();
-  const headY = -38;
-  const headNod = isListening ? Math.sin(time * 3) * 1.5 : 0;
-
-  ctx.translate(0, headNod);
-
-  // Neck
-  ctx.fillStyle = char.theme.skinTone;
-  ctx.fillRect(-2.5, headY + 8, 5, 4);
-
-  // Face Base
-  ctx.fillStyle = char.theme.skinTone;
+  // Lapels, shirt, badge, and small role-specific color detail.
+  ctx.fillStyle = '#f0e8d8';
   ctx.beginPath();
-  ctx.roundRect(-8, headY - 8, 16, 16, [6, 6, 7, 7]);
+  ctx.moveTo(-4, -55);
+  ctx.lineTo(0, -49);
+  ctx.lineTo(-1, -39);
+  ctx.lineTo(-7, -51);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(4, -55);
+  ctx.lineTo(0, -49);
+  ctx.lineTo(2, -39);
+  ctx.lineTo(8, -51);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = accent;
+  ctx.beginPath();
+  ctx.moveTo(-1, -46);
+  ctx.lineTo(1, -46);
+  ctx.lineTo(2.3, -33);
+  ctx.lineTo(0, -30);
+  ctx.lineTo(-2, -33);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#f6e5bb';
+  ctx.beginPath();
+  ctx.arc(7, -43, 1.25, 0, TAU);
   ctx.fill();
 
-  // If viewing from behind (facing up)
-  if (isFacingUp) {
-    // Back of hair covers head
-    ctx.fillStyle = char.theme.hairColor;
-    ctx.beginPath();
-    ctx.roundRect(-9, headY - 10, 18, 18, [8, 8, 4, 4]);
-    ctx.fill();
+  // Arms and hands change pose from actual live activity state.
+  if (isWorking) {
+    const typing = Math.sin(time * 18) * 1.3;
+    pathLimb(ctx, [[-9, -49], [-13, -42], [-8, -34], [-4, -31 + typing]], suit, 5.2, skin);
+    pathLimb(ctx, [[9, -49], [13, -42], [8, -34], [4, -31 - typing]], suit, 5.2, skin);
+  } else if (isCelebrating) {
+    const cheer = Math.sin(time * 6) * 0.12;
+    pathLimb(ctx, [[-9, -49], [-14, -53], [-17, -65]], suit, 5.5, skin);
+    pathLimb(ctx, [[9, -49], [14, -53], [17, -65 + cheer]], suit, 5.5, skin);
+  } else if (isThinking) {
+    pathLimb(ctx, [[-9, -49], [-12, -42], [-9, -34]], suit, 5.3, skin);
+    pathLimb(ctx, [[9, -49], [13, -43], [9, -53]], suit, 5.3, skin);
+  } else if (isSpeaking) {
+    const gesture = Math.sin(time * 4) * 2;
+    pathLimb(ctx, [[-9, -49], [-12, -42], [-9, -34]], suit, 5.3, skin);
+    pathLimb(ctx, [[9, -49], [14, -43], [17, -38 + gesture]], suit, 5.3, skin);
+  } else if (isSitting) {
+    const type = isWorking ? Math.sin(time * 18) * 1.4 : 0;
+    pathLimb(ctx, [[-9, -49], [-12, -42], [-7, -35], [-3, -32 + type]], suit, 5.2, skin);
+    pathLimb(ctx, [[9, -49], [12, -42], [7, -35], [3, -32 - type]], suit, 5.2, skin);
   } else {
-    // Front / 3/4 Face View
-    // Anime Eyes & Blinking
-    if (char.isBlinking) {
-      // Closed eye arcs
-      ctx.strokeStyle = '#0f172a';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(-3.5, headY - 1, 2.5, 0.2, Math.PI - 0.2);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(3.5, headY - 1, 2.5, 0.2, Math.PI - 0.2);
-      ctx.stroke();
-    } else {
-      // Big expressive anime eyes
-      ctx.fillStyle = '#0f172a';
-      ctx.beginPath();
-      ctx.ellipse(-3.5, headY - 1, 2.2, 3, 0, 0, Math.PI * 2);
-      ctx.ellipse(3.5, headY - 1, 2.2, 3, 0, 0, Math.PI * 2);
-      ctx.fill();
+    const swing = isWalking ? Math.sin(time * 8) * 0.22 : 0;
+    pathLimb(ctx, [[-9, -49], [-12 - swing * 5, -41], [-12 - swing * 8, -31]], suit, 5.3, skin);
+    pathLimb(ctx, [[9, -49], [12 + swing * 5, -41], [12 + swing * 8, -31]], suit, 5.3, skin);
+  }
 
-      // Iris tint
-      ctx.fillStyle = char.theme.accentColor;
-      ctx.beginPath();
-      ctx.arc(-3.5, headY, 1.5, 0, Math.PI * 2);
-      ctx.arc(3.5, headY, 1.5, 0, Math.PI * 2);
-      ctx.fill();
+  // Large, expressive anime face framed by individualized hair.
+  const nod = isListening ? Math.sin(time * 3) * 1.3 : isThinking ? Math.sin(time * 1.6) : 0;
+  ctx.save();
+  ctx.translate(0, nod);
+  ctx.fillStyle = skin;
+  ctx.beginPath();
+  ctx.moveTo(-9, -68);
+  ctx.quadraticCurveTo(-9, -81, 0, -81);
+  ctx.quadraticCurveTo(10, -80, 9, -67);
+  ctx.quadraticCurveTo(8, -57, 0, -54);
+  ctx.quadraticCurveTo(-8, -57, -9, -68);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(95, 67, 52, 0.5)';
+  ctx.lineWidth = 0.7;
+  ctx.stroke();
 
-      // Eye White Sparkle Highlight
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.arc(-4, headY - 1.5, 0.9, 0, Math.PI * 2);
-      ctx.arc(3, headY - 1.5, 0.9, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Cheeks Blush
-    ctx.fillStyle = 'rgba(244, 63, 94, 0.3)';
+  if (faceBack) {
+    ctx.fillStyle = hair;
     ctx.beginPath();
-    ctx.arc(-5.5, headY + 3, 1.8, 0, Math.PI * 2);
-    ctx.arc(5.5, headY + 3, 1.8, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Mouth Articulation
-    if (isSpeaking) {
-      const mouthOpen = (Math.sin(time * 16) + 1) * 1.2;
-      ctx.fillStyle = '#e11d48';
-      ctx.beginPath();
-      ctx.ellipse(0, headY + 4, 2, 1 + mouthOpen, 0, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (isCelebrating) {
-      // Open happy smile
-      ctx.strokeStyle = '#e11d48';
-      ctx.lineWidth = 1.4;
-      ctx.beginPath();
-      ctx.arc(0, headY + 3, 2.5, 0.2, Math.PI - 0.2);
-      ctx.stroke();
-    } else {
-      // Subtle neutral/calm mouth
-      ctx.strokeStyle = '#475569';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.moveTo(-1.8, headY + 4);
-      ctx.lineTo(1.8, headY + 4);
-      ctx.stroke();
-    }
-
-    // ─── ANIME HAIR STYLING ───
-    ctx.fillStyle = char.theme.hairColor;
-    ctx.beginPath();
-    // Top bangs & hairline
-    ctx.moveTo(-9, headY - 6);
-    ctx.quadraticCurveTo(0, headY - 12, 9, headY - 6);
-    ctx.lineTo(9, headY - 1);
-    ctx.lineTo(5, headY - 4);
-    ctx.lineTo(0, headY - 2);
-    ctx.lineTo(-5, headY - 4);
-    ctx.lineTo(-9, headY - 1);
+    ctx.moveTo(-10, -69);
+    ctx.quadraticCurveTo(-13, -86, 0, -86);
+    ctx.quadraticCurveTo(13, -84, 10, -67);
+    ctx.lineTo(8, -59);
+    ctx.quadraticCurveTo(0, -54, -8, -59);
     ctx.closePath();
     ctx.fill();
-
-    // Side hair tufts
-    ctx.fillRect(-9, headY - 6, 2.5, 8);
-    ctx.fillRect(6.5, headY - 6, 2.5, 8);
-
-    // Hair Spikes / Volume based on theme style
-    if (char.theme.hairStyle === 'spiky' || char.role === 'boss') {
+  } else {
+    // Big eyes with highlights remain visible at the fitted floor zoom.
+    for (const eyeX of [-4, 4]) {
+      if (char.isBlinking) {
+        ctx.strokeStyle = '#473d3d';
+        ctx.lineWidth = 1.25;
+        ctx.beginPath();
+        ctx.quadraticCurveTo(eyeX - 2.3, -68, eyeX, -67);
+        ctx.quadraticCurveTo(eyeX + 2.3, -68, eyeX + 2.5, -69);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = '#fffaf0';
+        ctx.beginPath();
+        ctx.ellipse(eyeX, -68, 2.8, 3.7, 0, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = '#4f5554';
+        ctx.beginPath();
+        ctx.ellipse(eyeX, -67.8, 1.7, 2.8, 0, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = accent;
+        ctx.beginPath();
+        ctx.ellipse(eyeX, -67.3, 1.05, 1.8, 0, 0, TAU);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(eyeX - 0.55, -69, 0.72, 0, TAU);
+        ctx.fill();
+      }
+    }
+    if (char.theme.hasGlasses) {
+      ctx.strokeStyle = '#586a67';
+      ctx.lineWidth = 0.85;
       ctx.beginPath();
-      ctx.moveTo(-7, headY - 9);
-      ctx.lineTo(-4, headY - 16);
-      ctx.lineTo(-1, headY - 9);
-      ctx.lineTo(3, headY - 17);
-      ctx.lineTo(6, headY - 9);
+      ctx.roundRect(-7, -71, 5.5, 6, 2);
+      ctx.roundRect(1.5, -71, 5.5, 6, 2);
+      ctx.moveTo(-1.5, -68);
+      ctx.lineTo(1.5, -68);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(221, 126, 118, 0.34)';
+    ctx.beginPath();
+    ctx.ellipse(-6, -62, 2, 1.2, 0, 0, TAU);
+    ctx.ellipse(6, -62, 2, 1.2, 0, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = '#8f5856';
+    ctx.lineWidth = 1;
+    if (isSpeaking && Math.sin(time * 14) > -0.35) {
+      ctx.fillStyle = '#a85656';
+      ctx.beginPath();
+      ctx.ellipse(0, -59.5, 1.7, 1.4 + Math.sin(time * 14) * 0.45, 0, 0, TAU);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(-2, -59.5);
+      ctx.quadraticCurveTo(0, isCelebrating ? -56.2 : -58.2, 2, -59.5);
+      ctx.stroke();
+    }
+
+    // Fringe, side locks, and hair silhouette vary with each employee theme.
+    ctx.fillStyle = hair;
+    ctx.beginPath();
+    ctx.moveTo(-10, -69);
+    ctx.quadraticCurveTo(-13, -85, -2, -86);
+    ctx.quadraticCurveTo(8, -89, 11, -78);
+    ctx.lineTo(10, -68);
+    ctx.quadraticCurveTo(7, -72, 4, -77);
+    ctx.lineTo(1, -70);
+    ctx.lineTo(-2, -77);
+    ctx.lineTo(-6, -70);
+    ctx.lineTo(-9, -74);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 232, 198, 0.34)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(-6, -81);
+    ctx.quadraticCurveTo(0, -86, 6, -81);
+    ctx.stroke();
+
+    if (char.theme.hairStyle === 'long' || char.theme.hairStyle === 'bob') {
+      ctx.fillStyle = hair;
+      ctx.beginPath();
+      ctx.moveTo(-9, -74);
+      ctx.quadraticCurveTo(-14, -62, -10, -55);
+      ctx.quadraticCurveTo(-7, -60, -7, -68);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(9, -74);
+      ctx.quadraticCurveTo(14, -62, 10, -55);
+      ctx.quadraticCurveTo(7, -60, 7, -68);
+      ctx.closePath();
+      ctx.fill();
+    } else if (char.theme.hairStyle === 'ponytail') {
+      ctx.fillStyle = hair;
+      ctx.beginPath();
+      ctx.moveTo(-8, -78);
+      ctx.quadraticCurveTo(-15, -77, -13, -69);
+      ctx.quadraticCurveTo(-10, -72, -7, -72);
+      ctx.fill();
+    } else if (char.theme.hairStyle === 'spiky' || char.role === 'boss') {
+      ctx.fillStyle = hair;
+      ctx.beginPath();
+      ctx.moveTo(-8, -80);
+      ctx.lineTo(-9, -88);
+      ctx.lineTo(-3, -83);
+      ctx.lineTo(1, -91);
+      ctx.lineTo(4, -83);
+      ctx.lineTo(10, -87);
+      ctx.lineTo(8, -77);
       ctx.closePath();
       ctx.fill();
     }
-
-    // Cyber Visor Accessory
     if (char.theme.hasVisor) {
-      ctx.fillStyle = char.theme.accentColor;
-      ctx.shadowColor = char.theme.accentColor;
-      ctx.shadowBlur = 6;
+      ctx.fillStyle = 'rgba(119, 177, 174, 0.86)';
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 0.8;
       ctx.beginPath();
-      ctx.roundRect(-8, headY - 3, 16, 5, 2);
+      ctx.roundRect(-8, -70, 16, 3.2, 1.5);
       ctx.fill();
-      ctx.shadowBlur = 0;
+      ctx.stroke();
     }
-
-    // Headphones Accessory
     if (char.theme.hasHeadphones) {
-      ctx.strokeStyle = char.theme.accentColor;
+      ctx.strokeStyle = '#5d6763';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(0, headY - 7, 9, Math.PI, 0);
+      ctx.arc(0, -74, 10, Math.PI, TAU);
       ctx.stroke();
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(-10, headY - 5, 3, 6);
-      ctx.fillRect(7, headY - 5, 3, 6);
+      ctx.fillStyle = accent;
+      ctx.beginPath();
+      ctx.roundRect(-10.5, -74, 3.3, 8, 1.5);
+      ctx.roundRect(7.2, -74, 3.3, 8, 1.5);
+      ctx.fill();
     }
   }
-
+  ctx.restore();
   ctx.restore();
 
-  // ─── STATUS EMOTE ICONS FLOATING ABOVE HEAD ───
-  if (isWarning) {
-    ctx.fillStyle = '#f59e0b';
-    ctx.font = 'bold 13px sans-serif';
-    ctx.fillText('⚠️', -7, -64);
-  } else if (isCelebrating) {
-    ctx.fillStyle = '#10b981';
-    ctx.font = 'bold 13px sans-serif';
-    ctx.fillText('🎉', -7, -64);
-  } else if (isThinking) {
-    ctx.fillStyle = '#38bdf8';
-    ctx.font = 'bold 11px sans-serif';
-    const dots = '.'.repeat(1 + (Math.floor(time * 3) % 3));
-    ctx.fillText(`💭${dots}`, -9, -64);
+  if (isThinking) drawStatusBadge(ctx, screenX + 15, baseY - 83, 'thinking');
+  else if (isWarning) drawStatusBadge(ctx, screenX + 15, baseY - 83, 'warning');
+  else if (isCelebrating) drawStatusBadge(ctx, screenX + 15, baseY - 83, 'celebrating');
+
+  // Show the real employee name only on focus so rows of staff stay readable.
+  if (isSelected || isHovered) {
+    ctx.save();
+    ctx.font = '600 11px sans-serif';
+    const labelW = Math.min(Math.max(ctx.measureText(char.name).width + 16, 44), 132);
+    const labelY = screenY - 97 + bob;
+    ctx.fillStyle = 'rgba(255, 251, 240, 0.96)';
+    ctx.strokeStyle = char.theme.accentColor;
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.roundRect(screenX - labelW / 2, labelY - 8, labelW, 16, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#374541';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(char.name, screenX, labelY, labelW - 8);
+    ctx.restore();
   }
-
-  ctx.restore();
-
-  // ─── NAME & ROLE FLOATING LABEL ───
-  ctx.save();
-  ctx.textAlign = 'center';
-  ctx.font = 'bold 10px monospace';
-  ctx.fillStyle = '#ffffff';
-  ctx.shadowColor = '#000000';
-  ctx.shadowBlur = 4;
-  ctx.fillText(char.name, screenX, screenY - 50);
-
-  ctx.font = '9px monospace';
-  ctx.fillStyle = char.theme.accentColor;
-  ctx.fillText(char.role.toUpperCase(), screenX, screenY - 40);
   ctx.restore();
 }
-

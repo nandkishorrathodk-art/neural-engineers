@@ -39,6 +39,7 @@ class HumanApprovalGate:
         "database_migration",
         "credential_rotation",
         "infrastructure_destroy",
+        "recover_orphaned_task",
     }
 
     @classmethod

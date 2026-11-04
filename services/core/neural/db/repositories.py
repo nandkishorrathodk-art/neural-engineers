@@ -48,6 +48,7 @@ from neural.db.models import (
     Project,
     Proposal,
     ResourceLease,
+    ServiceHeartbeat,
     SkillCertification,
     Task,
     TaskAttempt,
@@ -366,7 +367,34 @@ class TaskRepository:
                 await self.session.rollback()
         return None
 
-    async def start_task_attempt(self, task_id: str, worker_id: str, fencing_token: int) -> bool:
+    async def worker_claim_is_current(self, task_id: str, worker_id: str, fencing_token: int) -> bool:
+        """Check that this worker still owns a live, not-yet-started attempt."""
+        now = utc_now()
+        task = await self._get_task_for_worker(task_id)
+        if (
+            not task
+            or task.fencing_token != fencing_token
+            or task.status not in {TaskStatus.ASSIGNED, TaskStatus.RUNNING}
+        ):
+            return False
+        attempt_id = await self.session.scalar(
+            select(TaskAttempt.id).where(
+                TaskAttempt.task_id == task.id,
+                TaskAttempt.worker_id == worker_id,
+                TaskAttempt.fencing_token == fencing_token,
+                TaskAttempt.status == "leased",
+                TaskAttempt.lease_expires_at > now,
+            )
+        )
+        return attempt_id is not None
+
+    async def start_task_attempt(
+        self,
+        task_id: str,
+        worker_id: str,
+        fencing_token: int,
+        workspace_manifest_before: dict[str, Any],
+    ) -> bool:
         now = utc_now()
         task = await self._get_task_for_worker(task_id)
         if not task or task.fencing_token != fencing_token:
@@ -381,7 +409,12 @@ class TaskRepository:
                     TaskAttempt.status == "leased",
                     TaskAttempt.lease_expires_at > now,
                 )
-                .values(status="running", started_at=now, heartbeat_at=now)
+                .values(
+                    status="running",
+                    started_at=now,
+                    heartbeat_at=now,
+                    workspace_manifest_before=workspace_manifest_before,
+                )
             )
             if attempt_update.rowcount != 1:
                 await self.session.rollback()
@@ -680,6 +713,7 @@ class TaskRepository:
                 "fencing_token": attempt.fencing_token,
                 "submitted_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
                 "execution_receipt": attempt.execution_receipt,
+                "workspace_manifest_before": attempt.workspace_manifest_before,
             }
             for attempt, task in rows.all()
         ]
@@ -860,6 +894,168 @@ class TaskRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    async def list_attempts_for_task(self, task_id: str) -> Sequence[TaskAttempt]:
+        task = await self.get_by_task_id(task_id)
+        if not task:
+            return []
+        result = await self.session.execute(
+            select(TaskAttempt)
+            .where(TaskAttempt.task_id == task.id)
+            .order_by(TaskAttempt.attempt_number.asc())
+        )
+        return result.scalars().all()
+
+    async def recover_unattempted_running_task(
+        self,
+        task_id: str,
+        expected_fencing_token: int,
+        expected_employee_id: str,
+        approval_id: str,
+        actor: str,
+    ) -> Optional[dict[str, Any]]:
+        """Requeue only an approved RUNNING row with no attempt or workstation lease."""
+        now = utc_now()
+        async with get_session_lock(self.session):
+            task = await self.session.scalar(
+                select(Task)
+                .where(Task.task_id == task_id)
+                .with_for_update()
+            )
+            if (
+                not task
+                or task.status != TaskStatus.RUNNING
+                or task.fencing_token != expected_fencing_token
+                or not task.assigned_to
+            ):
+                await self.session.rollback()
+                return None
+
+            employee = await self.session.scalar(
+                select(Employee)
+                .where(Employee.id == task.assigned_to)
+                .with_for_update()
+            )
+            if not employee or employee.employee_id != expected_employee_id:
+                await self.session.rollback()
+                return None
+
+            attempt_id = await self.session.scalar(
+                select(TaskAttempt.id).where(TaskAttempt.task_id == task.id).limit(1)
+            )
+            if attempt_id:
+                await self.session.rollback()
+                return None
+
+            docker_id = f"ancos-desktop-{employee.employee_id.lower()}"
+            blocking_lease = await self.session.scalar(
+                select(ResourceLease.id)
+                .where(
+                    or_(
+                        ResourceLease.employee_id.in_([employee.id, employee.employee_id]),
+                        ResourceLease.resource_key == docker_id,
+                    ),
+                    ResourceLease.status.in_(("active", "expired")),
+                )
+                .limit(1)
+            )
+            if blocking_lease:
+                await self.session.rollback()
+                return None
+
+            approval = await self.session.scalar(
+                select(Approval)
+                .where(Approval.id == approval_id)
+                .with_for_update()
+            )
+            expected_details = {
+                "task_id": task.task_id,
+                "project_id": task.project_id,
+                "expected_fencing_token": expected_fencing_token,
+                "employee_id": employee.employee_id,
+            }
+            if (
+                not approval
+                or approval.action_type != "RECOVER_ORPHANED_TASK"
+                or approval.status != ApprovalStatus.APPROVED
+                or approval.consumed_at is not None
+                or approval.requested_by != actor
+                or not approval.decided_by
+                or approval.decided_by == approval.requested_by
+                or any(approval.details.get(key) != value for key, value in expected_details.items())
+            ):
+                await self.session.rollback()
+                return None
+
+            # The API has independently confirmed the broker returns 404 for the
+            # deterministic employee container. If the DB still claims RUNNING,
+            # correct that stale cache in the same recovery transaction.
+            container = (
+                await self.session.get(Container, employee.container_id)
+                if employee.container_id
+                else None
+            )
+            if container and container.status == ContainerStatus.RUNNING:
+                container.status = ContainerStatus.FAILED
+
+            previous_fencing_token = task.fencing_token
+            task.status = TaskStatus.PENDING
+            task.assigned_to = None
+            task.fencing_token += 1
+
+            other_active_task = await self.session.scalar(
+                select(Task.id)
+                .where(
+                    Task.assigned_to == employee.id,
+                    Task.id != task.id,
+                    Task.status.in_((TaskStatus.ASSIGNED, TaskStatus.RUNNING, TaskStatus.RETRYING)),
+                )
+                .limit(1)
+            )
+            other_active_attempt = await self.session.scalar(
+                select(TaskAttempt.id)
+                .join(Task, Task.id == TaskAttempt.task_id)
+                .where(
+                    Task.assigned_to == employee.id,
+                    TaskAttempt.status.in_(("leased", "running")),
+                    TaskAttempt.lease_expires_at > now,
+                )
+                .limit(1)
+            )
+            if not other_active_task and not other_active_attempt:
+                employee.status = EmployeeStatus.IDLE
+
+            approval.consumed_at = now
+            approval.consumed_by = actor
+            audit_entry = await AuditRepository(self.session).create_entry(
+                actor=actor,
+                action="TASK_RECOVERY_REQUEUED",
+                resource_type="Task",
+                resource_id=task.task_id,
+                details={
+                    "approval_id": approval.id,
+                    "approver": approval.decided_by,
+                    "previous_status": TaskStatus.RUNNING.value,
+                    "new_status": TaskStatus.PENDING.value,
+                    "previous_employee_id": employee.employee_id,
+                    "fencing_token_before": previous_fencing_token,
+                    "fencing_token_after": task.fencing_token,
+                    "reason": approval.justification,
+                },
+            )
+            await self.session.commit()
+            await self.session.refresh(task)
+            await self.session.refresh(audit_entry)
+            return {
+                "task_id": task.task_id,
+                "status": task.status.value,
+                "assigned_to": task.assigned_to,
+                "fencing_token": task.fencing_token,
+                "employee_id": employee.employee_id,
+                "employee_status": employee.status.value,
+                "approval_id": approval.id,
+                "audit_id": audit_entry.id,
+            }
 
     async def update_status(
         self,
@@ -1221,6 +1417,28 @@ class ResourceLeaseRepository:
         lease = result.scalar_one_or_none()
         return self._as_dict(lease) if lease else None
 
+    async def list_blocking_for_employee(
+        self,
+        employee_id: str,
+        internal_employee_id: Optional[str] = None,
+        resource_key: Optional[str] = None,
+    ) -> Sequence[dict[str, Any]]:
+        identities = [employee_id]
+        if internal_employee_id and internal_employee_id not in identities:
+            identities.append(internal_employee_id)
+        filters = [ResourceLease.employee_id.in_(identities)]
+        if resource_key:
+            filters.append(ResourceLease.resource_key == resource_key)
+        result = await self.session.execute(
+            select(ResourceLease)
+            .where(
+                or_(*filters),
+                ResourceLease.status.in_(("active", "expired")),
+            )
+            .order_by(ResourceLease.granted_at.asc())
+        )
+        return [self._as_dict(lease) for lease in result.scalars().all()]
+
     async def heartbeat(self, lease_id: str, fencing_token: int, lease_seconds: int = 60) -> Optional[str]:
         now = utc_now()
         expires = now + timedelta(seconds=max(5, min(lease_seconds, 3600)))
@@ -1274,6 +1492,74 @@ class ResourceLeaseRepository:
             .order_by(ResourceLease.granted_at.asc())
         )
         return [self._as_dict(lease) for lease in result.scalars().all()]
+
+
+class ServiceHeartbeatRepository:
+    """Persists the latest authenticated liveness receipt per service identity."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def record(
+        self,
+        service_type: str,
+        service_id: str,
+        instance_id: str,
+    ) -> ServiceHeartbeat:
+        if service_type not in {"worker", "verifier"}:
+            raise ValueError("Unsupported service heartbeat type.")
+        now = utc_now()
+        async with get_session_lock(self.session):
+            heartbeat = await self.session.scalar(
+                select(ServiceHeartbeat).where(
+                    ServiceHeartbeat.service_type == service_type,
+                    ServiceHeartbeat.service_id == service_id,
+                )
+            )
+            if heartbeat:
+                if heartbeat.instance_id != instance_id:
+                    heartbeat.started_at = now
+                    heartbeat.instance_id = instance_id
+                heartbeat.last_seen_at = now
+            else:
+                heartbeat = ServiceHeartbeat(
+                    service_type=service_type,
+                    service_id=service_id,
+                    instance_id=instance_id,
+                    started_at=now,
+                    last_seen_at=now,
+                )
+                self.session.add(heartbeat)
+            try:
+                await self.session.commit()
+            except IntegrityError:
+                # Two replicas can register the same identity at startup. The
+                # unique key selects one row; the loser refreshes that row.
+                await self.session.rollback()
+                heartbeat = await self.session.scalar(
+                    select(ServiceHeartbeat).where(
+                        ServiceHeartbeat.service_type == service_type,
+                        ServiceHeartbeat.service_id == service_id,
+                    )
+                )
+                if heartbeat is None:
+                    raise
+                if heartbeat.instance_id != instance_id:
+                    heartbeat.started_at = now
+                    heartbeat.instance_id = instance_id
+                heartbeat.last_seen_at = now
+                await self.session.commit()
+            await self.session.refresh(heartbeat)
+            return heartbeat
+
+    async def list_all(self) -> Sequence[ServiceHeartbeat]:
+        result = await self.session.execute(
+            select(ServiceHeartbeat).order_by(
+                ServiceHeartbeat.service_type.asc(),
+                ServiceHeartbeat.service_id.asc(),
+            )
+        )
+        return result.scalars().all()
 
 
 class EmployeeRepository:
@@ -1854,7 +2140,7 @@ class AuditRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def log(
+    async def create_entry(
         self,
         actor: str,
         action: str,
@@ -1865,6 +2151,7 @@ class AuditRepository:
         payload: Optional[dict[str, Any]] = None,
         request_hash: Optional[str] = None,
     ) -> AuditLog:
+        """Stage a hash-chained record in the current transaction without committing."""
         actual_payload = payload if payload is not None else {}
         actual_request_hash = request_hash
         if not actual_request_hash:
@@ -1900,6 +2187,29 @@ class AuditRepository:
             timestamp=timestamp,
         )
         self.session.add(entry)
+        return entry
+
+    async def log(
+        self,
+        actor: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        details: dict[str, Any],
+        ip: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+        request_hash: Optional[str] = None,
+    ) -> AuditLog:
+        entry = await self.create_entry(
+            actor=actor,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details=details,
+            ip=ip,
+            payload=payload,
+            request_hash=request_hash,
+        )
         await self.session.commit()
         await self.session.refresh(entry)
         return entry

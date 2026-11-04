@@ -165,6 +165,14 @@ async def test_worker_claim_dispatches_next_dag_task_only_after_verified_prerequ
         first.task_id,
         "worker-dag-continuation",
         first_claim["fencing_token"],
+        {
+            "captured_at_unix": 1790000000.0,
+            "files": [],
+            "file_count": 0,
+            "total_size_bytes": 0,
+            "complete": True,
+            "errors": [],
+        },
     )
     assert await task_repo.submit_task_attempt(
         first.task_id,
@@ -576,6 +584,66 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
         acceptance_criteria="Failure details are visible",
         status=TaskStatus.FAILED,
     )
+    await task_repo.create(
+        task_id="TASK-RUNNING-WITHOUT-ATTEMPT",
+        project_id=project.id,
+        title="Orphaned running state",
+        objective="Report a running task without a current attempt",
+        scope="Execution integrity",
+        acceptance_criteria="The report identifies the missing worker attempt",
+        status=TaskStatus.RUNNING,
+        fencing_token=3,
+    )
+    active_task = await task_repo.create(
+        task_id="TASK-RUNNING-WITH-ACTIVE-ATTEMPT",
+        project_id=project.id,
+        title="Active worker attempt",
+        objective="Report an active worker attempt",
+        scope="Execution integrity",
+        acceptance_criteria="The current attempt has a live lease",
+        status=TaskStatus.RUNNING,
+        fencing_token=4,
+    )
+    submitted_task = await task_repo.create(
+        task_id="TASK-RUNNING-AWAITING-VERIFIER",
+        project_id=project.id,
+        title="Submitted worker attempt",
+        objective="Report a submitted attempt waiting for review",
+        scope="Execution integrity",
+        acceptance_criteria="Independent verification is pending",
+        status=TaskStatus.RUNNING,
+        fencing_token=5,
+    )
+    expired_task = await task_repo.create(
+        task_id="TASK-RUNNING-EXPIRED-LEASE",
+        project_id=project.id,
+        title="Expired worker lease",
+        objective="Report an expired current worker lease",
+        scope="Execution integrity",
+        acceptance_criteria="The expired lease is surfaced for recovery",
+        status=TaskStatus.RUNNING,
+        fencing_token=6,
+    )
+    leased_task = await task_repo.create(
+        task_id="TASK-RUNNING-CLAIM-NOT-STARTED",
+        project_id=project.id,
+        title="Claimed but not started",
+        objective="Report a current attempt that has not started",
+        scope="Execution integrity",
+        acceptance_criteria="The claim state is visible",
+        status=TaskStatus.RUNNING,
+        fencing_token=7,
+    )
+    stale_fence_task = await task_repo.create(
+        task_id="TASK-RUNNING-STALE-FENCE",
+        project_id=project.id,
+        title="Stale attempt fence",
+        objective="Report when a running task only has an old attempt fence",
+        scope="Execution integrity",
+        acceptance_criteria="Only the current fencing token counts as active",
+        status=TaskStatus.RUNNING,
+        fencing_token=9,
+    )
     passing_task = await task_repo.create(
         task_id="TASK-VERIFIED-REPORT",
         project_id=project.id,
@@ -606,6 +674,55 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
             execution_receipt={},
         )
     )
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async_session.add_all([
+        TaskAttempt(
+            task_id=active_task.id,
+            attempt_number=1,
+            worker_id="worker-active",
+            fencing_token=active_task.fencing_token,
+            status="running",
+            lease_expires_at=now + timedelta(minutes=2),
+            heartbeat_at=now,
+            execution_receipt={},
+        ),
+        TaskAttempt(
+            task_id=submitted_task.id,
+            attempt_number=1,
+            worker_id="worker-submitted",
+            fencing_token=submitted_task.fencing_token,
+            status="submitted",
+            lease_expires_at=now,
+            execution_receipt={"passed": False},
+        ),
+        TaskAttempt(
+            task_id=expired_task.id,
+            attempt_number=1,
+            worker_id="worker-expired",
+            fencing_token=expired_task.fencing_token,
+            status="running",
+            lease_expires_at=now - timedelta(minutes=1),
+            execution_receipt={},
+        ),
+        TaskAttempt(
+            task_id=leased_task.id,
+            attempt_number=1,
+            worker_id="worker-leased",
+            fencing_token=leased_task.fencing_token,
+            status="leased",
+            lease_expires_at=now + timedelta(minutes=1),
+            execution_receipt={},
+        ),
+        TaskAttempt(
+            task_id=stale_fence_task.id,
+            attempt_number=1,
+            worker_id="worker-stale-fence",
+            fencing_token=8,
+            status="running",
+            lease_expires_at=now + timedelta(minutes=1),
+            execution_receipt={},
+        ),
+    ])
     await async_session.commit()
 
     report = await BossBrain(project_repo=project_repo, task_repo=task_repo).build_project_report(project.id)
@@ -614,6 +731,17 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
     assert report["task_counts"]["completed_without_verification"] == 1
     assert report["task_counts"]["failed"] == 1
     assert report["task_counts"]["failed_attempts"] == 1
+    reported_orphan = next(
+        task for task in report["tasks"]
+        if task["task_id"] == "TASK-RUNNING-WITHOUT-ATTEMPT"
+    )
+    assert reported_orphan["execution_health"] == "missing_current_attempt"
+    assert reported_orphan["attempts"] == []
+    assert next(task for task in report["tasks"] if task["task_id"] == stale_fence_task.task_id)["execution_health"] == "missing_current_attempt"
+    assert next(task for task in report["tasks"] if task["task_id"] == active_task.task_id)["execution_health"] == "active"
+    assert next(task for task in report["tasks"] if task["task_id"] == submitted_task.task_id)["execution_health"] == "awaiting_verification"
+    assert next(task for task in report["tasks"] if task["task_id"] == expired_task.task_id)["execution_health"] == "expired_worker_lease"
+    assert next(task for task in report["tasks"] if task["task_id"] == leased_task.task_id)["execution_health"] == "claimed_not_started"
     reported_failure = next(task for task in report["tasks"] if task["task_id"] == "TASK-FAILED-REPORT")
     assert reported_failure["attempts"][0]["error_message"] == "Process returned exit code 2"
     reported_success = next(task for task in report["tasks"] if task["task_id"] == "TASK-VERIFIED-REPORT")
@@ -1301,3 +1429,173 @@ async def test_verifier_exec_requires_current_submitted_attempt(async_session):
             container_manager=StubContainerManager(),
         )
     assert stale_manifest.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_orphan_task_recovery_requires_independent_approval_and_fences_old_worker(
+    async_session,
+    monkeypatch,
+):
+    from neural.api.deps import get_container_manager
+    from neural.config import get_settings
+    from neural.containers.manager import DockerBrokerRequestError
+    from neural.db.models import Approval
+
+    owner_token = "owner-orphan-recovery-" + "o" * 40
+    approver_token = "approver-orphan-recovery-" + "a" * 40
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("OWNER_API_TOKEN", owner_token)
+    monkeypatch.setenv("APPROVER_API_TOKEN", approver_token)
+    monkeypatch.setenv("WORKER_API_TOKEN", "worker-orphan-recovery-" + "w" * 40)
+    monkeypatch.setenv("VERIFIER_API_TOKEN", "verifier-orphan-recovery-" + "v" * 40)
+    get_settings.cache_clear()
+
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-ORPHAN-RECOVERY",
+        name="Orphan Recovery Worker",
+        title="Software Engineer",
+        system_prompt="Test recovery employee",
+        status=EmployeeStatus.WORKING,
+    )
+    project = await ProjectRepository(async_session).create(
+        name="Orphan recovery",
+        objective="Safely requeue an unstarted task",
+    )
+    task = await TaskRepository(async_session).create(
+        task_id="TASK-ORPHAN-RECOVERY",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Recover unstarted work",
+        objective="Requeue only after an independent approval",
+        scope="Execution recovery",
+        acceptance_criteria="The next worker uses a fresh fencing token",
+        status=TaskStatus.RUNNING,
+        fencing_token=12,
+    )
+
+    class MissingWorkstationBroker:
+        async def _broker_request(self, method, path):
+            assert method == "GET"
+            assert path == "/v1/containers/ancos-desktop-anc-emp-orphan-recovery"
+            raise DockerBrokerRequestError("not found", 404)
+
+    app = create_app()
+
+    async def override_get_db_session():
+        yield async_session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_container_manager] = MissingWorkstationBroker
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        task_url = f"/boss/tasks/{task.task_id}"
+        requested = await client.post(
+            f"{task_url}/recovery-approvals",
+            json={"justification": "The assigned worker never started an attempt."},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert requested.status_code == 200
+        approval_id = requested.json()["id"]
+
+        unchanged = await TaskRepository(async_session).get_by_task_id(task.task_id)
+        assert unchanged.status == TaskStatus.RUNNING
+        assert unchanged.fencing_token == 12
+
+        self_approval = await client.post(
+            f"/security/approvals/{approval_id}/decide",
+            json={"decision": "approved"},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert self_approval.status_code == 401
+
+        decision = await client.post(
+            f"/security/approvals/{approval_id}/decide",
+            json={"decision": "approved"},
+            headers={"Authorization": f"Bearer {approver_token}"},
+        )
+        assert decision.status_code == 200
+
+        recovered = await client.post(
+            f"{task_url}/recover",
+            json={"approval_id": approval_id},
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+        assert recovered.status_code == 200
+        assert recovered.json()["status"] == TaskStatus.PENDING.value
+        assert recovered.json()["assigned_to"] is None
+        assert recovered.json()["fencing_token"] == 13
+        assert recovered.json()["employee_status"] == EmployeeStatus.IDLE.value
+
+    persisted = await TaskRepository(async_session).get_by_task_id(task.task_id)
+    assert persisted.status == TaskStatus.PENDING
+    assert persisted.fencing_token == 13
+    assert persisted.assigned_to is None
+    approval = await async_session.get(Approval, approval_id)
+    assert approval.consumed_at is not None
+    events = await AuditRepository(async_session).list_all()
+    recovery_events = [event for event in events if event.action == "TASK_RECOVERY_REQUEUED"]
+    assert len(recovery_events) == 1
+    assert recovery_events[0].details["fencing_token_before"] == 12
+    assert recovery_events[0].details["fencing_token_after"] == 13
+
+
+@pytest.mark.asyncio
+async def test_runtime_heartbeat_endpoints_require_role_credentials_and_persist_latest_instance(
+    async_session,
+    monkeypatch,
+):
+    from neural.api.deps import get_service_heartbeat_repo
+    from neural.config import get_settings
+    from neural.db.repositories import ServiceHeartbeatRepository
+
+    worker_token = "worker-runtime-" + "w" * 40
+    verifier_token = "verifier-runtime-" + "v" * 40
+    owner_token = "owner-runtime-" + "o" * 40
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("OWNER_API_TOKEN", owner_token)
+    monkeypatch.setenv("WORKER_API_TOKEN", worker_token)
+    monkeypatch.setenv("VERIFIER_API_TOKEN", verifier_token)
+    monkeypatch.setenv("APPROVER_API_TOKEN", "approver-runtime-" + "a" * 40)
+    get_settings.cache_clear()
+
+    app = create_app()
+
+    async def override_get_db_session():
+        yield async_session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_service_heartbeat_repo] = lambda: ServiceHeartbeatRepository(async_session)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        worker_path = "/internal/worker/runtime/heartbeat"
+        verifier_path = "/internal/verifier/runtime/heartbeat"
+        assert (await client.post(worker_path, json={"instance_id": "x" * 32})).status_code == 401
+        assert (
+            await client.post(
+                worker_path,
+                json={"instance_id": "x" * 32},
+                headers={"Authorization": f"Bearer {owner_token}"},
+            )
+        ).status_code == 401
+
+        worker_receipt = await client.post(
+            worker_path,
+            json={"instance_id": "a" * 32},
+            headers={"Authorization": f"Bearer {worker_token}"},
+        )
+        verifier_receipt = await client.post(
+            verifier_path,
+            json={"instance_id": "b" * 32},
+            headers={"Authorization": f"Bearer {verifier_token}"},
+        )
+        assert worker_receipt.status_code == 200
+        assert worker_receipt.json()["service_id"] == "worker-service"
+        assert verifier_receipt.status_code == 200
+        assert verifier_receipt.json()["service_type"] == "verifier"
+
+    rows = await ServiceHeartbeatRepository(async_session).list_all()
+    assert {(row.service_type, row.instance_id) for row in rows} == {
+        ("worker", "a" * 32),
+        ("verifier", "b" * 32),
+    }

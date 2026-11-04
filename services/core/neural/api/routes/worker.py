@@ -4,10 +4,12 @@ from neural.api.deps import (
     get_container_manager,
     get_container_repo,
     get_employee_repo,
+    get_service_heartbeat_repo,
     get_task_repo,
     require_worker_token,
 )
 from neural.api.schemas.requests import (
+    RuntimeHeartbeatRequest,
     WorkerClaimRequest,
     WorkerCommandRequest,
     WorkerFailureRequest,
@@ -20,14 +22,32 @@ from neural.db.repositories import (
     AuditRepository,
     ContainerRepository,
     EmployeeRepository,
+    ServiceHeartbeatRepository,
     TaskRepository,
 )
+from neural.exceptions import ContainerError
+from neural.verification.workspace_manifest import valid_workspace_manifest
 
 router = APIRouter(
     prefix="/internal/worker",
     tags=["Worker protocol"],
     dependencies=[Depends(require_worker_token)],
 )
+
+
+@router.post("/runtime/heartbeat")
+async def heartbeat_worker_runtime(
+    request: RuntimeHeartbeatRequest,
+    worker_id: str = Depends(require_worker_token),
+    heartbeat_repo: ServiceHeartbeatRepository = Depends(get_service_heartbeat_repo),
+):
+    receipt = await heartbeat_repo.record("worker", worker_id, request.instance_id)
+    return {
+        "service_type": receipt.service_type,
+        "service_id": receipt.service_id,
+        "instance_id": receipt.instance_id,
+        "last_seen_at": receipt.last_seen_at,
+    }
 
 
 @router.post("/tasks/claim")
@@ -67,6 +87,8 @@ async def start_task_attempt(
     container_manager: ContainerManager = Depends(get_container_manager),
     worker_id: str = Depends(require_worker_token),
 ):
+    if not await task_repo.worker_claim_is_current(task_id, worker_id, request.fencing_token):
+        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     task = await task_repo.get_by_task_id(task_id)
     employee = await employee_repo.get_by_employee_id(task.assigned_to) if task and task.assigned_to else None
     workstation = (
@@ -86,7 +108,31 @@ async def start_task_attempt(
             "Assigned employee workstation is not live at worker start.",
         )
         raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
-    started = await task_repo.start_task_attempt(task_id, worker_id, request.fencing_token)
+    try:
+        workspace_manifest_before = await container_manager.capture_verifier_manifest(employee.employee_id)
+    except ContainerError as exc:
+        await task_repo.release_task_claim(
+            task_id,
+            worker_id,
+            request.fencing_token,
+            "Could not capture a complete task-start workspace baseline.",
+        )
+        raise HTTPException(status_code=503, detail="Task-start workspace baseline capture failed.") from exc
+    if not valid_workspace_manifest(workspace_manifest_before, allow_empty=True):
+        await task_repo.release_task_claim(
+            task_id,
+            worker_id,
+            request.fencing_token,
+            "Task-start workspace baseline was incomplete or invalid.",
+        )
+        raise HTTPException(status_code=503, detail="Task-start workspace baseline is incomplete or invalid.")
+
+    started = await task_repo.start_task_attempt(
+        task_id,
+        worker_id,
+        request.fencing_token,
+        workspace_manifest_before,
+    )
     if not started:
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     return {"task_id": task_id, "status": "running", "fencing_token": request.fencing_token}

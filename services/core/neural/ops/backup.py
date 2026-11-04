@@ -5,10 +5,13 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import tarfile
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
 from neural.config import get_settings
@@ -69,6 +72,97 @@ class DisasterRecoveryManager:
                 hasher.update(chunk)
         return hasher.hexdigest()
 
+    @staticmethod
+    def _safe_archive_filter(member: tarfile.TarInfo, destination: str) -> tarfile.TarInfo:
+        """Allow only regular files/directories with portable relative archive paths."""
+        archive_path = PurePosixPath(member.name.replace("\\", "/"))
+        windows_path = PureWindowsPath(member.name)
+        if (
+            archive_path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or ".." in archive_path.parts
+        ):
+            raise tarfile.FilterError("Backup archive contains an unsafe member path.")
+
+        filtered = tarfile.data_filter(member, destination)
+        if filtered is None or not (filtered.isdir() or filtered.isfile()):
+            raise tarfile.FilterError("Backup archive contains a non-file or link member.")
+        return filtered
+
+    @staticmethod
+    def _manifest_component_path(root: str, relative_path: Any) -> str:
+        """Resolve a manifest path only when it remains inside the extracted root."""
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            raise StorageError("Backup manifest contains an invalid component path.")
+
+        normalized = relative_path.replace("\\", "/")
+        relative = PurePosixPath(normalized)
+        windows = PureWindowsPath(relative_path)
+        if (
+            relative.is_absolute()
+            or windows.is_absolute()
+            or windows.drive
+            or ".." in relative.parts
+        ):
+            raise StorageError("Backup manifest component path escapes the backup root.")
+
+        root_path = Path(root).resolve()
+        component_path = root_path.joinpath(*relative.parts).resolve(strict=False)
+        if not component_path.is_relative_to(root_path):
+            raise StorageError("Backup manifest component path escapes the backup root.")
+        return str(component_path)
+
+    @classmethod
+    def _validate_manifest_components(
+        cls, root: str, manifest: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        components = manifest.get("components")
+        if not isinstance(components, list) or not components:
+            raise StorageError("Backup manifest must list at least the operational database.")
+
+        seen_paths: set[str] = set()
+        has_database = False
+        for component in components:
+            if not isinstance(component, dict):
+                raise StorageError("Backup manifest contains an invalid component record.")
+            relative_path = component.get("relative_path")
+            cls._manifest_component_path(root, relative_path)
+            normalized_path = PurePosixPath(relative_path.replace("\\", "/")).as_posix()
+            if normalized_path in seen_paths:
+                raise StorageError("Backup manifest contains duplicate component paths.")
+            seen_paths.add(normalized_path)
+            if not isinstance(component.get("sha256_hash"), str):
+                raise StorageError("Backup manifest contains an invalid component checksum.")
+            if normalized_path == "database/neural_company.db":
+                has_database = True
+        if not has_database:
+            raise StorageError("Backup manifest does not include the operational database.")
+        return components
+
+    @staticmethod
+    def _find_backup_root(extraction_dir: str) -> str:
+        if os.path.isfile(os.path.join(extraction_dir, "manifest.json")):
+            return extraction_dir
+        roots = [
+            os.path.join(extraction_dir, item)
+            for item in os.listdir(extraction_dir)
+            if os.path.isdir(os.path.join(extraction_dir, item))
+            and os.path.isfile(os.path.join(extraction_dir, item, "manifest.json"))
+        ]
+        if len(roots) != 1:
+            raise StorageError("Backup archive must contain exactly one root manifest.")
+        return roots[0]
+
+    @staticmethod
+    def _restore_directory_name(root: str, extraction_dir: str, manifest: dict[str, Any]) -> str:
+        name = os.path.basename(root) if root != extraction_dir else manifest.get("backup_id")
+        if not isinstance(name, str) or not name.strip() or name in {".", ".."}:
+            raise StorageError("Backup manifest contains an invalid backup identifier.")
+        if "/" in name or "\\" in name or PureWindowsPath(name).drive:
+            raise StorageError("Backup identifier cannot be used as a restore directory name.")
+        return name
+
     def backup_database(self, destination_file: str) -> ComponentChecksum:
         """Creates a point-in-time hot backup of the SQLite operational database."""
         db_path = os.path.abspath(os.path.join(self.base_data_dir, "neural_company.db"))
@@ -104,13 +198,55 @@ class DisasterRecoveryManager:
         if not os.path.exists(src_dir):
             return checksums
 
+        source_root = os.path.realpath(src_dir)
+
         for root, _, files in os.walk(src_dir):
             for file_name in files:
                 src_file = os.path.join(root, file_name)
+                try:
+                    source_stat = os.lstat(src_file)
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISREG(source_stat.st_mode):
+                    logger.warning("Skipping non-regular backup source", path=src_file)
+                    continue
+                resolved_source = os.path.realpath(src_file)
+                try:
+                    if os.path.commonpath((source_root, resolved_source)) != source_root:
+                        logger.warning("Skipping backup source outside component root", path=src_file)
+                        continue
+                except ValueError:
+                    logger.warning("Skipping backup source outside component root", path=src_file)
+                    continue
+
                 rel_path = os.path.relpath(src_file, src_dir)
                 dst_file = os.path.join(dst_dir, rel_path)
                 os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-                shutil.copy2(src_file, dst_file)
+
+                source_fd: int | None = None
+                try:
+                    open_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                    source_fd = os.open(src_file, open_flags)
+                    opened_stat = os.fstat(source_fd)
+                    if (
+                        not stat.S_ISREG(opened_stat.st_mode)
+                        or (opened_stat.st_dev, opened_stat.st_ino)
+                        != (source_stat.st_dev, source_stat.st_ino)
+                    ):
+                        logger.warning("Skipping backup source changed during inspection", path=src_file)
+                        continue
+                    with os.fdopen(source_fd, "rb") as source_file:
+                        source_fd = None
+                        with open(dst_file, "wb") as destination_file:
+                            shutil.copyfileobj(source_file, destination_file)
+                except OSError:
+                    if os.path.islink(src_file):
+                        logger.warning("Skipping symbolic link in backup source", path=src_file)
+                        continue
+                    raise
+                finally:
+                    if source_fd is not None:
+                        os.close(source_fd)
 
                 sha256 = self._compute_sha256(dst_file)
                 size = os.path.getsize(dst_file)
@@ -201,48 +337,41 @@ class DisasterRecoveryManager:
         if not os.path.exists(archive_path):
             raise StorageError(f"Backup archive '{archive_path}' does not exist")
 
-        verify_dir = os.path.join(self.backup_storage_dir, "verify_staging")
-        os.makedirs(verify_dir, exist_ok=True)
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="verify_", dir=self.backup_storage_dir
+            ) as verify_dir:
+                return self._verify_extracted_archive(archive_path, verify_dir)
+        except (OSError, tarfile.TarError, ValueError, TypeError, KeyError, StorageError) as exc:
+            logger.warning("Rejected backup archive during integrity verification", error=str(exc))
+            return False
+
+    def _verify_extracted_archive(self, archive_path: str, verify_dir: str) -> bool:
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(path=verify_dir, filter=self._safe_archive_filter)
 
         try:
-            with tarfile.open(archive_path, "r:gz") as tar:
-                tar.extractall(path=verify_dir)
-
-            # Locate extracted root containing manifest.json
-            root = None
-            if os.path.exists(os.path.join(verify_dir, "manifest.json")):
-                root = verify_dir
-            else:
-                for item in os.listdir(verify_dir):
-                    sub = os.path.join(verify_dir, item)
-                    if os.path.isdir(sub) and os.path.exists(os.path.join(sub, "manifest.json")):
-                        root = sub
-                        break
-            if not root:
-                return False
-
+            root = self._find_backup_root(verify_dir)
             manifest_file = os.path.join(root, "manifest.json")
-            if not os.path.exists(manifest_file):
-                return False
-
             with open(manifest_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if not isinstance(data, dict):
+                return False
+            components = self._validate_manifest_components(root, data)
 
-            for item in data.get("components", []):
-                rel_path = item["relative_path"]
-                expected_hash = item["sha256_hash"]
-                target_file = os.path.join(root, rel_path)
-                if not os.path.exists(target_file):
-                    logger.error("Missing component file in backup", path=rel_path)
+            for item in components:
+                target_file = self._manifest_component_path(root, item.get("relative_path"))
+                expected_hash = item.get("sha256_hash")
+                if not isinstance(expected_hash, str) or not os.path.isfile(target_file):
+                    logger.error("Missing or invalid component file in backup")
                     return False
-                computed_hash = self._compute_sha256(target_file)
-                if computed_hash != expected_hash:
-                    logger.error("Hash mismatch in backup component", path=rel_path)
+                if self._compute_sha256(target_file) != expected_hash:
+                    logger.error("Hash mismatch in backup component")
                     return False
-
             return True
-        finally:
-            shutil.rmtree(verify_dir, ignore_errors=True)
+        except (OSError, ValueError, TypeError, KeyError, StorageError) as exc:
+            logger.warning("Rejected backup manifest during integrity verification", error=str(exc))
+            return False
 
     def restore_backup(self, archive_path: str, target_dir: str) -> RestorationReport:
         """
@@ -252,59 +381,67 @@ class DisasterRecoveryManager:
         start_time = time.perf_counter()
         target_dir = os.path.abspath(target_dir)
         os.makedirs(target_dir, exist_ok=True)
-
-        with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(path=target_dir)
-
-        # Locate extracted top directory containing manifest.json
-        root = None
-        if os.path.exists(os.path.join(target_dir, "manifest.json")):
-            root = target_dir
-        else:
-            for item in os.listdir(target_dir):
-                sub = os.path.join(target_dir, item)
-                if os.path.isdir(sub) and os.path.exists(os.path.join(sub, "manifest.json")):
-                    root = sub
-                    break
-        if not root:
-            root = target_dir
-
-        manifest_file = os.path.join(root, "manifest.json")
-        with open(manifest_file, "r", encoding="utf-8") as f:
-            manifest_data = json.load(f)
-
+        stage_dir = tempfile.mkdtemp(prefix=".ancos-restore-", dir=target_dir)
+        manifest_data: dict[str, Any] = {}
         verified_count = 0
-        for comp in manifest_data.get("components", []):
-            fpath = os.path.join(root, comp["relative_path"])
-            if os.path.exists(fpath):
-                if self._compute_sha256(fpath) == comp["sha256_hash"]:
+        db_ok = False
+
+        try:
+            with tarfile.open(archive_path, "r:gz") as tar:
+                tar.extractall(path=stage_dir, filter=self._safe_archive_filter)
+
+            root = self._find_backup_root(stage_dir)
+            manifest_file = os.path.join(root, "manifest.json")
+            with open(manifest_file, "r", encoding="utf-8") as f:
+                manifest_data = json.load(f)
+            if not isinstance(manifest_data, dict):
+                raise StorageError("Backup manifest must be a JSON object.")
+            components = self._validate_manifest_components(root, manifest_data)
+
+            for comp in components:
+                component_path = self._manifest_component_path(root, comp.get("relative_path"))
+                expected_hash = comp.get("sha256_hash")
+                if not isinstance(expected_hash, str) or not os.path.isfile(component_path):
+                    continue
+                if self._compute_sha256(component_path) == expected_hash:
                     verified_count += 1
 
-        # Check SQLite database integrity
-        db_path = os.path.join(root, "database", "neural_company.db")
-        db_ok = False
-        if os.path.exists(db_path):
-            try:
-                conn = sqlite3.connect(db_path)
-                cursor = conn.cursor()
-                cursor.execute("PRAGMA integrity_check;")
-                res = cursor.fetchone()
-                db_ok = res and res[0] == "ok"
-                conn.close()
-            except Exception as e:
-                logger.error("Restored database integrity check failed", error=str(e))
-                db_ok = False
+            # Check SQLite database integrity before exposing the restored files.
+            db_path = self._manifest_component_path(root, "database/neural_company.db")
+            if os.path.isfile(db_path):
+                conn: sqlite3.Connection | None = None
+                try:
+                    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                    res = conn.execute("PRAGMA integrity_check;").fetchone()
+                    db_ok = bool(res and res[0] == "ok")
+                except sqlite3.Error as exc:
+                    logger.error("Restored database integrity check failed", error=str(exc))
+                finally:
+                    if conn is not None:
+                        conn.close()
 
-        duration = round(time.perf_counter() - start_time, 3)
-        status = "SUCCESS" if db_ok and verified_count == len(manifest_data.get("components", [])) else "FAILED"
+            duration = round(time.perf_counter() - start_time, 3)
+            success = db_ok and verified_count == len(components)
+            if success:
+                restore_name = self._restore_directory_name(root, stage_dir, manifest_data)
+                destination = os.path.join(target_dir, restore_name)
+                if os.path.lexists(destination):
+                    success = False
+                else:
+                    os.replace(root, destination)
 
-        return RestorationReport(
-            backup_id=manifest_data.get("backup_id", "unknown"),
-            target_dir=target_dir,
-            duration_seconds=duration,
-            verified_components=verified_count,
-            db_integrity_ok=db_ok,
-            status=status,
-            details={"manifest": manifest_data},
-        )
+            return RestorationReport(
+                backup_id=str(manifest_data.get("backup_id", "unknown")),
+                target_dir=target_dir,
+                duration_seconds=duration,
+                verified_components=verified_count,
+                db_integrity_ok=db_ok,
+                status="SUCCESS" if success else "FAILED",
+                details={"manifest": manifest_data},
+            )
+        except (OSError, tarfile.TarError, ValueError, TypeError, KeyError, StorageError) as exc:
+            logger.error("Rejected backup archive during restore", error=str(exc))
+            raise StorageError("Backup archive failed safe extraction or validation.") from exc
+        finally:
+            shutil.rmtree(stage_dir, ignore_errors=True)
 

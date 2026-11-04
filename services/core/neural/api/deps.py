@@ -20,6 +20,7 @@ from neural.db.repositories import (
     ProjectRepository,
     ProposalRepository,
     ResourceLeaseRepository,
+    ServiceHeartbeatRepository,
     SkillCertificationRepository,
     TaskRepository,
     ToolRepository,
@@ -152,6 +153,12 @@ async def get_approval_repo(session: AsyncSession = Depends(get_db_session)) -> 
 
 async def get_perf_repo(session: AsyncSession = Depends(get_db_session)) -> PerformanceRepository:
     return PerformanceRepository(session)
+
+
+async def get_service_heartbeat_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> ServiceHeartbeatRepository:
+    return ServiceHeartbeatRepository(session)
 
 
 async def get_audit_repo(session: AsyncSession = Depends(get_db_session)) -> AuditRepository:

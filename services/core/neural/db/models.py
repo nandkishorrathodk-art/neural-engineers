@@ -69,6 +69,23 @@ class Project(Base):
     proposals: Mapped[list["Proposal"]] = relationship("Proposal", back_populates="project")
 
 
+class ServiceHeartbeat(Base):
+    """Latest liveness receipt for one authenticated worker/verifier identity."""
+
+    __tablename__ = "service_heartbeats"
+    __table_args__ = (
+        UniqueConstraint("service_type", "service_id", name="uq_service_heartbeat_identity"),
+        Index("ix_service_heartbeat_last_seen", "last_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    service_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    service_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    instance_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+
+
 class Employee(Base):
     __tablename__ = "employees"
 
@@ -242,6 +259,7 @@ class TaskAttempt(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     execution_receipt: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    workspace_manifest_before: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     verification_receipt: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
     verified_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)

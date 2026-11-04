@@ -3,23 +3,44 @@ from neural.api.deps import (
     get_container_manager,
     get_container_repo,
     get_employee_repo,
+    get_service_heartbeat_repo,
     get_task_repo,
     require_verifier_token,
 )
 from neural.api.schemas.requests import (
+    RuntimeHeartbeatRequest,
     VerificationDecisionRequest,
     VerifierCommandRequest,
     VerifierManifestRequest,
 )
 from neural.constants import EmployeeStatus, ExecutionMode
 from neural.containers.manager import ContainerManager
-from neural.db.repositories import ContainerRepository, EmployeeRepository, TaskRepository
+from neural.db.repositories import (
+    ContainerRepository,
+    EmployeeRepository,
+    ServiceHeartbeatRepository,
+    TaskRepository,
+)
 
 router = APIRouter(
     prefix="/internal/verifier",
     tags=["Independent verification"],
     dependencies=[Depends(require_verifier_token)],
 )
+
+
+@router.post("/runtime/heartbeat")
+async def heartbeat_verifier_runtime(
+    request: RuntimeHeartbeatRequest,
+    heartbeat_repo: ServiceHeartbeatRepository = Depends(get_service_heartbeat_repo),
+):
+    receipt = await heartbeat_repo.record("verifier", "verification-service", request.instance_id)
+    return {
+        "service_type": receipt.service_type,
+        "service_id": receipt.service_id,
+        "instance_id": receipt.instance_id,
+        "last_seen_at": receipt.last_seen_at,
+    }
 
 
 @router.get("/queue")

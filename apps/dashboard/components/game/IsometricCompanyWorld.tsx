@@ -85,7 +85,8 @@ export const IsometricCompanyWorld: React.FC = () => {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
   // Floating HUD metrics
-  const [showOverviewCard, setShowOverviewCard] = useState(true);
+  // The page already shows company metrics; keep the detailed card collapsed so it does not cover the floor.
+  const [showOverviewCard, setShowOverviewCard] = useState(false);
   const [metrics, setMetrics] = useState({
     employeeCount: null as number | null,
     activeProjects: null as number | null,
@@ -551,8 +552,8 @@ export const IsometricCompanyWorld: React.FC = () => {
     let hitChar: string | null = null;
     for (const char of characters.values()) {
       const p = gridToScreen(char.gridX, char.gridY, 0, originX, originY);
-      const dist = Math.hypot(mouseX - p.screenX, mouseY - (p.screenY - 20));
-      if (dist < 26) {
+      const dist = Math.hypot(mouseX - p.screenX, mouseY - (p.screenY - 38));
+      if (dist < 36) {
         hitChar = char.id;
         break;
       }
@@ -572,8 +573,8 @@ export const IsometricCompanyWorld: React.FC = () => {
     // 1. Check Character Click (highest priority)
     for (const char of characters.values()) {
       const p = gridToScreen(char.gridX, char.gridY, 0, originX, originY);
-      const dist = Math.hypot(mouseX - p.screenX, mouseY - (p.screenY - 20));
-      if (dist < 28) {
+      const dist = Math.hypot(mouseX - p.screenX, mouseY - (p.screenY - 38));
+      if (dist < 38) {
         setSelectedCharId(char.id);
         setSelectedWsId(null);
         setSelectedDeptId(null);
@@ -661,7 +662,7 @@ export const IsometricCompanyWorld: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="relative h-[620px] w-full bg-[radial-gradient(ellipse_at_50%_45%,#0c1b30_0%,#070d19_56%,#050912_100%)] sm:h-[680px] lg:h-[700px] overflow-hidden select-none"
+      className="relative h-[620px] w-full bg-[radial-gradient(ellipse_at_50%_45%,#f2ede2_0%,#ddd8cc_58%,#c7c6bf_100%)] sm:h-[680px] lg:h-[700px] overflow-hidden select-none"
     >
       {/* ─────────────────────────────────────────────────────────────────────────────
           1. TOP-LEFT OVERLAY: COMPANY OVERVIEW & LIVE ACTIVITY ECG
@@ -1070,39 +1071,39 @@ export const IsometricCompanyWorld: React.FC = () => {
         )}
       </div>
 
-      <div className="absolute bottom-14 right-4 z-20 flex items-center space-x-2 bg-[#252b30]/95 backdrop-blur border border-[#746b5d] p-1.5 rounded-xl text-slate-200 pointer-events-auto">
+      <div className="absolute bottom-14 right-4 z-20 flex items-center space-x-2 bg-[#f8f4ea]/95 backdrop-blur border border-[#bdb19a] p-1.5 rounded-xl text-[#46524b] shadow-lg pointer-events-auto">
         <button
           onClick={() => setCamera((prev) => ({ ...prev, zoom: Math.min(prev.zoom + 0.15, 2.0) }))}
-          className="w-7 h-7 rounded-lg hover:bg-slate-800 flex items-center justify-center font-bold text-xs"
+          className="w-7 h-7 rounded-lg hover:bg-[#e9e0cf] flex items-center justify-center font-bold text-xs"
           title="Zoom In"
         >
           ➕
         </button>
         <button
           onClick={() => setCamera((prev) => ({ ...prev, zoom: Math.max(prev.zoom - 0.15, 0.45) }))}
-          className="w-7 h-7 rounded-lg hover:bg-slate-800 flex items-center justify-center font-bold text-xs"
+          className="w-7 h-7 rounded-lg hover:bg-[#e9e0cf] flex items-center justify-center font-bold text-xs"
           title="Zoom Out"
         >
           ➖
         </button>
         <button
           onClick={() => setCamera({ x: 0, y: 0, zoom: fitZoomRef.current })}
-          className="px-2.5 py-1 rounded-lg hover:bg-slate-800 text-[11px] font-mono font-semibold"
+          className="px-2.5 py-1 rounded-lg hover:bg-[#e9e0cf] text-[11px] font-mono font-semibold"
           title="Reset View"
         >
           Center ⌖
         </button>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex h-11 items-center justify-between border-t-2 border-[#8a806f] bg-[#34383b]/95 px-4 text-[10px] font-mono uppercase tracking-[0.12em] text-[#e0d4bc] sm:px-6 sm:text-[11px]">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex h-11 items-center justify-between border-t border-[#b8ac95] bg-[#eee6d7]/95 px-4 text-[10px] font-mono uppercase tracking-[0.12em] text-[#59645d] shadow-[0_-4px_18px_rgba(57,51,43,0.08)] sm:px-6 sm:text-[11px]">
         <div className="flex items-center gap-3 sm:gap-6">
-          <span className="font-bold text-white">ANCOS HQ</span>
-          <span className="hidden text-[#c2b49b] sm:inline">Team <b className="text-white">{metrics.employeeCount ?? '—'}</b></span>
-          <span className="hidden text-[#c2b49b] sm:inline">Projects <b className="text-white">{metrics.activeProjects ?? '—'}</b></span>
+          <span className="font-bold text-[#2f433a]">ANCOS HQ</span>
+          <span className="hidden text-[#657168] sm:inline">Team <b className="text-[#31443b]">{metrics.employeeCount ?? '—'}</b></span>
+          <span className="hidden text-[#657168] sm:inline">Projects <b className="text-[#31443b]">{metrics.activeProjects ?? '—'}</b></span>
         </div>
         <div className="flex items-center gap-2 text-[#c2b49b]">
           <span className={`h-2 w-2 ${activeMeeting ? 'bg-amber-300' : 'bg-emerald-300'}`} />
-          {activeMeeting ? 'Meeting in progress' : 'Company floor'}
+          <span className="text-[#5e685f]">{activeMeeting ? 'Meeting in progress' : 'Company floor'}</span>
         </div>
       </div>
 

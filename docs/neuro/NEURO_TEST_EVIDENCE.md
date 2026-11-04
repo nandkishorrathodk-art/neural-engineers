@@ -4,8 +4,37 @@
 
 **Environment:** Windows local workspace; Python 3.12.14; pytest 9.2; Next.js 15.5.26.
 
+## 2026-11-04 runtime heartbeat observability
+
+- Command: `uv run --no-sync pytest tests/unit/test_boss_brain.py tests/unit/test_neuro_phase1_authority.py tests/unit/test_terminal_worker.py tests/unit/test_verifier_worker.py -q`
+- Result: **44 passed** in 11.66 seconds.
+- Tests cover worker/verifier runtime-heartbeat requests, role-authenticated API persistence, invalid-credential reporting, per-instance status freshness, stale-heartbeat degradation, and continued existing task lifecycle/recovery checks.
+- Migration verification: set `DATABASE_URL=sqlite+aiosqlite:///:memory:` in the command process and ran `uv run alembic upgrade head`; all historical revisions plus `f1b2c3d4e5f6` and `d2a7f91b6c04` applied successfully to the ephemeral SQLite DB.
+- Scoped Ruff across the changed API, model/repository, worker, migration, and test files: **passed**.
+- This initial heartbeat/API test stage was source-only; the subsequent isolated container check below adds a separate process-level runtime receipt. Neither stage changed the user stack/database.
+
+## 2026-11-04 isolated process heartbeat check and full regression
+
+- Started the current-source API, terminal worker, and verifier as separate local processes using a SQLite in-memory database, loopback port `12003`, validation-only role credentials, and a temporary workspace. Broker access was disabled and no task was present, so workers made no LLM or workstation calls.
+- `GET /boss/status` returned `worker_auth_configured=true`, `verifier_auth_configured=true`, `worker_runtime=healthy`, `verifier_runtime=healthy`, both service heartbeat records healthy, and `system_health=healthy` while both consumers were running. This verifies process-to-API-to-DB heartbeat flow; it is not a task execution or Docker Compose profile receipt. All three processes were stopped; loopback port `12003` was confirmed no longer listening. The existing API, broker, Redis, and user database were not touched.
+- Built the current source with `docker/Dockerfile.core`, then ran an API, terminal worker, and verifier as three separate containers on a Docker internal-only network. The API DB and workspace lived in its container tmpfs; containers had no host ports, Docker socket, broker, or user volumes. With no task available, both consumers stayed running for about one minute and the isolated API reported both as `healthy`. Containers were stopped, then the temporary network and unique test image were removed. This verifies container process startup, authentication, polling, and heartbeat persistence only; it does not verify task execution or Compose orchestration.
+- Command: `uv run --no-sync pytest -q` — **440 collected; 428 passed, 12 skipped, zero failed** (99.86 seconds). One intervening full run exposed the existing 50 ms circuit-breaker sleep assertion under suite load; the test now injects a monotonic clock and the final complete run passed.
+- Command: `uv run --no-sync ruff check services tests` — **passed**.
+- Compose parsing: `docker compose config --services` and `docker compose --profile workers --profile verifiers config --services` both passed with the example's empty verifier credential. Only configuration was rendered; the actual containers above were started directly, not through Compose. Profile code rejects empty/short tokens at process startup.
+- Skipped broker/model cases remain unverified runtime requirements. The worker/verifier Compose profiles and user deployment have not been rebuilt or deployed.
+
+## 2026-11-04 focused recovery and backup regression
+
+- Command: `uv run --no-sync pytest tests/unit/test_disaster_recovery.py tests/unit/test_neuro_phase1_authority.py -q`
+- Result: **30 passed** in 16.31 seconds (final rerun after the last repository guard change).
+- Coverage includes backup archive traversal/link and manifest containment protections, owner-only project report and execution health, and a production-auth stale-task recovery lifecycle. The recovery test requests through the owner endpoint, confirms no state change while pending, rejects owner self-approval, accepts the distinct approver credential, confirms restricted-broker 404, then asserts requeue, assignment removal, fencing-token increment, employee release, approval consumption, and audit entry.
+- Scoped Ruff command on the changed API/schema/Boss/repository/backup/approval-gate modules and both focused test files: `uv run --no-sync ruff check ...` — **passed**.
+- This is an isolated test database and stubbed broker response. It is not a live-user database recovery or deployed-runtime receipt.
+
 ## Latest update — 2026-11-04
 
+- **Stale execution visibility:** Owner project reports now include an `execution_health` per task, derived from persisted task status, current fencing token, attempt status, and lease expiry. A `RUNNING` task without an attempt matching the current fence reports `missing_current_attempt`; active execution, an unstarted claim, expired lease, and verifier wait are distinguished. Regressions cover the observed no-attempt shape and an older-fence attempt. This is diagnostic only and performs no recovery or mutation. `uv run --no-sync pytest tests/unit/test_neuro_phase1_authority.py -q` — **23 passed**; scoped Ruff on `brain.py`, response schemas, and authority tests — **all checks passed**. The feature is not yet deployed to the running user API.
+- **Backup archive extraction hardening:** Backup inputs skip non-regular/symlink files and copy from a checked file descriptor; archive verification and restore use fresh staging directories and a strict tar member filter. Absolute/traversal paths and all link/special-file archive members are rejected; manifest component paths must remain beneath the extracted backup root, and the operational database must be explicitly listed. Restore verifies hashes and SQLite integrity before moving the verified root into place, refuses to overwrite an existing restore directory, and removes staging after failures. Added a simulated lstat-symlink source regression, archive traversal/link, manifest-path, missing-database, and existing-target-preservation regressions. `uv run --no-sync pytest tests/unit/test_disaster_recovery.py tests/unit/test_neuro_phase1_authority.py -q` — **29 passed**; scoped Ruff on changed backup/report files and tests — **all checks passed**. This is source/test evidence only; clean-room runtime restore and disk-exhaustion limits remain unverified.
 - **Verifier-backed employee performance history:** `review_task_attempt` now writes a `PerformanceRecord` atomically with the verifier decision, recording employee/task identity, attempt duration, task retry count, model token/cost metadata, and outcome/quality score derived only from the independent pass/reject result. It updates separate employee summary counters and last-verification provenance; it does not certify skills. Regression verifies persisted pass and rejection rows plus employee summary readback. One full run initially failed only the GUI encoder's 50 ms timing assertion at 67.9 ms; its isolated rerun passed, then a full rerun passed: **429 collected; 417 passed, 12 skipped, zero failed, 5 warnings** (141.39 seconds). `uv run --no-sync ruff check services tests` — **all checks passed**. This proves DB/test behavior, not live employee history reuse after workstation teardown.
 - **Retryable failure recovery and reassignment:** A retryable worker failure now looks for another idle employee who already has a running desktop and no active attempt; if one exists, it reserves that employee as WORKING in the same transaction, transfers the task assignment, fences the stale attempt, preserves backoff/retry limits, and releases the prior employee only when they have no other active attempt. If the reservation loses a race, the existing assignee keeps the retry. It never provisions or terminates a desktop. The worker failure API records the BossAI recovery decision, retry state, and previous/new employee identities in the audit chain. Focused authority/recovery tests: **22 passed**; full suite: `uv run --no-sync pytest -q` — **428 collected; 416 passed, 12 skipped, zero failed, 5 warnings** (106.34 seconds); repo-wide Ruff passes. This is code and test evidence only; no live failure/reassignment cycle is claimed.
 - **Verified DAG continuation dispatch:** A worker claim now dispatches one pending DAG task only after every prerequisite is `COMPLETED` with a persisted independent receipt whose `passed` field is true. It selects an idle employee with an already-running desktop, uses the normal task delegator, and atomically assigns via a conditional update before leasing; it does not provision a workstation or bypass approval. Regression covers a first task's independent verification unlocking its dependent task and a legacy `COMPLETED` prerequisite without proof remaining locked. The full run below also includes this regression. `uv run --no-sync ruff check services tests` — **all checks passed**. This is repository/test evidence; no multi-step live mission receipt is claimed.
@@ -71,13 +100,27 @@ The first test invocation failed at collection because the local environment lac
 - Full Ruff check on 2026-11-03: `uv run --no-sync ruff check services tests` — **passed** after fixing six findings (five import-order issues, one unused import).
 - Scoped mypy (`--follow-imports=skip --disable-error-code=import-untyped`) passed on the four changed Python source modules; imported dependencies were intentionally not checked by this scoped command. Mypy is not green for the repository (full NEURO-0 baseline: 208 errors in 37 files).
 
+## Live Compose stack freshness check — 2026-11-04
+
+Read-only commands against the existing local stack; no service or database mutation:
+
+- `docker ps`: `ancos-core-api`, `ancos-docker-broker`, and `ancos-redis` are running. `ancos-terminal-worker` and `ancos-terminal-verifier` are absent.
+- `GET http://127.0.0.1:12000/health`: HTTP success, `healthy`, `development`, version `0.1.0`.
+- `GET http://127.0.0.1:12000/boss/status`: `active_missions=1`, `active_tasks=1`, `worker_auth_configured=false`, `worker_runtime=not_reported`, `system_health=degraded`.
+- `GET /projects`, `/tasks`, `/employees`: one project, one task, one employee. Task `T-COMPLETED-01` reports `running`, assigned employee `working`, `started_at=2026-10-31T09:18:04.128805`.
+- Read-only SQLite query confirmed the task has **zero `task_attempts` rows and zero related `resource_leases` rows**; assigned employee is `ANC-EMP-6D43` and is `WORKING`. `docker ps -a --filter name=anc-emp-6d43` returned no matching container.
+- Live `/openapi.json` omits `/boss/projects/{project_id}/report`, present in current source. The API container image is `sha256:d7d88e5644291edbf6e7392b16c32365a362bffa84a15afc86e1d47860e1ae12`, created `2026-11-02T08:26:59Z`; current source HEAD at check time is `b3490f7742a30babd8913d98fe1d7a1ee1ec7e1a`.
+- The task state is inconsistent with current worker execution protocol and is strongly indicative of stranded state. No state transition or cleanup was attempted because this is the user database. Project report endpoint returned `404` because it is absent from the running container's OpenAPI.
+
+This is a deployment drift and consumer-health finding, not a passing runtime mission receipt. Rebuild/deploy requires explicit maintenance coordination; any recovery of the stale DB task requires owner authorization even though its attempt, resource lease, and desktop are absent.
+
 ## Static checks and builds
 
 | Check | Result |
 |---|---|
 | `uv run --no-sync ruff check services tests` | **Passed** after automatically fixing six findings: five import-order issues and one unused import. |
 | Python mypy | **Failed**: 208 errors in 37 files (237 source files checked). Findings include missing third-party stubs/modules (Alembic, Docker, NetworkX, psutil), nullable-value/type narrowing issues, mismatched model/API arguments, GUI action requests missing required fields, and resource/profile typing inconsistencies. |
-| Dashboard `npm run build` | **Passed**. Next.js 15.5.26 compiled, completed TypeScript validity checking, generated all 9 static pages, and finalized build traces. |
+| Dashboard `npm run build` | **Passed for the dashboard tree at the time of that run only**. Next.js 15.5.26 compiled, completed TypeScript validity checking, generated all 9 static pages, and finalized build traces. The current worktree has subsequent uncommitted dashboard edits and removed image assets; those changes have not been build-verified. |
 | Dashboard lint script | Not run; package script uses `next lint`, which is not an independent backend quality signal. Ruff result above is the Python lint baseline. |
 
 ## NEURO-0 runtime and performance snapshot (2026-11-02)
@@ -99,3 +142,18 @@ cd apps/dashboard; npm run build
 ```
 
 Record command, commit, OS/runtime, configuration (redacting secrets), exit code, duration, test counts, and relevant artifact hashes for each future baseline.
+
+## 2026-11-04 task-start workspace baseline and delta
+
+- Worker start now asks the restricted broker to capture a complete workspace manifest before transitioning the attempt to `RUNNING`. The nullable `TaskAttempt.workspace_manifest_before` field is persisted with the attempt start transaction; the verifier queue supplies it to the independent verifier.
+- The verifier validates both snapshots, reruns only declared allowlisted tests, and records created/modified/deleted paths with sizes and SHA-256 hashes, plus canonical digest references for baseline and delta. Empty baseline is allowed; the final workspace snapshot must be complete and nonempty. Missing or invalid baseline/final snapshot fails closed.
+- Evidence contains metadata and hashes only, not file contents. A path/hash delta does not show semantic correctness or prove that changed files fulfill task requirements.
+- Focused regression: `uv run pytest tests/unit/test_worker_start_route.py tests/unit/test_verifier_worker.py tests/unit/test_neuro_phase1_authority.py -q` — **40 passed**. Route cases prove successful baseline persistence, invalid-manifest fail-closed claim release, and rejection of a non-owning worker before workstation/broker calls. The full Python suite after this change: **433 passed, 12 skipped** in 145.98 seconds. Repo-wide `uv run ruff check services tests` passed after the final code changes.
+- No live task has exercised the new baseline/delta path. These source changes are not deployed; semantic artifact verification remains open.
+
+## 2026-11-04 recovery preflight and worker-start authority
+
+- `TaskRepository.worker_claim_is_current` now verifies a live leased attempt, matching worker identity and fencing token, and an eligible task state before the worker start route performs workstation or manifest broker calls. The transactional lease check in `start_task_attempt` remains the final guard after capture.
+- Route tests cover a valid empty-workspace baseline stored on the running attempt, invalid manifest causing claim release and no task start, and a different worker identity rejected before any workstation/broker access.
+- Orphan recovery approval preflight has negative route coverage for prior attempt history, active workstation lease, broker uncertainty, and an existing desktop; those conditions return 409/503 and do not create approvals.
+- Focused regression: `uv run pytest tests/unit/test_orphan_recovery_guards.py tests/unit/test_worker_start_route.py tests/unit/test_neuro_phase1_authority.py -q` — **32 passed**. Repo-wide Ruff passes. Latest full suite: `uv run pytest -q` — **437 passed, 12 skipped** in 131.64 seconds.

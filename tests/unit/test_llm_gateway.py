@@ -118,7 +118,11 @@ def test_circuit_breaker_transitions():
     assert breaker.can_execute() is True
 
 
-def test_circuit_breaker_half_open_failure_re_trips_open():
+def test_circuit_breaker_half_open_failure_re_trips_open(monkeypatch):
+    from neural.llm import retry
+
+    clock = [100.0]
+    monkeypatch.setattr(retry.time, "monotonic", lambda: clock[0])
     breaker = CircuitBreaker(
         name="test-provider-re-trip",
         failure_threshold=2,
@@ -128,7 +132,7 @@ def test_circuit_breaker_half_open_failure_re_trips_open():
     breaker.record_failure(ValueError("2"))
     assert breaker.state == CircuitState.OPEN
 
-    time.sleep(0.06)
+    clock[0] += 0.051
     assert breaker.state == CircuitState.HALF_OPEN
 
     # Failure during trial -> Trips back to OPEN immediately

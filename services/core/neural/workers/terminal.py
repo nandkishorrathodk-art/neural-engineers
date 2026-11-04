@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import uuid
 from typing import Annotated, Any
 
 import httpx
@@ -40,6 +41,7 @@ class TerminalWorker:
             raise ValueError("Core API URL, worker identity, and a 32-character worker token are required.")
         self.api_url = api_url.rstrip("/")
         self.worker_id = worker_id
+        self.instance_id = uuid.uuid4().hex
         self.client = client or httpx.AsyncClient(
             base_url=self.api_url,
             headers={"Authorization": f"Bearer {token}"},
@@ -185,20 +187,39 @@ class TerminalWorker:
                 raise
 
     async def run(self) -> None:
+        heartbeat_task = asyncio.create_task(self._runtime_heartbeat_loop())
+        try:
+            while not self._stopping.is_set():
+                try:
+                    response = await self._post(
+                        "/internal/worker/tasks/claim",
+                        {"execution_modes": ["terminal"]},
+                    )
+                    task = response.get("task")
+                    if task:
+                        await self.execute_claim(task)
+                        continue
+                except httpx.HTTPError:
+                    pass
+                try:
+                    await asyncio.wait_for(self._stopping.wait(), timeout=self.poll_interval)
+                except TimeoutError:
+                    continue
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    async def _runtime_heartbeat_loop(self) -> None:
         while not self._stopping.is_set():
             try:
-                response = await self._post(
-                    "/internal/worker/tasks/claim",
-                    {"execution_modes": ["terminal"]},
+                await self._post(
+                    "/internal/worker/runtime/heartbeat",
+                    {"instance_id": self.instance_id},
                 )
-                task = response.get("task")
-                if task:
-                    await self.execute_claim(task)
-                    continue
             except httpx.HTTPError:
                 pass
             try:
-                await asyncio.wait_for(self._stopping.wait(), timeout=self.poll_interval)
+                await asyncio.wait_for(self._stopping.wait(), timeout=20.0)
             except TimeoutError:
                 continue
 

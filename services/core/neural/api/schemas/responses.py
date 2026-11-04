@@ -31,6 +31,8 @@ class BossTaskAttemptReport(BaseModel):
     worker_id: str
     status: str
     fencing_token: int
+    lease_expires_at: Optional[datetime] = None
+    heartbeat_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     error_message: Optional[str] = None
@@ -56,6 +58,7 @@ class BossTaskReport(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     verified: bool = False
+    execution_health: str = "not_running"
     verification_notes: Optional[str] = None
     evidence_refs: list[str] = Field(default_factory=list)
     attempts: list[BossTaskAttemptReport] = Field(default_factory=list)

@@ -6,7 +6,12 @@ from neural.boss.planner import TaskPlanner
 from neural.boss.recovery import FailureRecoveryManager
 from neural.constants import EmployeeStatus, ExecutionMode, TaskPriority, TaskStatus
 from neural.db.models import Project, Task
-from neural.db.repositories import EmployeeRepository, ProjectRepository, TaskRepository
+from neural.db.repositories import (
+    EmployeeRepository,
+    ProjectRepository,
+    ServiceHeartbeatRepository,
+    TaskRepository,
+)
 from neural.llm.gateway import LLMGateway
 from neural.logger import get_logger
 
@@ -34,13 +39,15 @@ class BossBrain:
         verifier: Optional[Any] = None,
         recovery_manager: Optional[FailureRecoveryManager] = None,
         llm_gateway: Optional[LLMGateway] = None,
-        message_bus: Optional[Any] = None
+        message_bus: Optional[Any] = None,
+        service_heartbeat_repo: Optional[ServiceHeartbeatRepository] = None,
     ):
         self.llm_gateway = llm_gateway or LLMGateway()
         self.planner = planner or TaskPlanner(llm_gateway=self.llm_gateway)
         self.project_repo = project_repo
         self.task_repo = task_repo
         self.employee_repo = employee_repo
+        self.service_heartbeat_repo = service_heartbeat_repo
         self.message_bus = message_bus
         self.delegator = delegator or TaskDelegator()
         self.verifier = verifier
@@ -306,6 +313,8 @@ class BossBrain:
                 "worker_id": attempt.worker_id,
                 "status": attempt.status,
                 "fencing_token": attempt.fencing_token,
+                "lease_expires_at": attempt.lease_expires_at,
+                "heartbeat_at": attempt.heartbeat_at,
                 "started_at": attempt.started_at,
                 "finished_at": attempt.finished_at,
                 "error_message": attempt.error_message,
@@ -380,6 +389,28 @@ class BossBrain:
                 counts["overdue"] += 1
 
             employee = employees_by_id.get(task.assigned_to) if task.assigned_to else None
+            task_attempts = attempts_by_task.get(task.id, [])
+            execution_health = "not_running"
+            if status == TaskStatus.RUNNING.value:
+                current_attempt = next(
+                    (
+                        attempt for attempt in reversed(task_attempts)
+                        if attempt["fencing_token"] == task.fencing_token
+                        and attempt["status"] in {"leased", "running", "submitted"}
+                    ),
+                    None,
+                )
+                if current_attempt is None:
+                    execution_health = "missing_current_attempt"
+                elif current_attempt["status"] == "submitted":
+                    execution_health = "awaiting_verification"
+                elif current_attempt["lease_expires_at"] and current_attempt["lease_expires_at"] <= now:
+                    execution_health = "expired_worker_lease"
+                elif current_attempt["status"] == "leased":
+                    execution_health = "claimed_not_started"
+                else:
+                    execution_health = "active"
+
             task_reports.append({
                 "task_id": task.task_id,
                 "title": task.title,
@@ -397,9 +428,10 @@ class BossBrain:
                 "started_at": task.started_at,
                 "completed_at": task.completed_at,
                 "verified": verified,
+                "execution_health": execution_health,
                 "verification_notes": receipt.get("notes") if receipt else None,
                 "evidence_refs": receipt.get("evidence_refs", []) if verified else [],
-                "attempts": attempts_by_task.get(task.id, []),
+                "attempts": task_attempts,
             })
 
         return {
@@ -426,9 +458,60 @@ class BossBrain:
             getattr(settings, name, None)
             for name in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
         )
-        worker_auth_configured = bool(
-            settings.WORKER_API_TOKEN or settings.WORKER_API_TOKENS
+        worker_credentials = dict(settings.WORKER_API_TOKENS)
+        if settings.WORKER_API_TOKEN and len(settings.WORKER_API_TOKEN) >= 32:
+            worker_credentials.setdefault("worker-service", settings.WORKER_API_TOKEN)
+        worker_token_values = list(worker_credentials.values())
+        worker_auth_configured = bool(worker_credentials) and all(
+            worker_id.strip() and len(worker_id) <= 128 and token and len(token) >= 32
+            for worker_id, token in worker_credentials.items()
+        ) and len(set(worker_token_values)) == len(worker_token_values) and not any(
+            token == settings.OWNER_API_TOKEN or token == settings.VERIFIER_API_TOKEN
+            for token in worker_token_values
         )
+        verifier_auth_configured = bool(
+            settings.VERIFIER_API_TOKEN
+            and len(settings.VERIFIER_API_TOKEN) >= 32
+            and settings.VERIFIER_API_TOKEN != settings.OWNER_API_TOKEN
+            and settings.VERIFIER_API_TOKEN not in worker_token_values
+        )
+        heartbeat_rows = None
+        if self.service_heartbeat_repo:
+            try:
+                heartbeat_rows = await self.service_heartbeat_repo.list_all()
+            except Exception:
+                heartbeat_rows = None
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        service_runtimes: list[dict[str, Any]] = []
+        if heartbeat_rows is not None:
+            for heartbeat in heartbeat_rows:
+                age_seconds = max(0.0, (now - heartbeat.last_seen_at).total_seconds())
+                service_runtimes.append({
+                    "service_type": heartbeat.service_type,
+                    "service_id": heartbeat.service_id,
+                    "instance_id": heartbeat.instance_id,
+                    "status": "healthy" if age_seconds <= 60 else "stale",
+                    "last_seen_at": heartbeat.last_seen_at,
+                    "age_seconds": round(age_seconds, 2),
+                })
+
+        def runtime_state(service_type: str, expected_ids: set[str]) -> str:
+            matches = [item for item in service_runtimes if item["service_type"] == service_type]
+            if heartbeat_rows is None and self.service_heartbeat_repo:
+                return "unavailable"
+            if not matches:
+                return "not_reported"
+            seen_ids = {item["service_id"] for item in matches}
+            all_fresh = all(item["status"] == "healthy" for item in matches)
+            if not all_fresh:
+                return "stale" if not any(item["status"] == "healthy" for item in matches) else "degraded"
+            if not expected_ids.issubset(seen_ids):
+                return "degraded"
+            return "healthy"
+
+        worker_runtime = runtime_state("worker", set(worker_credentials))
+        verifier_runtime = runtime_state("verifier", {"verification-service"} if verifier_auth_configured else set())
         active_missions = None
         active_tasks = None
         if self.project_repo:
@@ -460,6 +543,18 @@ class BossBrain:
             "active_tasks": active_tasks,
             "llm_provider_configured": provider_configured,
             "worker_auth_configured": worker_auth_configured,
-            "worker_runtime": "not_reported",
-            "system_health": "degraded",
+            "verifier_auth_configured": verifier_auth_configured,
+            "worker_runtime": worker_runtime,
+            "verifier_runtime": verifier_runtime,
+            "service_runtimes": service_runtimes if heartbeat_rows is not None else None,
+            "system_health": (
+                "healthy"
+                if (
+                    worker_auth_configured
+                    and verifier_auth_configured
+                    and worker_runtime == "healthy"
+                    and verifier_runtime == "healthy"
+                )
+                else "degraded"
+            ),
         }

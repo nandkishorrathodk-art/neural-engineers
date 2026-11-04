@@ -5,6 +5,7 @@ import pytest
 from neural.api.schemas.requests import VerifierCommandRequest
 from neural.containers import broker_api
 from neural.containers.broker_api import VerificationExecRequest, VerificationManifestRequest
+from neural.verification.workspace_manifest import build_workspace_delta, valid_workspace_manifest
 from neural.workers.verifier import VerificationWorker, replayable_test_commands
 
 
@@ -15,6 +16,14 @@ def _item(planned_commands: list[list[str]]) -> dict:
         "fencing_token": 7,
         "execution_mode": "terminal",
         "acceptance_criteria": "Automated tests pass",
+        "workspace_manifest_before": {
+            "captured_at_unix": 1789999990.0,
+            "files": [],
+            "file_count": 0,
+            "total_size_bytes": 0,
+            "complete": True,
+            "errors": [],
+        },
         "execution_receipt": {
             "planned_commands": planned_commands,
             "commands": [
@@ -33,10 +42,33 @@ def _manifest(**overrides) -> dict:
         "total_size_bytes": 12,
         "complete": True,
         "errors": [],
-        "scope": "verification-time workspace snapshot; no task-start diff",
+        "scope": "verification-time workspace snapshot",
     }
     result.update(overrides)
     return result
+
+
+@pytest.mark.asyncio
+async def test_verifier_worker_reports_runtime_heartbeat():
+    seen: list[tuple[str, dict]] = []
+    verifier: VerificationWorker
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(await request.aread())
+        seen.append((request.url.path, body))
+        verifier._stopping.set()
+        return httpx.Response(200, json={"status": "recorded"})
+
+    client = httpx.AsyncClient(base_url="http://core.test", transport=httpx.MockTransport(handler))
+    verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
+
+    await verifier._runtime_heartbeat_loop()
+    await verifier.close()
+
+    assert seen == [(
+        "/internal/verifier/runtime/heartbeat",
+        {"instance_id": verifier.instance_id},
+    )]
 
 
 def test_replayable_test_commands_filter_out_non_test_commands():
@@ -89,7 +121,12 @@ async def test_verifier_reruns_declared_test_and_submits_independent_receipt():
     assert review["checks"][1]["passed"] is True
     assert review["test_summary"]["independent_test_runs"][0]["verifier_exit_code"] == 0
     assert review["test_summary"]["workspace_manifest"]["files"][0]["sha256"] == "a" * 64
-    assert review["evidence_refs"] == ["verifier:attempt-1:test:1", f"workspace:sha256:{'a' * 64}"]
+    assert review["checks"][2]["passed"] is True
+    assert review["checks"][3]["passed"] is True
+    assert review["test_summary"]["workspace_delta"]["created"][0]["path"] == "src/main.py"
+    assert review["evidence_refs"][:2] == ["verifier:attempt-1:test:1", f"workspace:sha256:{'a' * 64}"]
+    assert any(reference.startswith("workspace-baseline:sha256:") for reference in review["evidence_refs"])
+    assert any(reference.startswith("workspace-delta:sha256:") for reference in review["evidence_refs"])
 
 
 @pytest.mark.asyncio
@@ -113,7 +150,7 @@ async def test_verifier_fails_closed_without_replayable_tests():
     assert result == {"task_status": "assigned"}
     assert [path.rsplit("/", 1)[-1] for path, _ in seen] == ["manifest", "review"]
     assert seen[-1][1]["passed"] is False
-    assert seen[-1][1]["evidence_refs"] == ["verifier:attempt-1:no-replayable-test"]
+    assert seen[-1][1]["evidence_refs"][0] == "verifier:attempt-1:no-replayable-test"
 
 
 @pytest.mark.asyncio
@@ -190,8 +227,68 @@ async def test_verifier_fails_closed_for_incomplete_manifest():
     await verifier.close()
     review = seen[-1][1]
     assert review["passed"] is False
-    assert review["checks"][2]["passed"] is False
+    assert review["checks"][3]["passed"] is False
     assert review["test_summary"]["workspace_manifest"]["complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_verifier_fails_closed_when_task_start_baseline_is_missing():
+    seen: list[tuple[str, dict]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(await request.aread()) if request.method == "POST" else {}
+        seen.append((request.url.path, body))
+        if request.url.path.endswith("/exec"):
+            return httpx.Response(200, json={"exit_code": 0, "stdout": "passed", "stderr": ""})
+        if request.url.path.endswith("/manifest"):
+            return httpx.Response(200, json=_manifest())
+        if request.url.path.endswith("/review"):
+            return httpx.Response(200, json={"task_status": "assigned"})
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(base_url="http://core.test", transport=httpx.MockTransport(handler))
+    verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
+    item = _item([["pytest", "-q"]])
+    item.pop("workspace_manifest_before")
+    await verifier.verify_item(item)
+    await verifier.close()
+
+    review = seen[-1][1]
+    assert review["passed"] is False
+    assert review["checks"][2]["passed"] is False
+    assert review["checks"][3]["passed"] is False
+    assert review["test_summary"]["workspace_delta"]["complete"] is False
+
+
+def test_workspace_manifest_validation_and_delta_are_fail_closed():
+    empty_baseline = {
+        "captured_at_unix": 1789999990.0,
+        "files": [], "file_count": 0, "total_size_bytes": 0,
+        "complete": True, "errors": [],
+    }
+    assert valid_workspace_manifest(empty_baseline, allow_empty=True)
+    assert not valid_workspace_manifest(empty_baseline)
+    assert not valid_workspace_manifest(_manifest(files=[{"path": "../secret", "size_bytes": 1, "sha256": "a" * 64}]))
+    assert not valid_workspace_manifest(_manifest(files=[
+        {"path": "a.txt", "size_bytes": 1, "sha256": "a" * 64},
+        {"path": "a.txt", "size_bytes": 1, "sha256": "a" * 64},
+    ], file_count=2, total_size_bytes=2))
+
+    before = _manifest(files=[
+        {"path": "keep.txt", "size_bytes": 1, "sha256": "a" * 64},
+        {"path": "change.txt", "size_bytes": 1, "sha256": "b" * 64},
+        {"path": "remove.txt", "size_bytes": 1, "sha256": "c" * 64},
+    ], file_count=3, total_size_bytes=3)
+    after = _manifest(files=[
+        {"path": "keep.txt", "size_bytes": 1, "sha256": "a" * 64},
+        {"path": "change.txt", "size_bytes": 2, "sha256": "d" * 64},
+        {"path": "new.txt", "size_bytes": 1, "sha256": "e" * 64},
+    ], file_count=3, total_size_bytes=4)
+    delta = build_workspace_delta(before, after)
+    assert delta["counts"] == {"created": 1, "modified": 1, "deleted": 1}
+    assert delta["created"][0]["path"] == "new.txt"
+    assert delta["modified"][0]["path"] == "change.txt"
+    assert delta["deleted"][0]["path"] == "remove.txt"
 
 
 def test_broker_runs_verification_in_read_only_offline_workspace(monkeypatch):

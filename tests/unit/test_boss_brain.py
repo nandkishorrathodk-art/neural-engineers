@@ -13,6 +13,65 @@ async def test_boss_brain_status():
 
 
 @pytest.mark.asyncio
+async def test_boss_brain_status_uses_authenticated_freshness_receipts(
+    async_session,
+    monkeypatch,
+):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from neural.config import get_settings
+    from neural.db.repositories import ServiceHeartbeatRepository
+
+    monkeypatch.setenv("WORKER_API_TOKEN", "w" * 40)
+    monkeypatch.setenv(
+        "WORKER_API_TOKENS",
+        json.dumps({"worker-service": "w" * 40, "worker-secondary": "x" * 40}),
+    )
+    monkeypatch.setenv("VERIFIER_API_TOKEN", "v" * 40)
+    get_settings.cache_clear()
+    runtime_repo = ServiceHeartbeatRepository(async_session)
+    await runtime_repo.record("worker", "worker-service", "a" * 32)
+    await runtime_repo.record("verifier", "verification-service", "b" * 32)
+
+    brain = BossBrain(service_heartbeat_repo=runtime_repo)
+    partial = await brain.get_status()
+    assert partial["worker_runtime"] == "degraded"
+
+    await runtime_repo.record("worker", "worker-secondary", "c" * 32)
+    status = await brain.get_status()
+    assert status["worker_runtime"] == "healthy"
+    assert status["verifier_runtime"] == "healthy"
+    assert status["system_health"] == "healthy"
+    assert len(status["service_runtimes"]) == 3
+
+    rows = await runtime_repo.list_all()
+    rows[0].last_seen_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=2)
+    await async_session.commit()
+    stale = await brain.get_status()
+    assert "stale" in {item["status"] for item in stale["service_runtimes"]}
+    assert stale["system_health"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_boss_brain_status_does_not_count_short_or_shared_service_tokens(monkeypatch):
+    from neural.config import get_settings
+
+    owner_token = "o" * 40
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("OWNER_API_TOKEN", owner_token)
+    monkeypatch.setenv("WORKER_API_TOKEN", "short-worker-token")
+    monkeypatch.setenv("VERIFIER_API_TOKEN", owner_token)
+    get_settings.cache_clear()
+
+    status = await BossBrain().get_status()
+    assert status["worker_auth_configured"] is False
+    assert status["verifier_auth_configured"] is False
+    assert status["worker_runtime"] == "not_reported"
+    assert status["system_health"] == "degraded"
+
+
+@pytest.mark.asyncio
 async def test_boss_brain_analyze_and_plan():
     brain = BossBrain()
     objective = "Build a complete production-grade e-commerce application"

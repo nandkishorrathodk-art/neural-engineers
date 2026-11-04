@@ -12,6 +12,18 @@ class ObjectiveSubmissionRequest(BaseModel):
     deadline_days: Optional[int] = Field(None, description="Target timeline in days")
 
 
+class TaskRecoveryApprovalRequest(BaseModel):
+    justification: str = Field(min_length=8, max_length=2000)
+
+
+class TaskRecoveryRequest(BaseModel):
+    approval_id: str = Field(min_length=1, max_length=64)
+
+
+class RuntimeHeartbeatRequest(BaseModel):
+    instance_id: str = Field(min_length=16, max_length=64)
+
+
 class CreateEmployeeRequest(BaseModel):
     name: str
     title: str

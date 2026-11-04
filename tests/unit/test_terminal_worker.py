@@ -76,6 +76,37 @@ async def test_terminal_worker_submits_receipt_after_zero_exit_commands():
     assert receipt["commands"][0]["command"] == ["pytest", "-q"]
 
 
+@pytest.mark.asyncio
+async def test_terminal_worker_reports_runtime_heartbeat():
+    seen: list[tuple[str, dict]] = []
+    worker: TerminalWorker
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        body = json.loads(await request.aread())
+        seen.append((request.url.path, body))
+        worker._stopping.set()
+        return httpx.Response(200, json={"status": "recorded"})
+
+    client = httpx.AsyncClient(base_url="http://core.test", transport=httpx.MockTransport(handler))
+    worker = TerminalWorker(
+        api_url="http://core.test",
+        worker_id="worker-test",
+        token="w" * 32,
+        llm=StubLLM(),  # type: ignore[arg-type]
+        client=client,
+    )
+
+    await worker._runtime_heartbeat_loop()
+    await worker.close()
+
+    assert seen == [(
+        "/internal/worker/runtime/heartbeat",
+        {"instance_id": worker.instance_id},
+    )]
+
+
 def test_terminal_command_plan_rejects_shell_and_non_allowlisted_commands():
     with pytest.raises(ValueError):
         TerminalCommandPlan(commands=[["sh", "-c", "id"]])

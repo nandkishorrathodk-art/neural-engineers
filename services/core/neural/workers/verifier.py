@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 import re
 import signal
+import uuid
 from typing import Any
 
 import httpx
+
+from neural.verification.workspace_manifest import build_workspace_delta, valid_workspace_manifest
 
 TEST_ONLY_ACCEPTANCE = {
     "test passes",
@@ -52,38 +57,6 @@ def worker_test_exit_code(receipt: dict[str, Any], command: list[str]) -> int | 
     return None
 
 
-def valid_workspace_manifest(value: Any) -> bool:
-    if not isinstance(value, dict) or value.get("complete") is not True:
-        return False
-    files = value.get("files")
-    if not isinstance(files, list) or not files or len(files) > 2000:
-        return False
-    if value.get("file_count") != len(files):
-        return False
-    total = 0
-    for item in files:
-        if not isinstance(item, dict):
-            return False
-        path = item.get("path")
-        size = item.get("size_bytes")
-        digest = item.get("sha256")
-        if (
-            not isinstance(path, str)
-            or not path
-            or path.startswith("/")
-            or "\\" in path
-            or any(part in {"", ".", ".."} for part in path.split("/"))
-            or not isinstance(size, int)
-            or size < 0
-            or size > 10 * 1024 * 1024
-            or not isinstance(digest, str)
-            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-        ):
-            return False
-        total += size
-    return total <= 100 * 1024 * 1024 and value.get("total_size_bytes") == total
-
-
 class VerificationWorker:
     """Re-run only declared test commands under a separate verifier identity."""
 
@@ -98,6 +71,7 @@ class VerificationWorker:
         if not api_url or not verifier_id or len(token) < 32:
             raise ValueError("Core API URL, verifier identity, and a 32-character verifier token are required.")
         self.verifier_id = verifier_id
+        self.instance_id = uuid.uuid4().hex
         self.client = client or httpx.AsyncClient(
             base_url=api_url.rstrip("/"),
             headers={"Authorization": f"Bearer {token}"},
@@ -125,6 +99,8 @@ class VerificationWorker:
         execution_receipt = item.get("execution_receipt")
         if not isinstance(execution_receipt, dict):
             execution_receipt = {}
+        workspace_manifest_before = item.get("workspace_manifest_before")
+        baseline_valid = valid_workspace_manifest(workspace_manifest_before, allow_empty=True)
 
         commands = replayable_test_commands(execution_receipt)
         test_runs: list[dict[str, Any]] = []
@@ -154,6 +130,11 @@ class VerificationWorker:
         manifest_valid = valid_workspace_manifest(manifest)
         manifest_files = manifest.get("files", []) if isinstance(manifest, dict) else []
         manifest_refs = [f"workspace:sha256:{entry['sha256']}" for entry in manifest_files] if manifest_valid else []
+        workspace_delta = (
+            build_workspace_delta(workspace_manifest_before, manifest)
+            if baseline_valid and manifest_valid
+            else None
+        )
 
         criteria = str(item.get("acceptance_criteria", "")).lower()
         normalized_criteria = " ".join(re.findall(r"[a-z0-9]+", criteria))
@@ -180,27 +161,47 @@ class VerificationWorker:
                 ],
             },
             {
-                "name": "complete_nonempty_workspace_hash_snapshot_captured",
-                "passed": manifest_valid,
+                "name": "complete_task_start_workspace_baseline_captured",
+                "passed": baseline_valid,
+                "evidence": {
+                    "file_count": workspace_manifest_before.get("file_count") if baseline_valid else None,
+                    "captured_at_unix": workspace_manifest_before.get("captured_at_unix") if baseline_valid else None,
+                    "complete": baseline_valid,
+                },
+            },
+            {
+                "name": "complete_verification_snapshot_and_workspace_delta_captured",
+                "passed": manifest_valid and workspace_delta is not None,
                 "evidence": {
                     "file_count": manifest.get("file_count") if isinstance(manifest, dict) else None,
-                    "complete": manifest.get("complete") if isinstance(manifest, dict) else False,
-                    "scope": "verification-time workspace snapshot; no task-start diff",
+                    "complete": manifest_valid,
+                    "delta_counts": workspace_delta["counts"] if workspace_delta else None,
+                    "scope": "path and SHA-256 delta; file contents are not included",
                 },
             },
         ]
-        passed = criteria_is_testable and tests_passed and manifest_valid
+        passed = criteria_is_testable and tests_passed and baseline_valid and manifest_valid and workspace_delta is not None
         notes = (
             "Declared automated tests passed in the worker receipt and an independent verifier rerun. "
-            "A complete verification-time workspace hash snapshot was recorded; it does not establish "
-            "which files changed during the attempt or whether their contents are correct."
+            "Complete task-start and verification-time workspace hash snapshots were recorded with a "
+            "path-level delta. Hash changes do not establish whether the changed file contents are correct."
             if passed
             else "Independent verification failed closed: "
-            "no replayable test, a test failure, an incomplete/empty workspace hash snapshot, or "
-            "acceptance criteria outside the supported test-only contracts."
+            "no replayable test, a test failure, a missing/invalid task-start baseline, an incomplete/empty "
+            "verification snapshot, or acceptance criteria outside the supported test-only contracts."
         )
         evidence_refs = [run["evidence_ref"] for run in test_runs] or [f"verifier:{attempt_id}:no-replayable-test"]
         evidence_refs.extend(manifest_refs)
+        if baseline_valid:
+            baseline_digest = hashlib.sha256(
+                json.dumps(workspace_manifest_before, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            evidence_refs.append(f"workspace-baseline:sha256:{baseline_digest}")
+        if workspace_delta:
+            delta_digest = hashlib.sha256(
+                json.dumps(workspace_delta, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            evidence_refs.append(f"workspace-delta:sha256:{delta_digest}")
         return await self._post(
             f"/internal/verifier/tasks/{task_id}/attempts/{attempt_id}/review",
             {
@@ -210,11 +211,20 @@ class VerificationWorker:
                 "checks": checks,
                 "test_summary": {
                     "independent_test_runs": test_runs,
+                    "workspace_manifest_before": workspace_manifest_before if baseline_valid else {
+                        "complete": False,
+                        "file_count": 0,
+                        "errors": ["task-start workspace baseline missing or invalid"],
+                    },
                     "workspace_manifest": manifest if manifest_valid else {
                         "complete": False,
                         "file_count": len(manifest_files) if isinstance(manifest_files, list) else 0,
                         "errors": manifest.get("errors", []) if isinstance(manifest, dict) else ["manifest unavailable"],
-                        "scope": "verification-time workspace snapshot; no task-start diff",
+                        "scope": "verification-time workspace snapshot",
+                    },
+                    "workspace_delta": workspace_delta or {
+                        "complete": False,
+                        "errors": ["task-start baseline or verification snapshot is unavailable"],
                     },
                 },
             },
@@ -244,13 +254,32 @@ class VerificationWorker:
         return processed
 
     async def run(self) -> None:
+        heartbeat_task = asyncio.create_task(self._runtime_heartbeat_loop())
+        try:
+            while not self._stopping.is_set():
+                try:
+                    await self.run_once()
+                except httpx.HTTPError:
+                    pass
+                try:
+                    await asyncio.wait_for(self._stopping.wait(), timeout=self.poll_interval)
+                except TimeoutError:
+                    continue
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    async def _runtime_heartbeat_loop(self) -> None:
         while not self._stopping.is_set():
             try:
-                await self.run_once()
+                await self._post(
+                    "/internal/verifier/runtime/heartbeat",
+                    {"instance_id": self.instance_id},
+                )
             except httpx.HTTPError:
                 pass
             try:
-                await asyncio.wait_for(self._stopping.wait(), timeout=self.poll_interval)
+                await asyncio.wait_for(self._stopping.wait(), timeout=20.0)
             except TimeoutError:
                 continue
 

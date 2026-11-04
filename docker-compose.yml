@@ -136,7 +136,9 @@ services:
       - ANCOS_CORE_API_URL=http://core-api:12000
       - ANCOS_VERIFIER_ID=${ANCOS_VERIFIER_ID:-terminal-verifier}
       - ANCOS_VERIFIER_POLL_SECONDS=${ANCOS_VERIFIER_POLL_SECONDS:-5}
-      - VERIFIER_API_TOKEN=${VERIFIER_API_TOKEN:?Set VERIFIER_API_TOKEN in .env}
+      # Profile-only credential: keep base Compose commands usable before the
+      # independent verifier is configured. The process fails closed on an empty token.
+      - VERIFIER_API_TOKEN=${VERIFIER_API_TOKEN:-}
     depends_on:
       core-api:
         condition: service_started
