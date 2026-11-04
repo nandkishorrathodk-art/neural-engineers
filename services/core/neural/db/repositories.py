@@ -520,6 +520,40 @@ class TaskRepository:
             await self.session.commit()
         return result.rowcount == 1
 
+    async def _select_retry_assignee(self, task: Task) -> Optional[Employee]:
+        """Choose another idle employee only when their desktop is already live."""
+        if not task.assigned_to:
+            return None
+        now = utc_now()
+        active_attempt = (
+            select(TaskAttempt.id)
+            .join(Task, Task.id == TaskAttempt.task_id)
+            .where(
+                Task.assigned_to == Employee.id,
+                TaskAttempt.status.in_(["leased", "running"]),
+                TaskAttempt.lease_expires_at > now,
+            )
+            .exists()
+        )
+        employees = (
+            await self.session.execute(
+                select(Employee)
+                .join(Container, Employee.container_id == Container.id)
+                .options(selectinload(Employee.skills), selectinload(Employee.container))
+                .where(
+                    Employee.id != task.assigned_to,
+                    Employee.status == EmployeeStatus.IDLE,
+                    Container.status == ContainerStatus.RUNNING,
+                    ~active_attempt,
+                )
+                .order_by(Employee.hired_at.asc())
+                .execution_options(populate_existing=True)
+            )
+        ).scalars().all()
+        from neural.boss.delegator import TaskDelegator
+
+        return TaskDelegator().select_best_assignee(task, employees)
+
     async def fail_task_attempt(self, task_id: str, worker_id: str, fencing_token: int, error_message: str) -> Optional[dict[str, Any]]:
         now = utc_now()
         task = await self._get_task_for_worker(task_id)
@@ -532,6 +566,13 @@ class TaskRepository:
         retry_count = task.retry_count + (1 if should_retry else 0)
         retry_delay_seconds = min(2 ** task.retry_count, 60) if should_retry else 0
         async with get_session_lock(self.session):
+            previous_assignee_id = task.assigned_to
+            previous_assignee = (
+                await self.session.get(Employee, previous_assignee_id)
+                if previous_assignee_id
+                else None
+            )
+            alternate_assignee = await self._select_retry_assignee(task) if should_retry else None
             attempt_update = await self.session.execute(
                 update(TaskAttempt)
                 .where(
@@ -557,6 +598,7 @@ class TaskRepository:
                 .where(Task.status == TaskStatus.RUNNING)
                 .values(
                     status=TaskStatus.ASSIGNED if should_retry else TaskStatus.FAILED,
+                    assigned_to=(alternate_assignee.id if alternate_assignee else task.assigned_to),
                     retry_count=Task.retry_count + (1 if should_retry else 0),
                     completed_at=None if should_retry else now,
                     fencing_token=Task.fencing_token + 1,
@@ -565,10 +607,25 @@ class TaskRepository:
             if task_update.rowcount != 1:
                 await self.session.rollback()
                 return None
-            if not should_retry and task.assigned_to:
+            if (not should_retry or alternate_assignee) and previous_assignee_id:
+                other_active_attempt = (
+                    select(TaskAttempt.id)
+                    .join(Task, Task.id == TaskAttempt.task_id)
+                    .where(
+                        Task.assigned_to == previous_assignee_id,
+                        Task.id != task.id,
+                        TaskAttempt.status.in_(["leased", "running"]),
+                        TaskAttempt.lease_expires_at > now,
+                    )
+                    .exists()
+                )
                 await self.session.execute(
                     update(Employee)
-                    .where(Employee.id == task.assigned_to)
+                    .where(
+                        Employee.id == previous_assignee_id,
+                        Employee.status == EmployeeStatus.WORKING,
+                        ~other_active_attempt,
+                    )
                     .values(status=EmployeeStatus.IDLE)
                 )
             await self.session.commit()
@@ -576,6 +633,13 @@ class TaskRepository:
             "retrying": should_retry,
             "retry_count": retry_count,
             "retry_after_seconds": retry_delay_seconds,
+            "reassigned": alternate_assignee is not None,
+            "previous_employee_id": previous_assignee.employee_id if previous_assignee else None,
+            "assigned_employee_id": (
+                alternate_assignee.employee_id
+                if alternate_assignee
+                else previous_assignee.employee_id if previous_assignee else None
+            ),
         }
 
     async def list_pending_verification(self, limit: int = 50) -> list[dict[str, Any]]:

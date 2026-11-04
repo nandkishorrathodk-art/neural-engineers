@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from neural.api.deps import (
+    get_audit_repo,
     get_container_manager,
     get_container_repo,
     get_employee_repo,
@@ -15,7 +16,12 @@ from neural.api.schemas.requests import (
 )
 from neural.constants import EmployeeStatus, ExecutionMode
 from neural.containers.manager import ContainerManager
-from neural.db.repositories import ContainerRepository, EmployeeRepository, TaskRepository
+from neural.db.repositories import (
+    AuditRepository,
+    ContainerRepository,
+    EmployeeRepository,
+    TaskRepository,
+)
 
 router = APIRouter(
     prefix="/internal/worker",
@@ -169,6 +175,7 @@ async def submit_task_attempt(
 async def fail_task_attempt(
     task_id: str,
     request: WorkerFailureRequest,
+    audit_repo: AuditRepository = Depends(get_audit_repo),
     task_repo: TaskRepository = Depends(get_task_repo),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     worker_id: str = Depends(require_worker_token),
@@ -184,10 +191,26 @@ async def fail_task_attempt(
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     if task and task.assigned_to and not failure["retrying"]:
         await employee_repo.update_status(task.assigned_to, EmployeeStatus.IDLE)
+    await audit_repo.log(
+        actor="BossAI",
+        action="TASK_FAILURE_RECOVERY",
+        resource_type="Task",
+        resource_id=task_id,
+        details={
+            "retrying": failure["retrying"],
+            "retry_count": failure["retry_count"],
+            "retry_after_seconds": failure["retry_after_seconds"],
+            "reassigned": failure["reassigned"],
+            "previous_employee_id": failure["previous_employee_id"],
+            "assigned_employee_id": failure["assigned_employee_id"],
+        },
+    )
     return {
         "task_id": task_id,
         "status": "retrying" if failure["retrying"] else "failed",
         "retry_count": failure["retry_count"],
         "retry_after_seconds": failure["retry_after_seconds"],
         "fencing_token": request.fencing_token,
+        "reassigned": failure["reassigned"],
+        "assigned_employee_id": failure["assigned_employee_id"],
     }

@@ -17,6 +17,7 @@ from neural.constants import (
     ContainerStatus,
     EmployeeStatus,
     ExecutionMode,
+    SkillLevel,
     TaskPriority,
     TaskStatus,
 )
@@ -524,7 +525,14 @@ async def test_worker_failure_retries_only_retryable_errors_within_budget(async_
     await async_session.commit()
 
     retry = await task_repo.fail_task_attempt(task.task_id, "worker-test", 1, "connection timeout")
-    assert retry == {"retrying": True, "retry_count": 1, "retry_after_seconds": 1}
+    assert retry == {
+        "retrying": True,
+        "retry_count": 1,
+        "retry_after_seconds": 1,
+        "reassigned": False,
+        "previous_employee_id": None,
+        "assigned_employee_id": None,
+    }
     retried_task = await task_repo.get_by_task_id(task.task_id)
     assert retried_task.status == TaskStatus.ASSIGNED
     assert retried_task.fencing_token == 2
@@ -546,9 +554,179 @@ async def test_worker_failure_retries_only_retryable_errors_within_budget(async_
     await async_session.commit()
 
     exhausted = await task_repo.fail_task_attempt(task.task_id, "worker-test", 3, "connection timeout")
-    assert exhausted == {"retrying": False, "retry_count": 1, "retry_after_seconds": 0}
+    assert exhausted == {
+        "retrying": False,
+        "retry_count": 1,
+        "retry_after_seconds": 0,
+        "reassigned": False,
+        "previous_employee_id": None,
+        "assigned_employee_id": None,
+    }
     final_task = await task_repo.get_by_task_id(task.task_id)
     assert final_task.status == TaskStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_retryable_worker_failure_reassigns_to_idle_employee_with_live_desktop(async_session):
+    employee_repo = EmployeeRepository(async_session)
+    failed_employee = await employee_repo.create(
+        employee_id="ANC-EMP-FAILED-WORKER",
+        name="Failed Worker",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.WORKING,
+    )
+    recovery_employee = await employee_repo.create(
+        employee_id="ANC-EMP-RECOVERY-WORKER",
+        name="Recovery Worker",
+        title="Software Engineer",
+        system_prompt="Test recovery employee",
+        status=EmployeeStatus.IDLE,
+    )
+    container = await ContainerRepository(async_session).create(
+        docker_id="ancos-desktop-anc-emp-recovery-worker",
+        image="ancos/employee-base:latest",
+        status=ContainerStatus.RUNNING,
+        resource_limits={},
+        network_config={},
+        workspace_path="/tmp/recovery-worker-validation",
+    )
+    await employee_repo.assign_container(recovery_employee.employee_id, container.id)
+    await employee_repo.add_skill(
+        recovery_employee.employee_id,
+        "Python",
+        level=SkillLevel.EXPERT,
+        verified=True,
+    )
+    await async_session.refresh(recovery_employee)
+
+    project = await ProjectRepository(async_session).create(
+        name="Worker reassignment",
+        objective="Retry eligible work with a different live employee",
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-REASSIGN-AFTER-FAILURE",
+        project_id=project.id,
+        assigned_to=failed_employee.id,
+        title="Recover failed worker task",
+        objective="Reassign retryable work to an available specialist",
+        scope="Recovery validation",
+        acceptance_criteria="The next attempt uses the eligible recovery employee",
+        required_capabilities=["Python"],
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        max_retries=2,
+        fencing_token=7,
+    )
+    attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="terminal-worker",
+        fencing_token=7,
+        status="running",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=2),
+        execution_receipt={},
+    )
+    async_session.add(attempt)
+    await async_session.commit()
+
+    recovery = await task_repo.fail_task_attempt(
+        task.task_id,
+        "terminal-worker",
+        7,
+        "connection timeout",
+    )
+
+    assert recovery == {
+        "retrying": True,
+        "retry_count": 1,
+        "retry_after_seconds": 1,
+        "reassigned": True,
+        "previous_employee_id": failed_employee.employee_id,
+        "assigned_employee_id": recovery_employee.employee_id,
+    }
+    persisted = await task_repo.get_by_task_id(task.task_id)
+    old_employee = await employee_repo.get_by_employee_id(failed_employee.employee_id)
+    assert persisted.status == TaskStatus.ASSIGNED
+    assert persisted.assigned_to == recovery_employee.id
+    assert persisted.fencing_token == 8
+    assert old_employee.status == EmployeeStatus.IDLE
+
+
+@pytest.mark.asyncio
+async def test_worker_failure_route_returns_and_audits_recovery_decision(async_session, monkeypatch):
+    from neural.config import get_settings
+
+    owner_token = "owner-recovery-" + "o" * 40
+    worker_token = "worker-recovery-" + "w" * 40
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("OWNER_API_TOKEN", owner_token)
+    monkeypatch.setenv("WORKER_API_TOKEN", worker_token)
+    monkeypatch.setenv("WORKER_API_TOKENS", "{}")
+    get_settings.cache_clear()
+
+    employee = await EmployeeRepository(async_session).create(
+        employee_id="ANC-EMP-ROUTE-RECOVERY",
+        name="Route Recovery Worker",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.WORKING,
+    )
+    project = await ProjectRepository(async_session).create(
+        name="Worker failure route",
+        objective="Persist a retry and recovery decision",
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-WORKER-FAILURE-ROUTE",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Retry failed execution",
+        objective="Route the failure through Boss recovery policy",
+        scope="Recovery route test",
+        acceptance_criteria="The recovery decision is audited",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.RUNNING,
+        fencing_token=12,
+    )
+    async_session.add(
+        TaskAttempt(
+            task_id=task.id,
+            attempt_number=1,
+            worker_id="worker-service",
+            fencing_token=12,
+            status="running",
+            lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=2),
+            execution_receipt={},
+        )
+    )
+    await async_session.commit()
+
+    app = create_app()
+
+    async def override_get_db_session():
+        yield async_session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            f"/internal/worker/tasks/{task.task_id}/fail",
+            headers={"Authorization": f"Bearer {worker_token}"},
+            json={"fencing_token": 12, "error_message": "connection timeout"},
+        )
+    get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "retrying"
+    assert response.json()["reassigned"] is False
+    events = await AuditRepository(async_session).list_all()
+    recovery_events = [event for event in events if event.action == "TASK_FAILURE_RECOVERY"]
+    assert recovery_events
+    assert recovery_events[-1].actor == "BossAI"
+    assert recovery_events[-1].details["retrying"] is True
+    assert recovery_events[-1].details["previous_employee_id"] == employee.employee_id
 
 
 @pytest.mark.asyncio
