@@ -44,6 +44,46 @@ def test_creates_task_branch_in_separate_worktree_without_moving_source_checkout
     assert _git(repository, "rev-parse", "HEAD") == original_head
 
 
+def test_persists_and_verifies_task_worktree_provenance(tmp_path):
+    repository = _repository(tmp_path)
+    managed_root = tmp_path / "worktrees"
+    manager = EngineeringWorktreeManager(repository, managed_root)
+
+    created = manager.create("TASK-PROVENANCE")
+    receipt_file = managed_root / "TASK-PROVENANCE.receipt.json"
+
+    assert receipt_file.is_file()
+    assert created.receipt_sha256
+    verified = manager.verify_receipt("TASK-PROVENANCE")
+    assert verified == created
+    assert verified.base_commit == _git(repository, "rev-parse", "HEAD")
+
+
+def test_rejects_modified_task_worktree_provenance_receipt(tmp_path):
+    repository = _repository(tmp_path)
+    managed_root = tmp_path / "worktrees"
+    manager = EngineeringWorktreeManager(repository, managed_root)
+    manager.create("TASK-PROVENANCE")
+    receipt_file = managed_root / "TASK-PROVENANCE.receipt.json"
+    receipt_file.write_text(
+        receipt_file.read_text(encoding="utf-8").replace("TASK-PROVENANCE", "TASK-FORGED"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WorktreeProvisionError, match="integrity check failed"):
+        manager.verify_receipt("TASK-PROVENANCE")
+
+
+def test_rejects_worktree_checked_out_on_different_branch(tmp_path):
+    repository = _repository(tmp_path)
+    manager = EngineeringWorktreeManager(repository, tmp_path / "worktrees")
+    receipt = manager.create("TASK-PROVENANCE")
+    _git(receipt.path, "checkout", "-b", "tampered/task")
+
+    with pytest.raises(WorktreeProvisionError, match="no longer matches its provenance"):
+        manager.verify_receipt("TASK-PROVENANCE")
+
+
 def test_refuses_duplicate_task_worktree_without_overwriting_existing(tmp_path):
     repository = _repository(tmp_path)
     manager = EngineeringWorktreeManager(repository, tmp_path / "worktrees")

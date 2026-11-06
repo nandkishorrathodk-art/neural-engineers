@@ -217,7 +217,10 @@ async def update_action_item(
     if payload.deadline is not None:
         kwargs["deadline"] = payload.deadline
 
-    updated = await tracker.repo.update_item(action_item_id, **kwargs)
+    try:
+        updated = await tracker.repo.update_item(action_item_id, **kwargs)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return serialize_action_item_model(updated)
 
 

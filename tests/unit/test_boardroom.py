@@ -241,6 +241,55 @@ async def test_action_item_tracker_lifecycle_and_overdue(async_session: AsyncSes
 
 
 @pytest.mark.asyncio
+async def test_action_item_tracker_rejects_reopening_terminal_items(async_session: AsyncSession):
+    meeting_repo = MeetingRepository(async_session)
+    action_repo = ActionItemRepository(async_session)
+    tracker = ActionItemTracker(action_repo)
+    meeting = await meeting_repo.create(
+        meeting_id="ANC-MTG-ACT-TERMINAL",
+        title="Action item transition review",
+        meeting_type=MeetingType.DAILY_STANDUP,
+    )
+    item = await tracker.create_action_item(
+        meeting_id=meeting.id,
+        description="Publish the reviewed incident summary",
+        assigned_to="ANC-EMP-TRANSITION",
+    )
+
+    resolved = await tracker.resolve_action_item(item.id)
+    assert resolved is not None and resolved.status == ActionItemStatus.RESOLVED
+    with pytest.raises(ValueError, match="cannot transition from 'resolved' to 'in_progress'"):
+        await tracker.update_status(item.id, ActionItemStatus.IN_PROGRESS)
+
+    still_resolved = await action_repo.get_by_id(item.id)
+    assert still_resolved is not None
+    assert still_resolved.status == ActionItemStatus.RESOLVED
+
+
+@pytest.mark.asyncio
+async def test_action_item_tracker_rejects_skipping_in_progress_for_cancellation(async_session: AsyncSession):
+    meeting_repo = MeetingRepository(async_session)
+    action_repo = ActionItemRepository(async_session)
+    tracker = ActionItemTracker(action_repo)
+    meeting = await meeting_repo.create(
+        meeting_id="ANC-MTG-ACT-SKIP",
+        title="Action item transition review",
+        meeting_type=MeetingType.DAILY_STANDUP,
+    )
+    item = await tracker.create_action_item(
+        meeting_id=meeting.id,
+        description="Review a production migration",
+        assigned_to="ANC-EMP-TRANSITION",
+    )
+
+    await tracker.update_status(item.id, ActionItemStatus.IN_PROGRESS)
+    cancelled = await tracker.update_status(item.id, ActionItemStatus.CANCELLED)
+    assert cancelled is not None and cancelled.status == ActionItemStatus.CANCELLED
+    with pytest.raises(ValueError, match="cannot transition from 'cancelled' to 'open'"):
+        await tracker.update_status(item.id, ActionItemStatus.OPEN)
+
+
+@pytest.mark.asyncio
 async def test_action_item_automatic_carry_over(async_session: AsyncSession):
     meeting_repo = MeetingRepository(async_session)
     action_repo = ActionItemRepository(async_session)

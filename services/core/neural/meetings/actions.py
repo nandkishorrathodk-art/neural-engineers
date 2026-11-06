@@ -4,7 +4,7 @@ from typing import Any
 
 from neural.constants import ActionItemStatus
 from neural.db.models import ActionItem
-from neural.db.repositories import ActionItemRepository
+from neural.db.repositories import ActionItemRepository, action_item_transition_allowed
 from neural.logger import get_logger
 
 logger = get_logger("ancos.meetings.actions")
@@ -59,9 +59,17 @@ class ActionItemTracker:
 
     async def update_status(self, action_item_id: str, status: ActionItemStatus) -> ActionItem | None:
         """
-        Updates the status of an existing action item (OPEN -> IN_PROGRESS -> RESOLVED).
-        If resolved or cancelled, synchronizes all linked historical/carried-over instances.
+        Updates status without reopening terminal action items or skipping work state.
+        If resolved or cancelled, synchronizes unresolved linked carried-over instances.
         """
+        current = await self.repo.get_by_id(action_item_id)
+        if not current:
+            return None
+        if not action_item_transition_allowed(current.status, status):
+            raise ValueError(
+                f"Action item cannot transition from '{current.status.value}' to '{status.value}'."
+            )
+
         item = await self.repo.update_status(action_item_id, status)
         if item:
             logger.info("Updated action item status", action_item_id=action_item_id, status=status.value)
@@ -71,7 +79,10 @@ class ActionItemTracker:
                 all_items = await self.repo.list_all()
                 for other in all_items:
                     if other.id != item.id and other.assigned_to == item.assigned_to:
-                        if self.normalize_desc(other.description) == norm_desc and other.status != status:
+                        if (
+                            self.normalize_desc(other.description) == norm_desc
+                            and other.status in (ActionItemStatus.OPEN, ActionItemStatus.IN_PROGRESS)
+                        ):
                             await self.repo.update_status(other.id, status)
         return item
 

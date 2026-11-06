@@ -15,6 +15,23 @@
 - `npm run build` in `apps/dashboard` — **passed**. `git diff --check` — **passed**.
 - Source and test evidence only for these changes. No production deployment or live Docker task was run.
 
+## 2026-11-06 cost-input validation
+
+- `CostTracker` now rejects negative or non-finite budget limits, cost deltas, reported USD costs, and invalid/negative token counts before writing a usage record. Regression checks include disabled budget mode to ensure invalid values cannot bypass input validation.
+- Command: `uv run --no-sync pytest tests/unit/test_phase2_llm_gateway.py -q` — **23 passed**.
+- Scoped `uv run --no-sync ruff check services/core/neural/llm/cost.py tests/unit/test_phase2_llm_gateway.py` — **passed**.
+- This hardens in-process arithmetic only; project/month-wide authoritative metering across worker processes remains unimplemented and budgeted objectives remain rejected.
+
+## 2026-11-06 five-agent roadmap implementation batch
+
+- NEURO-1 budget enforcement: inspected worker/provider boundary. The worker invokes the provider and sends usage/cost after inference; the API has no authoritative pre-call metering or atomic reservation. Therefore budget-bearing objectives remain rejected with HTTP 501 rather than accepting a cap that could be exceeded. No budget code change was made in this batch.
+- NEURO-2/6: organizational memory now persists the versioned six-tier record envelope and fresh API stores hydrate it. Confidence alone no longer marks a record verified. `tests/unit/test_phase5_meta_learning.py` — **6 passed**.
+- NEURO-7: completing only the `max_steps` prefix of a longer GUI plan now returns `plan_truncated=true` and cannot claim whole-task success. The new focused regression and GUI/engineering/cost combined target set passed **27 tests**. A separate older timing assertion briefly failed in an overloaded combined run (57.39 ms vs its 50 ms threshold) and passed when isolated; the full regression below also passed.
+- NEURO-8: each isolated engineering worktree now writes and verifies a canonical SHA-256 provenance receipt bound to task/repository/branch/base/path; validation checks live Git state. Tamper and branch-switch tests included. `tests/unit/test_engineering_worktrees.py` — **12 passed**.
+- NEURO-10: action-item state transitions are enforced in the tracker, repository, and PATCH route; reopening a resolved item returns HTTP 409 and does not alter persisted state. Conditional DB updates reject stale concurrent changes. Boardroom/API focused set — **30 passed**.
+- Final current-worktree `uv run --no-sync pytest -q` — **529 passed, 12 skipped, zero failed** (166.06 seconds), including the conditional-update race fix. Repo-wide Ruff and `git diff --check` pass. Skips remain credential-dependent live broker/model/runtime cases, not acceptance passes.
+- No live Docker, external provider, production database, or deployment operation was performed. Cross-employee task use, live GUI work, employee-driven software merge, real meeting follow-up, and end-to-end mission acceptance remain open.
+
 ## 2026-11-04 runtime heartbeat observability
 
 - Command: `uv run --no-sync pytest tests/unit/test_boss_brain.py tests/unit/test_neuro_phase1_authority.py tests/unit/test_terminal_worker.py tests/unit/test_verifier_worker.py -q`

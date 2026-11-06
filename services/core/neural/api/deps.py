@@ -248,7 +248,12 @@ async def get_memory_store(
     memory_repo: MemoryRepository = Depends(get_memory_repo),
 ):
     from neural.memory.store import OrganizationalMemoryStore
-    return OrganizationalMemoryStore(memory_repo=memory_repo)
+    store = OrganizationalMemoryStore(memory_repo=memory_repo)
+    # OrganizationalMemoryStore writes versioned records through MemoryRepository;
+    # connect that repository for hydration on this fresh request-scoped instance.
+    store.six_tier_store.memory_repo = memory_repo
+    await store.six_tier_store.load_persisted_records()
+    return store
 
 
 async def get_self_improvement_engine(

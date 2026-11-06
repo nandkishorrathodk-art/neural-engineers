@@ -67,16 +67,37 @@ class OrganizationalMemoryStore:
             content=content,
             confidence=confidence,
             metadata=meta,
-            verification_status=RecordVerificationStatus.VERIFIED if confidence >= 0.8 else RecordVerificationStatus.UNVERIFIED,
+            # Confidence is a relevance estimate, not proof that an outcome was
+            # independently verified. New organizational entries stay untrusted
+            # until a receipt-bound verification path promotes them.
+            verification_status=RecordVerificationStatus.UNVERIFIED,
         )
         await self.six_tier_store.store_record(rec)
 
         if self.memory_repo:
+            persisted_metadata = {
+                **meta,
+                "layer": rec.layer.value,
+                "category": rec.category,
+                "access_level": rec.access_level.value,
+                "owner_employee_id": rec.owner_employee_id,
+                "allowed_departments": rec.allowed_departments,
+                "allowed_projects": rec.allowed_projects,
+                "version": rec.version,
+                "provenance": rec.provenance,
+                "record_metadata": rec.metadata,
+                "record_schema_version": 1,
+                "record_id": rec.id,
+                "created_at": rec.created_at.isoformat(),
+                "verified_at": rec.verified_at.isoformat() if rec.verified_at else None,
+                "related_record_ids": rec.related_record_ids,
+                "embedding": rec.embedding,
+            }
             return await self.memory_repo.create_entry(
                 category=cat_enum,
                 source=source,
                 content=content,
-                metadata_json=meta,
+                metadata_json=persisted_metadata,
                 confidence=confidence,
                 embedding_ref=embedding_ref,
             )

@@ -2105,6 +2105,26 @@ def normalize_action_item_desc(d: str) -> str:
     return cleaned.strip()
 
 
+def action_item_transition_allowed(current: ActionItemStatus, target: ActionItemStatus) -> bool:
+    """Return whether a boardroom action item may move to the requested state."""
+    if current == target:
+        return True
+    transitions = {
+        ActionItemStatus.OPEN: {
+            ActionItemStatus.IN_PROGRESS,
+            ActionItemStatus.RESOLVED,
+            ActionItemStatus.CANCELLED,
+        },
+        ActionItemStatus.IN_PROGRESS: {
+            ActionItemStatus.RESOLVED,
+            ActionItemStatus.CANCELLED,
+        },
+        ActionItemStatus.RESOLVED: set(),
+        ActionItemStatus.CANCELLED: set(),
+    }
+    return target in transitions.get(current, set())
+
+
 def parse_deadline_datetime(deadline: Any) -> Optional[datetime]:
     if not deadline:
         return None
@@ -2214,7 +2234,19 @@ class ActionItemRepository:
         item = await self.get_by_id(action_item_id)
         if not item:
             return None
-        item.status = status
+        if not action_item_transition_allowed(item.status, status):
+            raise ValueError(
+                f"Action item cannot transition from '{item.status.value}' to '{status.value}'."
+            )
+        result = await self.session.execute(
+            update(ActionItem)
+            .where(ActionItem.id == item.id, ActionItem.status == item.status)
+            .values(status=status)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            await self.session.rollback()
+            raise ValueError("Action item status changed concurrently; reload it and retry.")
         await self.session.commit()
         await self.session.refresh(item)
         return item
@@ -2223,11 +2255,27 @@ class ActionItemRepository:
         item = await self.get_by_id(action_item_id)
         if not item:
             return None
+        if "status" in kwargs and not action_item_transition_allowed(item.status, kwargs["status"]):
+            target = kwargs["status"]
+            raise ValueError(
+                f"Action item cannot transition from '{item.status.value}' to '{target.value}'."
+            )
         if "deadline" in kwargs:
             kwargs["deadline"] = parse_deadline_datetime(kwargs["deadline"])
-        for k, v in kwargs.items():
-            if hasattr(item, k):
-                setattr(item, k, v)
+        values = {key: value for key, value in kwargs.items() if hasattr(item, key)}
+        if "status" in values:
+            result = await self.session.execute(
+                update(ActionItem)
+                .where(ActionItem.id == item.id, ActionItem.status == item.status)
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                await self.session.rollback()
+                raise ValueError("Action item status changed concurrently; reload it and retry.")
+        else:
+            for key, value in values.items():
+                setattr(item, key, value)
         await self.session.commit()
         await self.session.refresh(item)
         return item

@@ -103,6 +103,7 @@ class DualBrainCognitiveController:
         verification_receipts: list[dict[str, Any]] = []
 
         target_steps = plan.steps[:max_steps]
+        plan_truncated = len(target_steps) < len(plan.steps)
         for step in target_steps:
             current_frame = self.capture_engine.capture_frame()
 
@@ -267,13 +268,21 @@ class DualBrainCognitiveController:
             completed_steps += 1
 
         total_elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-        success = (completed_steps > 0) and (completed_steps == len(target_steps))
+        # A caller-imposed step limit is not proof that the full planned task
+        # completed. Keep partial execution visible, but never certify it.
+        success = (
+            not plan_truncated
+            and completed_steps > 0
+            and completed_steps == len(plan.steps)
+        )
 
         return {
             "task_objective": task_objective,
             "success": success,
             "plan_id": plan.plan_id,
             "total_steps_in_plan": len(plan.steps),
+            "steps_attempted": len(target_steps),
+            "plan_truncated": plan_truncated,
             "completed_steps": completed_steps,
             "verification_receipts": verification_receipts,
             "escalations": escalations,

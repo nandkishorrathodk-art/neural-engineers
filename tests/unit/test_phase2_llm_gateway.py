@@ -263,6 +263,49 @@ def test_cost_tracker_scopes_and_summary():
     assert "gpt-4o-mini" in summary["by_model"]
 
 
+@pytest.mark.parametrize("invalid_cost", [-0.01, float("nan"), float("inf")])
+def test_cost_tracker_rejects_non_finite_or_negative_usage_cost(invalid_cost):
+    tracker = CostTracker(enforce_budgets=False)
+
+    with pytest.raises(ValueError, match="cost_usd must be a finite non-negative amount"):
+        tracker.record_usage(
+            model="gpt-4o-mini",
+            input_tokens=1,
+            output_tokens=1,
+            cost_usd=invalid_cost,
+        )
+
+    assert tracker.get_total_cost() == 0.0
+
+
+@pytest.mark.parametrize("input_tokens,output_tokens", [(-1, 0), (0, -1), (1.5, 0), (True, 0)])
+def test_cost_tracker_rejects_invalid_token_counts(input_tokens, output_tokens):
+    tracker = CostTracker()
+
+    with pytest.raises(ValueError, match="token counts must be non-negative integers"):
+        tracker.record_usage(
+            model="gpt-4o-mini",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+    assert tracker.get_all_usage_summary()["total_calls"] == 0
+
+
+@pytest.mark.parametrize("invalid_limit", [-1.0, float("nan"), float("inf")])
+def test_cost_tracker_rejects_invalid_budget_limits(invalid_limit):
+    with pytest.raises(ValueError, match="must be a finite non-negative amount"):
+        CostTracker(monthly_hard_cap_usd=invalid_limit)
+
+
+@pytest.mark.parametrize("invalid_delta", [-0.01, float("nan"), float("inf")])
+def test_cost_tracker_budget_check_rejects_invalid_cost_delta(invalid_delta):
+    tracker = CostTracker(enforce_budgets=False)
+
+    with pytest.raises(ValueError, match="cost_delta must be a finite non-negative amount"):
+        tracker.check_budget_ceiling(invalid_delta)
+
+
 def test_extract_json_from_text_with_multiple_blocks():
     """Verify that extract_json_from_text succeeds even when multiple code blocks precede the JSON block."""
     mixed_content = """

@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -66,6 +67,13 @@ class CostTracker:
         monthly_hard_cap_usd: float = 500.00,
         enforce_budgets: bool = True,
     ):
+        for name, value in (
+            ("max_task_budget_usd", max_task_budget_usd),
+            ("max_project_budget_usd", max_project_budget_usd),
+            ("monthly_hard_cap_usd", monthly_hard_cap_usd),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be a finite non-negative amount")
         self.pricing_table = pricing_table or MODEL_PRICING_PER_1M
         self.records: list[UsageRecord] = []
         self.max_task_budget_usd = max_task_budget_usd
@@ -80,6 +88,8 @@ class CostTracker:
         project_id: Optional[str] = None,
     ) -> None:
         """Enforces hard budget ceilings on tasks, projects, and organization total."""
+        if not math.isfinite(cost_delta) or cost_delta < 0:
+            raise ValueError("cost_delta must be a finite non-negative amount")
         if not self.enforce_budgets:
             return
 
@@ -113,6 +123,15 @@ class CostTracker:
         """
         Calculates cost in USD for a given model and token counts.
         """
+        if (
+            not isinstance(input_tokens, int)
+            or isinstance(input_tokens, bool)
+            or not isinstance(output_tokens, int)
+            or isinstance(output_tokens, bool)
+            or input_tokens < 0
+            or output_tokens < 0
+        ):
+            raise ValueError("token counts must be non-negative integers")
         pricing = DEFAULT_FALLBACK_PRICING
         model_lower = model.lower()
         # 1. Exact match check
@@ -143,7 +162,10 @@ class CostTracker:
         Records a single LLM API usage event and computes USD cost.
         Enforces budget ceilings before committing usage.
         """
-        exact_cost = cost_usd if cost_usd is not None else self.calculate_cost(model, input_tokens, output_tokens)
+        calculated_cost = self.calculate_cost(model, input_tokens, output_tokens)
+        exact_cost = cost_usd if cost_usd is not None else calculated_cost
+        if not isinstance(exact_cost, (int, float)) or not math.isfinite(exact_cost) or exact_cost < 0:
+            raise ValueError("cost_usd must be a finite non-negative amount")
         self.check_budget_ceiling(exact_cost, task_id=task_id, project_id=project_id)
         record = UsageRecord(
             task_id=task_id,

@@ -456,6 +456,19 @@ class _ControllerTestPlanner(System2TaskPlanner):
         )
 
 
+class _MultiStepControllerTestPlanner(_ControllerTestPlanner):
+    async def create_plan(self, task_objective, belief_state=None):
+        plan = await super().create_plan(task_objective, belief_state)
+        plan.steps.append(PlanStep(
+            step_id="step_test_followup",
+            phase_name="Verify saved document",
+            action_intent="CLICK",
+            target_descriptor="button[text='Done']",
+            expected_postcondition="Document appears in saved list",
+        ))
+        return plan
+
+
 class _ControllerTestFastPolicy:
     employee_id = "emp_gui_test"
 
@@ -549,6 +562,30 @@ async def test_controller_requires_independent_visual_receipt_per_step(verificat
     assert result["completed_steps"] == (1 if expected_success else 0)
     assert len(verifier.calls) == 1
     assert result["verification_receipts"][0]["verified"] is expected_success
+    assert len(execution.dispatched) == 1
+
+
+@pytest.mark.asyncio
+async def test_controller_does_not_report_success_when_max_steps_truncates_the_plan():
+    """Finishing the selected prefix must not certify omitted planned work."""
+    capture = _ControllerTestCapture()
+    execution = _ControllerTestExecutionLoop()
+    controller = DualBrainCognitiveController(
+        deep_planner=_MultiStepControllerTestPlanner(),
+        fast_policy=_ControllerTestFastPolicy(),
+        execution_loop=execution,
+        capture_engine=capture,
+        visual_verifier=_ControllerTestVerifier(True),
+    )
+
+    result = await controller.execute_task("Save document and verify it", max_steps=1)
+
+    assert result["success"] is False
+    assert result["plan_truncated"] is True
+    assert result["total_steps_in_plan"] == 2
+    assert result["steps_attempted"] == 1
+    assert result["completed_steps"] == 1
+    assert len(result["verification_receipts"]) == 1
     assert len(execution.dispatched) == 1
 
 

@@ -152,6 +152,38 @@ async def test_four_tier_organizational_memory(async_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_organizational_memory_six_tier_records_hydrate_after_store_recreation(async_session: AsyncSession):
+    """Persisted employee/company memory survives a fresh API store instance."""
+    memory_repo = MemoryRepository(async_session)
+    original = OrganizationalMemoryStore(memory_repo=memory_repo)
+
+    entry = await original.store_episodic(
+        task_id="TASK-PERSISTED-MEMORY",
+        employee_id="ANC-EMP-PERSISTED",
+        outcome="success",
+        summary="The verified task summary remains available after store recreation.",
+    )
+    assert entry.metadata_json["record_schema_version"] == 1
+    stored_record = original.six_tier_store.query_records(
+        source="task:TASK-PERSISTED-MEMORY",
+        requester_id="BossAI",
+    )[0]
+    assert stored_record.id == entry.metadata_json["record_id"]
+    assert not stored_record.is_verified  # Confidence alone must not certify a task outcome.
+
+    from neural.api.deps import get_memory_store
+
+    recreated = await get_memory_store(memory_repo=memory_repo)
+
+    restored = recreated.six_tier_store.get_record(stored_record.id)
+    assert restored is not None
+    assert restored.source == "task:TASK-PERSISTED-MEMORY"
+    assert restored.content == "The verified task summary remains available after store recreation."
+    assert not restored.is_verified
+    assert recreated.six_tier_store.query_trusted_records(requester_id="BossAI") == []
+
+
+@pytest.mark.asyncio
 async def test_recursive_self_improvement_cycle(async_session: AsyncSession):
     evo_repo = EvolutionRepository(async_session)
     task_repo = TaskRepository(async_session)

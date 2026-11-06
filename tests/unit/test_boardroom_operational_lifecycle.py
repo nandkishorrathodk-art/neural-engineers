@@ -4,7 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from neural.api.deps import get_db_session
 from neural.api.main import create_app
-from neural.constants import MeetingStatus, MeetingType
+from neural.constants import ActionItemStatus, MeetingStatus, MeetingType
 from neural.db.repositories import (
     ActionItemRepository,
     EmployeeRepository,
@@ -12,7 +12,7 @@ from neural.db.repositories import (
 )
 from neural.employees.factory import EmployeeFactory
 from neural.meetings.conductor import MeetingConductor, utc_now
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
 @pytest.mark.asyncio
@@ -36,6 +36,71 @@ async def test_meeting_convene_sets_speaker_and_activity_log(async_session: Asyn
     assert len(activity) >= 1
     assert activity[0]["event_type"] == "convened"
     assert activity[0]["speaker_id"] == "BossAI"
+
+
+@pytest.mark.asyncio
+async def test_action_item_api_rejects_reopening_resolved_item(async_session: AsyncSession):
+    meeting_repo = MeetingRepository(async_session)
+    action_repo = ActionItemRepository(async_session)
+    meeting = await meeting_repo.create(
+        meeting_id="ANC-MTG-ACTION-API-STATE",
+        title="Action item state guard",
+        meeting_type=MeetingType.DAILY_STANDUP,
+    )
+    item = await action_repo.create(
+        meeting_id=meeting.id,
+        description="Publish the verified handover",
+        assigned_to="ANC-EMP-API-STATE",
+    )
+    await action_repo.update_status(item.id, ActionItemStatus.RESOLVED)
+
+    app = create_app()
+
+    async def override_get_db_session():
+        yield async_session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.patch(
+            f"/meetings/action-items/{item.id}",
+            json={"status": ActionItemStatus.OPEN.value},
+        )
+
+    assert response.status_code == 409
+    assert "cannot transition from 'resolved' to 'open'" in response.json()["detail"]
+    reloaded = await action_repo.get_by_id(item.id)
+    assert reloaded is not None and reloaded.status == ActionItemStatus.RESOLVED
+
+
+@pytest.mark.asyncio
+async def test_action_item_status_cas_rejects_a_stale_concurrent_transition(async_session: AsyncSession):
+    meeting_repo = MeetingRepository(async_session)
+    item = await ActionItemRepository(async_session).create(
+        meeting_id=(await meeting_repo.create(
+            meeting_id="ANC-MTG-ACTION-CAS",
+            title="Concurrent action transition",
+            meeting_type=MeetingType.DAILY_STANDUP,
+        )).id,
+        description="Complete the security review",
+        assigned_to="ANC-EMP-CAS",
+    )
+    second_session_factory = async_sessionmaker(
+        bind=async_session.bind,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    async with second_session_factory() as stale_session:
+        stale_repo = ActionItemRepository(stale_session)
+        stale_item = await stale_repo.get_by_id(item.id)
+        assert stale_item is not None and stale_item.status == ActionItemStatus.OPEN
+
+        await ActionItemRepository(async_session).update_status(item.id, ActionItemStatus.RESOLVED)
+
+        with pytest.raises(ValueError, match="status changed concurrently"):
+            await stale_repo.update_item(item.id, status=ActionItemStatus.IN_PROGRESS)
+
+    current = await ActionItemRepository(async_session).get_by_id(item.id)
+    assert current is not None and current.status == ActionItemStatus.RESOLVED
 
 
 @pytest.mark.asyncio
