@@ -10,7 +10,6 @@ import httpx
 from pydantic import BaseModel, Field, field_validator
 
 from neural.containers.execution_limits import WORKER_COMMAND_REQUEST_TIMEOUT_SECONDS
-from neural.llm.gateway import LLMGateway
 
 
 class TerminalCommandPlan(BaseModel):
@@ -34,7 +33,6 @@ class TerminalWorker:
         api_url: str,
         worker_id: str,
         token: str,
-        llm: LLMGateway | None = None,
         poll_interval: float = 3.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -48,7 +46,6 @@ class TerminalWorker:
             headers={"Authorization": f"Bearer {token}"},
             timeout=httpx.Timeout(75.0, connect=5.0),
         )
-        self.llm = llm or LLMGateway()
         self.poll_interval = max(0.2, min(poll_interval, 60.0))
         self._stopping = asyncio.Event()
 
@@ -93,36 +90,18 @@ class TerminalWorker:
                 return
 
     async def _plan_commands(self, task: dict[str, Any]) -> tuple[TerminalCommandPlan, dict[str, Any]]:
-        budget = task.get("resource_budget") or {}
-        max_tokens = min(6000, int(budget.get("max_tokens", 6000)))
-        if max_tokens < 1:
-            raise ValueError("Task token budget must be at least one token.")
-        plan, response = await self.llm.generate_structured(
-            prompt=(
-                "Produce a short, bounded sequence of terminal argv commands to complete this task "
-                "inside the employee workspace. Commands run directly without a shell in a disposable, "
-                "non-root employee container. Do not access secrets, the host, Docker, or external services. "
-                "Do not use destructive commands. Use only python, python3, pytest, npm, or npx. "
-                "Include a relevant test or validation command when feasible. Commands must not claim "
-                "success unless their exit codes are zero.\n\n"
-                f"Title: {task['title']}\nObjective: {task['objective']}\nScope: {task['scope']}\n"
-                f"Acceptance criteria: {task['acceptance_criteria']}"
-            ),
-            response_model=TerminalCommandPlan,
-            route="code_generation",
-            system_prompt="You are a terminal-mode software engineering employee. Return only executable argv arrays.",
-            employee_id=task["employee_id"],
-            task_id=task["task_id"],
-            project_id=task["project_id"],
-            temperature=0.1,
-            max_tokens=max_tokens,
+        response = await self._post(
+            f"/internal/worker/tasks/{task['task_id']}/plan",
+            {"fencing_token": int(task["fencing_token"])},
         )
+        plan = TerminalCommandPlan.model_validate(response["plan"])
+        model = response["model"]
         metadata = {
-            "provider": response.provider,
-            "model": response.model,
-            "input_tokens": response.input_tokens,
-            "output_tokens": response.output_tokens,
-            "cost_usd": response.cost_usd,
+            "provider": model["provider"],
+            "model": model["model"],
+            "input_tokens": model["input_tokens"],
+            "output_tokens": model["output_tokens"],
+            "cost_usd": model["cost_usd"],
         }
         return plan, metadata
 

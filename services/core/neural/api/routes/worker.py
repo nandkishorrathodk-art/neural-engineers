@@ -4,6 +4,7 @@ from neural.api.deps import (
     get_container_manager,
     get_container_repo,
     get_employee_repo,
+    get_llm_gateway,
     get_service_heartbeat_repo,
     get_task_repo,
     require_execution_not_halted,
@@ -19,6 +20,7 @@ from neural.api.schemas.requests import (
 )
 from neural.constants import EmployeeStatus, ExecutionMode
 from neural.containers.manager import ContainerManager
+from neural.db.engine import get_db_session
 from neural.db.repositories import (
     AuditRepository,
     ContainerRepository,
@@ -26,9 +28,12 @@ from neural.db.repositories import (
     ServiceHeartbeatRepository,
     TaskRepository,
 )
-from neural.exceptions import ContainerError
+from neural.exceptions import ContainerError, ModelProviderError
+from neural.llm.gateway import LLMGateway
 from neural.security.kill_switch import get_kill_switch
 from neural.verification.workspace_manifest import valid_workspace_manifest
+from neural.workers.terminal import TerminalCommandPlan
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(
     prefix="/internal/worker",
@@ -169,6 +174,67 @@ async def heartbeat_task_attempt(
     if lease_expires_at is None:
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     return {"task_id": task_id, "status": "running", "lease_expires_at": lease_expires_at}
+
+
+@router.post("/tasks/{task_id}/plan")
+async def plan_terminal_task(
+    task_id: str,
+    request: WorkerLeaseRequest,
+    worker_id: str = Depends(require_worker_token),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    gateway: LLMGateway = Depends(get_llm_gateway),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Generate a terminal plan inside Core API so workers hold no provider credentials."""
+    get_kill_switch().guard_active()
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.execution_mode != ExecutionMode.TERMINAL:
+        raise HTTPException(status_code=409, detail="This endpoint accepts terminal-mode tasks only.")
+    if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
+        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+
+    resource_budget = task.resource_budget or {}
+    raw_max_tokens = resource_budget.get("max_tokens", 6000)
+    if isinstance(raw_max_tokens, bool) or not isinstance(raw_max_tokens, int) or raw_max_tokens < 1:
+        raise HTTPException(status_code=409, detail="Task token budget is invalid.")
+    max_tokens = min(6000, raw_max_tokens)
+    try:
+        plan, response = await gateway.generate_structured(
+            prompt=(
+                "Produce a short, bounded sequence of terminal argv commands to complete this task "
+                "inside the employee workspace. Commands run directly without a shell in a disposable, "
+                "non-root employee container. Do not access secrets, the host, Docker, or external services. "
+                "Do not use destructive commands. Use only python, python3, pytest, npm, or npx. "
+                "Include a relevant test or validation command when feasible. Commands must not claim "
+                "success unless their exit codes are zero.\n\n"
+                f"Title: {task.title}\nObjective: {task.objective}\nScope: {task.scope}\n"
+                f"Acceptance criteria: {task.acceptance_criteria}"
+            ),
+            response_model=TerminalCommandPlan,
+            route="code_generation",
+            system_prompt="You are a terminal-mode software engineering employee. Return only executable argv arrays.",
+            employee_id=task.assigned_to,
+            task_id=task.task_id,
+            project_id=task.project_id,
+            temperature=0.1,
+            max_tokens=max_tokens,
+            db_session=session,
+        )
+    except ModelProviderError as exc:
+        raise HTTPException(status_code=502, detail="All configured planning providers failed.") from exc
+
+    return {
+        "plan": plan.model_dump(),
+        "model": {
+            "provider": response.provider,
+            "model": response.model,
+            "input_tokens": response.input_tokens,
+            "output_tokens": response.output_tokens,
+            "cost_usd": response.cost_usd,
+        },
+    }
 
 
 @router.post("/tasks/{task_id}/exec")

@@ -1,22 +1,6 @@
-from types import SimpleNamespace
-
 import httpx
 import pytest
 from neural.workers.terminal import TerminalCommandPlan, TerminalWorker
-
-
-class StubLLM:
-    async def generate_structured(self, **_kwargs):
-        return (
-            TerminalCommandPlan(commands=[["pytest", "-q"]]),
-            SimpleNamespace(
-                provider="test-provider",
-                model="test-model",
-                input_tokens=10,
-                output_tokens=5,
-                cost_usd=0.001,
-            ),
-        )
 
 
 @pytest.mark.asyncio
@@ -31,6 +15,17 @@ async def test_terminal_worker_submits_receipt_after_zero_exit_commands():
         seen.append((request.url.path, body))
         if request.url.path.endswith("/start"):
             result = {"status": "running"}
+        elif request.url.path.endswith("/plan"):
+            result = {
+                "plan": {"commands": [["pytest", "-q"]]},
+                "model": {
+                    "provider": "test-provider",
+                    "model": "test-model",
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cost_usd": 0.001,
+                },
+            }
         elif request.url.path.endswith("/exec"):
             result = {"exit_code": 0, "stdout": "1 passed", "stderr": ""}
         elif request.url.path.endswith("/submit"):
@@ -47,7 +42,6 @@ async def test_terminal_worker_submits_receipt_after_zero_exit_commands():
         api_url="http://core.test",
         worker_id="worker-test",
         token="w" * 32,
-        llm=StubLLM(),  # type: ignore[arg-type]
         client=client,
     )
     await worker.execute_claim({
@@ -66,6 +60,7 @@ async def test_terminal_worker_submits_receipt_after_zero_exit_commands():
     paths = [path for path, _ in seen]
     assert paths == [
         "/internal/worker/tasks/TASK-1/start",
+        "/internal/worker/tasks/TASK-1/plan",
         "/internal/worker/tasks/TASK-1/exec",
         "/internal/worker/tasks/TASK-1/submit",
     ]
@@ -94,7 +89,6 @@ async def test_terminal_worker_reports_runtime_heartbeat():
         api_url="http://core.test",
         worker_id="worker-test",
         token="w" * 32,
-        llm=StubLLM(),  # type: ignore[arg-type]
         client=client,
     )
 

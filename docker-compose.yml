@@ -64,6 +64,9 @@ services:
       - WORKER_API_TOKEN=${WORKER_API_TOKEN:-}
       - WORKER_API_TOKENS=${WORKER_API_TOKENS:-{}}
       - VERIFIER_API_TOKEN=${VERIFIER_API_TOKEN:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
       - NVIDIA_API_BASE=${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
       - BOSS_LLM_PLANNING_ENABLED=${BOSS_LLM_PLANNING_ENABLED:-true}
@@ -102,11 +105,6 @@ services:
       - ANCOS_WORKER_ID=${ANCOS_WORKER_ID:-terminal-worker}
       - ANCOS_WORKER_POLL_SECONDS=${ANCOS_WORKER_POLL_SECONDS:-3}
       - WORKER_API_TOKEN=${WORKER_API_TOKEN:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
-      - NVIDIA_API_BASE=${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
     depends_on:
       core-api:
         condition: service_started
