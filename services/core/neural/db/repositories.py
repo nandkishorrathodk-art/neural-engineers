@@ -5,9 +5,12 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional, Sequence
 
 from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -33,6 +36,8 @@ from neural.db.models import (
     Approval,
     Artifact,
     AuditLog,
+    BudgetAccount,
+    BudgetReservation,
     Container,
     DecisionLedgerEntry,
     DecisionRecord,
@@ -111,6 +116,249 @@ class ProjectRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+
+class BudgetRepository:
+    """Atomically reserves and settles shared USD quotas across scopes."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    @staticmethod
+    def _money(value: int | float | Decimal, field: str) -> Decimal:
+        if isinstance(value, bool):
+            raise ValueError(f"{field} must be a finite USD amount")
+        try:
+            amount = Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{field} must be a finite USD amount") from exc
+        if not amount.is_finite() or amount < 0:
+            raise ValueError(f"{field} must be a finite non-negative USD amount")
+        try:
+            normalized = amount.quantize(Decimal("0.00000001"))
+        except InvalidOperation as exc:
+            raise ValueError(f"{field} exceeds supported USD precision") from exc
+        if normalized > Decimal("9999999999.99999999"):
+            raise ValueError(f"{field} exceeds supported USD range")
+        return normalized
+
+    async def reserve(
+        self,
+        *,
+        idempotency_key: str,
+        reserved_usd: int | float | Decimal,
+        scope_caps: dict[str, int | float | Decimal],
+    ) -> BudgetReservation:
+        """Reserve one call against every provided cap in a single DB transaction.
+
+        `scope_caps` should include each applicable organization-month, project,
+        and task account. The caller supplies the maximum cost of this provider
+        attempt, not a predicted average.
+        """
+        if not idempotency_key or len(idempotency_key) > 128:
+            raise ValueError("idempotency_key must contain 1-128 characters")
+        amount = self._money(reserved_usd, "reserved_usd")
+        if amount <= 0:
+            raise ValueError("reserved_usd must be greater than zero")
+        if not scope_caps:
+            raise ValueError("at least one budget scope is required")
+        caps = {key: self._money(cap, "scope cap") for key, cap in scope_caps.items()}
+        if any(not key or len(key) > 192 for key in caps):
+            raise ValueError("budget scope keys must contain 1-192 characters")
+        if len(caps) != len(scope_caps):
+            raise ValueError("budget scope keys must be unique")
+
+        dialect = self.session.get_bind().dialect.name
+        insert_fn = {"sqlite": sqlite_insert, "postgresql": pg_insert}.get(dialect)
+        if insert_fn is None:
+            raise RuntimeError(f"Budget reservations do not support database dialect {dialect!r}")
+
+        reservation_id = str(uuid.uuid4())
+        reservation_stmt = (
+            insert_fn(BudgetReservation)
+            .values(
+                id=reservation_id,
+                idempotency_key=idempotency_key,
+                reserved_usd=amount,
+                scope_keys=sorted(caps),
+                scope_caps={key: str(value) for key, value in caps.items()},
+                status="reserved",
+                created_at=utc_now(),
+            )
+            .on_conflict_do_nothing(index_elements=["idempotency_key"])
+            .returning(BudgetReservation.id)
+        )
+        try:
+            inserted_id = await self.session.scalar(reservation_stmt)
+            if inserted_id is None:
+                existing = await self.session.scalar(
+                    select(BudgetReservation).where(BudgetReservation.idempotency_key == idempotency_key)
+                )
+                if existing is None:
+                    raise RuntimeError("Reservation conflict occurred but its row could not be read")
+                if (
+                    existing.reserved_usd != amount
+                    or set(existing.scope_keys) != set(caps)
+                    or existing.scope_caps != {key: str(value) for key, value in caps.items()}
+                ):
+                    raise ValueError("idempotency_key was already used for a different reservation")
+                return existing
+
+            for scope_key, cap in sorted(caps.items()):
+                account_insert = insert_fn(BudgetAccount).values(
+                    scope_key=scope_key,
+                    cap_usd=cap,
+                    reserved_usd=Decimal("0"),
+                    spent_usd=Decimal("0"),
+                    updated_at=utc_now(),
+                ).on_conflict_do_nothing(index_elements=["scope_key"])
+                await self.session.execute(account_insert)
+                updated = await self.session.execute(
+                    update(BudgetAccount)
+                    .where(
+                        BudgetAccount.scope_key == scope_key,
+                        BudgetAccount.cap_usd == cap,
+                        BudgetAccount.reserved_usd + BudgetAccount.spent_usd + amount <= cap,
+                    )
+                    .values(
+                        reserved_usd=BudgetAccount.reserved_usd + amount,
+                        updated_at=utc_now(),
+                    )
+                )
+                if updated.rowcount != 1:
+                    account = await self.session.get(BudgetAccount, scope_key)
+                    if account is None or account.cap_usd != cap:
+                        raise ValueError(f"Budget cap for scope {scope_key!r} changed")
+                    from neural.exceptions import QuotaExceededError
+
+                    raise QuotaExceededError(f"Budget scope {scope_key!r} cannot reserve ${amount}")
+
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+
+        reservation = await self.session.get(BudgetReservation, reservation_id)
+        if reservation is None:
+            raise RuntimeError("Reserved budget row disappeared after commit")
+        return reservation
+
+    async def settle(
+        self,
+        reservation_id: str,
+        *,
+        actual_usd: int | float | Decimal,
+        usage_receipt: dict[str, Any],
+    ) -> BudgetReservation:
+        """Convert a reservation to spend; retain overrun evidence if estimates fail."""
+        actual = self._money(actual_usd, "actual_usd")
+        reservation = await self.session.scalar(
+            select(BudgetReservation)
+            .where(BudgetReservation.id == reservation_id)
+        )
+        if reservation is None:
+            raise ValueError("budget reservation not found")
+        if reservation.status in {"settled", "overrun"}:
+            if reservation.actual_usd != actual:
+                raise ValueError("reservation was already settled with different usage")
+            return reservation
+        if reservation.status != "reserved":
+            raise ValueError(f"cannot settle reservation in state {reservation.status!r}")
+
+        claimed = await self.session.execute(
+            update(BudgetReservation)
+            .where(BudgetReservation.id == reservation_id, BudgetReservation.status == "reserved")
+            .values(status="settling")
+        )
+        if claimed.rowcount != 1:
+            await self.session.rollback()
+            raise ValueError("budget reservation is already being settled")
+
+        for scope_key in sorted(reservation.scope_keys):
+            updated = await self.session.execute(
+                update(BudgetAccount)
+                .where(
+                    BudgetAccount.scope_key == scope_key,
+                    BudgetAccount.reserved_usd >= reservation.reserved_usd,
+                )
+                .values(
+                    reserved_usd=BudgetAccount.reserved_usd - reservation.reserved_usd,
+                    spent_usd=BudgetAccount.spent_usd + actual,
+                    updated_at=utc_now(),
+                )
+            )
+            if updated.rowcount != 1:
+                await self.session.rollback()
+                raise RuntimeError(f"Reserved amount is missing from budget scope {scope_key!r}")
+        reservation.actual_usd = actual
+        reservation.usage_receipt = usage_receipt
+        await self.session.execute(
+            update(BudgetReservation)
+            .where(BudgetReservation.id == reservation_id, BudgetReservation.status == "settling")
+            .values(
+                status="overrun" if actual > reservation.reserved_usd else "settled",
+                actual_usd=actual,
+                usage_receipt=usage_receipt,
+                settled_at=utc_now(),
+            )
+        )
+        await self.session.commit()
+        await self.session.refresh(reservation)
+        return reservation
+
+    async def release_after_confirmed_no_charge(
+        self,
+        reservation_id: str,
+        *,
+        provider_confirmed_unbilled: bool,
+        reason: str,
+    ) -> BudgetReservation:
+        """Release only when provider evidence confirms the request incurred no charge."""
+        if provider_confirmed_unbilled is not True:
+            raise ValueError("ambiguous provider outcomes must remain reserved")
+        if not reason.strip() or len(reason) > 2000:
+            raise ValueError("release reason must contain 1-2000 characters")
+        reservation = await self.session.scalar(
+            select(BudgetReservation)
+            .where(BudgetReservation.id == reservation_id)
+        )
+        if reservation is None:
+            raise ValueError("budget reservation not found")
+        if reservation.status == "released":
+            return reservation
+        if reservation.status != "reserved":
+            raise ValueError(f"cannot release reservation in state {reservation.status!r}")
+        claimed = await self.session.execute(
+            update(BudgetReservation)
+            .where(BudgetReservation.id == reservation_id, BudgetReservation.status == "reserved")
+            .values(status="releasing")
+        )
+        if claimed.rowcount != 1:
+            await self.session.rollback()
+            raise ValueError("budget reservation is already being released")
+        for scope_key in sorted(reservation.scope_keys):
+            updated = await self.session.execute(
+                update(BudgetAccount)
+                .where(
+                    BudgetAccount.scope_key == scope_key,
+                    BudgetAccount.reserved_usd >= reservation.reserved_usd,
+                )
+                .values(
+                    reserved_usd=BudgetAccount.reserved_usd - reservation.reserved_usd,
+                    updated_at=utc_now(),
+                )
+            )
+            if updated.rowcount != 1:
+                await self.session.rollback()
+                raise RuntimeError(f"Reserved amount is missing from budget scope {scope_key!r}")
+        await self.session.execute(
+            update(BudgetReservation)
+            .where(BudgetReservation.id == reservation_id, BudgetReservation.status == "releasing")
+            .values(status="released", release_reason=reason.strip(), settled_at=utc_now())
+        )
+        await self.session.commit()
+        await self.session.refresh(reservation)
+        return reservation
 
 
 

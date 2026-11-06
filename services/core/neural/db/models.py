@@ -1,15 +1,18 @@
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Optional
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -47,6 +50,47 @@ def utc_now() -> datetime:
 
 def generate_uuid() -> str:
     return str(uuid.uuid4())
+
+
+class BudgetAccount(Base):
+    """Durable spend/quota counter for one project, task, or UTC month scope."""
+
+    __tablename__ = "budget_accounts"
+    __table_args__ = (
+        CheckConstraint("cap_usd >= 0", name="ck_budget_account_cap_nonnegative"),
+        CheckConstraint("reserved_usd >= 0", name="ck_budget_account_reserved_nonnegative"),
+        CheckConstraint("spent_usd >= 0", name="ck_budget_account_spent_nonnegative"),
+    )
+
+    scope_key: Mapped[str] = mapped_column(String(192), primary_key=True)
+    cap_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    reserved_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False, default=Decimal("0"))
+    spent_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False, default=Decimal("0"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class BudgetReservation(Base):
+    """Idempotent record for one provider call's pre-call budget reservation."""
+
+    __tablename__ = "budget_reservations"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_budget_reservation_idempotency"),
+        CheckConstraint("reserved_usd > 0", name="ck_budget_reservation_amount_positive"),
+        CheckConstraint("actual_usd IS NULL OR actual_usd >= 0", name="ck_budget_reservation_actual_nonnegative"),
+        Index("ix_budget_reservation_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    reserved_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    actual_usd: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 8), nullable=True)
+    scope_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    scope_caps: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="reserved")
+    usage_receipt: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    release_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now)
+    settled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class Project(Base):
