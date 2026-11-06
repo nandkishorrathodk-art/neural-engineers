@@ -35,6 +35,7 @@
 ## 2026-11-06 bounded terminal command execution
 
 - A worker HTTP timeout or API-to-broker timeout could occur while the employee container command kept running, allowing the worker to report failure and start a retry against the same workspace. Terminal argv and shell commands now run under `/usr/bin/timeout` with a 300-second limit and 5-second forced-kill grace period. The Core API waits up to 310 seconds for broker execution; the terminal worker waits 320 seconds for the API response.
+- The employee image now explicitly installs `coreutils` and checks for `/usr/bin/timeout` at image build time. Docker image build/runtime verification could not be run because the Docker Desktop Linux engine is unavailable.
 - Command: `uv run --no-sync pytest tests/unit/test_command_execution_limits.py tests/unit/test_terminal_worker.py tests/unit/test_neuro_phase1_authority.py -q` — **35 passed**.
 - Scoped Ruff on the execution limit, manager, broker, worker and tests — **passed**.
 - Final current-worktree `uv run --no-sync pytest -q` — **533 passed, 12 skipped, zero failed** (172.78 seconds); repo-wide Ruff and `git diff --check` passed.

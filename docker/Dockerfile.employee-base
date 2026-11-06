@@ -29,7 +29,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     chromium-browser \
     supervisor \
+    coreutils \
     && rm -rf /var/lib/apt/lists/*
+
+RUN test -x /usr/bin/timeout
 
 # Create non-root employee user
 RUN useradd -m -s /bin/bash -u 1000 employee
