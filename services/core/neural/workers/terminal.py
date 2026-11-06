@@ -9,6 +9,7 @@ from typing import Annotated, Any
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
+from neural.containers.execution_limits import WORKER_COMMAND_REQUEST_TIMEOUT_SECONDS
 from neural.llm.gateway import LLMGateway
 
 
@@ -55,8 +56,16 @@ class TerminalWorker:
         self._stopping.set()
         await self.client.aclose()
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = await self.client.post(path, json=payload)
+    async def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        timeout: httpx.Timeout | None = None,
+    ) -> dict[str, Any]:
+        if timeout is None:
+            response = await self.client.post(path, json=payload)
+        else:
+            response = await self.client.post(path, json=payload, timeout=timeout)
         response.raise_for_status()
         result = response.json()
         if not isinstance(result, dict):
@@ -135,6 +144,7 @@ class TerminalWorker:
                 result = await self._post(
                     f"/internal/worker/tasks/{task_id}/exec",
                     {"fencing_token": fence, "command": command},
+                    timeout=httpx.Timeout(WORKER_COMMAND_REQUEST_TIMEOUT_SECONDS, connect=5.0),
                 )
                 command_receipts.append({**result, "command": command})
                 if result.get("exit_code") != 0:

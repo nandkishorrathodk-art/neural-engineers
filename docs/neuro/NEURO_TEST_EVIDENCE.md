@@ -32,6 +32,14 @@
 - Final current-worktree `uv run --no-sync pytest -q` — **529 passed, 12 skipped, zero failed** (166.06 seconds), including the conditional-update race fix. Repo-wide Ruff and `git diff --check` pass. Skips remain credential-dependent live broker/model/runtime cases, not acceptance passes.
 - No live Docker, external provider, production database, or deployment operation was performed. Cross-employee task use, live GUI work, employee-driven software merge, real meeting follow-up, and end-to-end mission acceptance remain open.
 
+## 2026-11-06 bounded terminal command execution
+
+- A worker HTTP timeout or API-to-broker timeout could occur while the employee container command kept running, allowing the worker to report failure and start a retry against the same workspace. Terminal argv and shell commands now run under `/usr/bin/timeout` with a 300-second limit and 5-second forced-kill grace period. The Core API waits up to 310 seconds for broker execution; the terminal worker waits 320 seconds for the API response.
+- Command: `uv run --no-sync pytest tests/unit/test_command_execution_limits.py tests/unit/test_terminal_worker.py tests/unit/test_neuro_phase1_authority.py -q` — **35 passed**.
+- Scoped Ruff on the execution limit, manager, broker, worker and tests — **passed**.
+- Final current-worktree `uv run --no-sync pytest -q` — **533 passed, 12 skipped, zero failed** (172.78 seconds); repo-wide Ruff and `git diff --check` passed.
+- No live broker/container command was run. The running Docker Desktop Linux engine remains unavailable, so this proves configured timeout propagation and unit/API behavior, not an observed kill inside a live desktop.
+
 ## 2026-11-04 runtime heartbeat observability
 
 - Command: `uv run --no-sync pytest tests/unit/test_boss_brain.py tests/unit/test_neuro_phase1_authority.py tests/unit/test_terminal_worker.py tests/unit/test_verifier_worker.py -q`

@@ -6,6 +6,10 @@ from typing import Any, Optional
 
 from neural.config import get_settings
 from neural.constants import ContainerStatus
+from neural.containers.execution_limits import (
+    BROKER_COMMAND_REQUEST_TIMEOUT_SECONDS,
+    command_with_timeout,
+)
 from neural.exceptions import ContainerError
 from neural.logger import get_logger
 
@@ -576,6 +580,7 @@ class ContainerManager:
             return await self._broker_request(
                 "POST",
                 f"/v1/containers/{docker_id}/exec",
+                timeout=float(BROKER_COMMAND_REQUEST_TIMEOUT_SECONDS),
                 json={
                     "command": command,
                     "workdir": workdir or "/home/employee/workspace",
@@ -585,7 +590,7 @@ class ContainerManager:
         try:
             container = client.containers.get(docker_id)
             exec_res = container.exec_run(
-                cmd=command,
+                cmd=command_with_timeout(command),
                 user="1000:1000",
                 workdir=workdir or "/home/employee/workspace"
             )

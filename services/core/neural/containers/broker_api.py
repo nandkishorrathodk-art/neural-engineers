@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from neural.config import get_settings
+from neural.containers.execution_limits import command_with_timeout
 
 try:
     from docker.errors import APIError, ImageNotFound, NotFound
@@ -381,7 +382,7 @@ def execute_in_container(container_id: str, payload: ExecRequest) -> dict[str, A
         raise HTTPException(status_code=400, detail="Command argument list is invalid.")
     container = get_managed_container(container_id)
     result = container.exec_run(
-        cmd=payload.command,
+        cmd=command_with_timeout(payload.command),
         user="1000:1000",
         workdir=payload.workdir,
     )
