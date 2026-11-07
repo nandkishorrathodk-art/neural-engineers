@@ -60,7 +60,11 @@ class TaskPlanner:
             for name in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")
         )
 
-    async def _decompose_with_model(self, objective: str) -> dict[str, Any]:
+    async def _decompose_with_model(
+        self,
+        objective: str,
+        db_session: Optional[Any] = None,
+    ) -> dict[str, Any]:
         assert self.llm_gateway is not None
         plan, response = await self.llm_gateway.generate_structured(
             prompt=(
@@ -81,6 +85,7 @@ class TaskPlanner:
             system_prompt="You are ANCOS Boss. Plan only; never report unperformed work as complete.",
             temperature=0.1,
             max_tokens=3500,
+            db_session=db_session,
         )
 
         if plan.clarification_required:
@@ -247,13 +252,17 @@ class TaskPlanner:
             "mitigation_strategies": mitigations
         }
 
-    async def decompose_objective(self, objective: str) -> dict[str, Any]:
+    async def decompose_objective(
+        self,
+        objective: str,
+        db_session: Optional[Any] = None,
+    ) -> dict[str, Any]:
         """
         Decomposes natural language objective into hierarchical execution plan:
         Projects -> Phases -> Tasks -> Subtasks
         """
         if objective and objective.strip() and self.llm_gateway and self._has_configured_provider(self.llm_gateway):
-            return await self._decompose_with_model(objective.strip())
+            return await self._decompose_with_model(objective.strip(), db_session=db_session)
 
         normalized = " ".join(re.findall(r"[a-z0-9]+", objective.lower())) if objective else ""
         words = normalized.split()

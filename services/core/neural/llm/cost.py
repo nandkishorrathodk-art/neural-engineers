@@ -1,6 +1,7 @@
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import ROUND_UP, Decimal
 from typing import Any, Optional
 
 from neural.exceptions import QuotaExceededError
@@ -132,21 +133,57 @@ class CostTracker:
             or output_tokens < 0
         ):
             raise ValueError("token counts must be non-negative integers")
-        pricing = DEFAULT_FALLBACK_PRICING
-        model_lower = model.lower()
-        # 1. Exact match check
-        if model_lower in self.pricing_table:
-            pricing = self.pricing_table[model_lower]
-        else:
-            # 2. Match longest specific prefix/substring first (e.g. gpt-4o-mini before gpt-4o)
-            for key in sorted(self.pricing_table.keys(), key=len, reverse=True):
-                if key in model_lower:
-                    pricing = self.pricing_table[key]
-                    break
+        pricing = self._pricing_for_model(model)
 
         cost_in = (input_tokens / 1_000_000.0) * pricing["input"]
         cost_out = (output_tokens / 1_000_000.0) * pricing["output"]
         return round(cost_in + cost_out, 6)
+
+    def _pricing_for_model(self, model: str) -> dict[str, float]:
+        pricing = DEFAULT_FALLBACK_PRICING
+        model_lower = model.lower()
+        if model_lower in self.pricing_table:
+            return self.pricing_table[model_lower]
+        # Match longest specific substring first (e.g. gpt-4o-mini before gpt-4o).
+        for key in sorted(self.pricing_table.keys(), key=len, reverse=True):
+            if key in model_lower:
+                return self.pricing_table[key]
+        return pricing
+
+    def quote_upper_bound(
+        self,
+        model: str,
+        input_token_upper_bound: int,
+        output_token_upper_bound: int,
+        safety_multiplier: float = 2.0,
+    ) -> Decimal:
+        """Estimate a pre-call reserve from a conservative token-count ceiling.
+
+        The multiplier accounts for pricing-table drift, but this is still an
+        internal estimate rather than provider invoice reconciliation.
+        """
+        if (
+            not isinstance(input_token_upper_bound, int)
+            or isinstance(input_token_upper_bound, bool)
+            or input_token_upper_bound < 0
+            or not isinstance(output_token_upper_bound, int)
+            or isinstance(output_token_upper_bound, bool)
+            or output_token_upper_bound < 0
+        ):
+            raise ValueError("token upper bounds must be non-negative integers")
+        if not math.isfinite(safety_multiplier) or safety_multiplier < 1:
+            raise ValueError("safety_multiplier must be finite and at least 1")
+
+        pricing = self._pricing_for_model(model)
+        in_price = Decimal(str(pricing["input"]))
+        out_price = Decimal(str(pricing["output"]))
+        multiplier = Decimal(str(safety_multiplier))
+        quoted = (
+            Decimal(input_token_upper_bound) * in_price
+            + Decimal(output_token_upper_bound) * out_price
+        ) / Decimal(1_000_000) * multiplier
+        rounded = quoted.quantize(Decimal("0.00000001"), rounding=ROUND_UP)
+        return max(rounded, Decimal("0.00000001"))
 
     def record_usage(
         self,
@@ -156,7 +193,8 @@ class CostTracker:
         task_id: Optional[str] = None,
         employee_id: Optional[str] = None,
         project_id: Optional[str] = None,
-        cost_usd: Optional[float] = None
+        cost_usd: Optional[float] = None,
+        enforce_budget: bool = True,
     ) -> UsageRecord:
         """
         Records a single LLM API usage event and computes USD cost.
@@ -166,7 +204,8 @@ class CostTracker:
         exact_cost = cost_usd if cost_usd is not None else calculated_cost
         if not isinstance(exact_cost, (int, float)) or not math.isfinite(exact_cost) or exact_cost < 0:
             raise ValueError("cost_usd must be a finite non-negative amount")
-        self.check_budget_ceiling(exact_cost, task_id=task_id, project_id=project_id)
+        if enforce_budget:
+            self.check_budget_ceiling(exact_cost, task_id=task_id, project_id=project_id)
         record = UsageRecord(
             task_id=task_id,
             employee_id=employee_id,

@@ -158,7 +158,8 @@ class BoardroomGovernanceEngine:
         active_members = members or self.committee.get_members(active_only=True)
         statements = await self.deliberation_engine.run_deliberation_round(
             proposal=proposal,
-            members=active_members
+            members=active_members,
+            db_session=getattr(self.proposal_repo, "session", None),
         )
 
         proposal = await self.proposal_repo.add_deliberation_statements(

@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Optional, Type, TypeVar
 
@@ -9,7 +10,8 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from neural.config import get_settings
-from neural.exceptions import ModelProviderError, RateLimitError
+from neural.db.repositories import BudgetRepository
+from neural.exceptions import ModelProviderError, QuotaExceededError, RateLimitError
 from neural.llm.cost import CostTracker
 from neural.llm.retry import CircuitBreaker, retry_with_backoff
 from neural.logger import get_logger
@@ -17,6 +19,10 @@ from neural.logger import get_logger
 logger = get_logger("ancos.llm.gateway")
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class BudgetSettlementError(RuntimeError):
+    """A provider returned, but durable spend settlement could not be confirmed."""
 
 
 def extract_json_from_text(text: str) -> dict[str, Any]:
@@ -307,7 +313,9 @@ class LLMGateway:
         project_id: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: int = 2000,
-        db_session: Optional[Any] = None
+        db_session: Optional[Any] = None,
+        budget_scope_caps: Optional[dict[str, Any]] = None,
+        budget_safety_multiplier: float = 2.0,
     ) -> LLMResponse:
         """
         Routes and generates LLM response with transparent fallback across tier models.
@@ -318,6 +326,21 @@ class LLMGateway:
             candidates = [model]
         else:
             candidates = self.get_models_for_tier(effective_tier)
+
+        if budget_scope_caps is None:
+            if db_session is not None:
+                from neural.llm.budget import load_budget_scope_caps
+
+                budget_scope_caps = await load_budget_scope_caps(
+                    db_session,
+                    self.cost_tracker,
+                    project_id=project_id,
+                    task_id=task_id,
+                )
+            elif self.settings.APP_ENV == "production":
+                raise BudgetSettlementError(
+                    "Production provider calls require a database session for durable budget metering."
+                )
 
         last_error: Optional[Exception] = None
         attempted_models: list[str] = []
@@ -333,6 +356,22 @@ class LLMGateway:
                 continue
 
             attempted_models.append(candidate_model)
+            reservation = None
+            if budget_scope_caps is not None:
+                if db_session is None:
+                    raise BudgetSettlementError("A database session is required for metered provider calls.")
+                prompt_upper_bound = len((prompt + (system_prompt or "")).encode("utf-8")) + 8
+                reserve_amount = self.cost_tracker.quote_upper_bound(
+                    candidate_model,
+                    prompt_upper_bound,
+                    max_tokens,
+                    safety_multiplier=budget_safety_multiplier,
+                )
+                reservation = await BudgetRepository(db_session).reserve(
+                    idempotency_key=f"llm:{uuid.uuid4().hex}",
+                    reserved_usd=reserve_amount,
+                    scope_caps=budget_scope_caps,
+                )
             start_time = time.time()
 
             try:
@@ -347,7 +386,9 @@ class LLMGateway:
 
                 result = await retry_with_backoff(
                     _call,
-                    max_retries=1,
+                    # A timed-out provider call may still be billable. Do not
+                    # retry it under the same reservation when budgeted.
+                    max_retries=0 if reservation is not None else 1,
                     initial_delay=0.1,
                     retryable_exceptions=(ModelProviderError,)
                 )
@@ -367,8 +408,35 @@ class LLMGateway:
                     output_tokens=out_tokens,
                     task_id=task_id,
                     employee_id=employee_id,
-                    project_id=project_id
+                    project_id=project_id,
+                    # Durable reservations are the source of truth when this
+                    # call is metered; process-local totals may be stale.
+                    enforce_budget=reservation is None,
                 )
+
+                if reservation is not None:
+                    try:
+                        settled = await BudgetRepository(db_session).settle(
+                            reservation.id,
+                            actual_usd=record.cost_usd,
+                            usage_receipt={
+                                "provider": provider,
+                                "model": candidate_model,
+                                "input_tokens": in_tokens,
+                                "output_tokens": out_tokens,
+                                "pricing_basis": "ANCOS configured model price table",
+                            },
+                        )
+                        if settled.status == "overrun":
+                            raise BudgetSettlementError(
+                                "Provider usage exceeded its pre-call reservation; budget scope is marked overrun."
+                            )
+                    except BudgetSettlementError:
+                        raise
+                    except Exception as settlement_err:
+                        raise BudgetSettlementError(
+                            "Provider usage could not be durably settled; the reservation remains held."
+                        ) from settlement_err
 
                 # If db_session provided, persist to DB performance records
                 if db_session and task_id and employee_id:
@@ -397,6 +465,8 @@ class LLMGateway:
                     metadata={"attempted_models": attempted_models}
                 )
 
+            except (QuotaExceededError, BudgetSettlementError):
+                raise
             except Exception as err:
                 last_error = err
                 breaker.record_failure(err)
@@ -425,7 +495,9 @@ class LLMGateway:
         project_id: Optional[str] = None,
         temperature: float = 0.1,
         max_tokens: int = 2000,
-        db_session: Optional[Any] = None
+        db_session: Optional[Any] = None,
+        budget_scope_caps: Optional[dict[str, Any]] = None,
+        budget_safety_multiplier: float = 2.0,
     ) -> tuple[T, LLMResponse]:
         """
         Generates structured output validated against a Pydantic model schema.
@@ -456,11 +528,15 @@ class LLMGateway:
                     project_id=project_id,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    db_session=db_session
+                    db_session=db_session,
+                    budget_scope_caps=budget_scope_caps,
+                    budget_safety_multiplier=budget_safety_multiplier,
                 )
                 parsed_data = extract_json_from_text(response.content)
                 validated = response_model.model_validate(parsed_data)
                 return validated, response
+            except (QuotaExceededError, BudgetSettlementError):
+                raise
             except (ValueError, ValidationError) as parse_err:
                 last_error = parse_err
                 logger.warning(

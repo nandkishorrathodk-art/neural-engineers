@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from neural.api.deps import (
     get_audit_repo,
@@ -21,6 +23,7 @@ from neural.api.schemas.requests import (
 from neural.constants import EmployeeStatus, ExecutionMode
 from neural.containers.manager import ContainerManager
 from neural.db.engine import get_db_session
+from neural.db.models import Project
 from neural.db.repositories import (
     AuditRepository,
     ContainerRepository,
@@ -28,7 +31,7 @@ from neural.db.repositories import (
     ServiceHeartbeatRepository,
     TaskRepository,
 )
-from neural.exceptions import ContainerError, ModelProviderError
+from neural.exceptions import ContainerError, ModelProviderError, QuotaExceededError
 from neural.llm.gateway import LLMGateway
 from neural.security.kill_switch import get_kill_switch
 from neural.verification.workspace_manifest import valid_workspace_manifest
@@ -200,6 +203,18 @@ async def plan_terminal_task(
     if isinstance(raw_max_tokens, bool) or not isinstance(raw_max_tokens, int) or raw_max_tokens < 1:
         raise HTTPException(status_code=409, detail="Task token budget is invalid.")
     max_tokens = min(6000, raw_max_tokens)
+    project = await session.get(Project, task.project_id)
+    if project is None:
+        raise HTTPException(status_code=409, detail="Task project is missing; metered inference is blocked.")
+    project_plan = project.execution_plan if isinstance(project.execution_plan, dict) else {}
+    project_cap = project_plan.get("budget_usd", gateway.cost_tracker.max_project_budget_usd)
+    task_cap = resource_budget.get("max_cost_usd", gateway.cost_tracker.max_task_budget_usd)
+    month_scope = datetime.now(timezone.utc).strftime("%Y-%m")
+    budget_scope_caps = {
+        f"organization-month:{month_scope}": gateway.cost_tracker.monthly_hard_cap_usd,
+        f"project:{project.id}": project_cap,
+        f"task:{task.task_id}": task_cap,
+    }
     try:
         plan, response = await gateway.generate_structured(
             prompt=(
@@ -221,7 +236,10 @@ async def plan_terminal_task(
             temperature=0.1,
             max_tokens=max_tokens,
             db_session=session,
+            budget_scope_caps=budget_scope_caps,
         )
+    except QuotaExceededError as exc:
+        raise HTTPException(status_code=429, detail="Budget reservation denied; provider was not called.") from exc
     except ModelProviderError as exc:
         raise HTTPException(status_code=502, detail="All configured planning providers failed.") from exc
 

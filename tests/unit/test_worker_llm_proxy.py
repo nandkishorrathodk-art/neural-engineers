@@ -72,6 +72,11 @@ async def test_terminal_plan_is_generated_by_api_for_current_fenced_worker(
 
     class GatewayStub:
         calls = []
+        cost_tracker = SimpleNamespace(
+            max_project_budget_usd=150.0,
+            max_task_budget_usd=10.0,
+            monthly_hard_cap_usd=500.0,
+        )
 
         async def generate_structured(self, **kwargs):
             self.calls.append(kwargs)

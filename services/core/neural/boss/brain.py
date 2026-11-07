@@ -106,7 +106,9 @@ class BossBrain:
             )
         return self.scheduler
 
-    async def analyze_and_plan(self, objective: str) -> dict[str, Any]:
+    async def analyze_and_plan(
+        self, objective: str, db_session: Optional[Any] = None
+    ) -> dict[str, Any]:
         from neural.exceptions import ClarificationRequiredError, EmergencyStopTriggered
         from neural.security.kill_switch import get_kill_switch
 
@@ -115,7 +117,7 @@ class BossBrain:
             raise EmergencyStopTriggered("BossBrain is currently paused due to emergency halt.")
 
         logger.info("Boss AI analyzing incoming objective", objective=objective)
-        plan = await self.planner.decompose_objective(objective)
+        plan = await self.planner.decompose_objective(objective, db_session=db_session)
         if plan.get("clarification_required") is True:
             questions = plan.get("clarifying_questions")
             if not isinstance(questions, list) or not questions:
@@ -147,7 +149,9 @@ class BossBrain:
         if not p_repo:
             raise ValueError("ProjectRepository is required to persist project")
 
-        plan = await self.analyze_and_plan(objective)
+        plan = await self.analyze_and_plan(
+            objective, db_session=getattr(p_repo, "session", None)
+        )
         project_deadline: Optional[datetime] = None
         if deadline_days is not None:
             if deadline_days < 1 or deadline_days > 3650:

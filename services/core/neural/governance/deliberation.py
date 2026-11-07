@@ -34,7 +34,8 @@ class DeliberationEngine:
     async def generate_department_stance(
         self,
         member: CommitteeMember,
-        proposal: Proposal
+        proposal: Proposal,
+        db_session: Any | None = None,
     ) -> dict[str, Any]:
         """
         Generates a departmental perspective on a proposal.
@@ -63,7 +64,9 @@ class DeliberationEngine:
                     system_prompt=system_prompt,
                     tier="reasoning",
                     temperature=0.2,
-                    max_tokens=600
+                    max_tokens=600,
+                    db_session=db_session,
+                    project_id=proposal.project_id,
                 )
                 from neural.llm.gateway import extract_json_from_text
                 parsed = extract_json_from_text(response.content)
@@ -158,7 +161,8 @@ class DeliberationEngine:
     async def run_deliberation_round(
         self,
         proposal: Proposal,
-        members: Sequence[CommitteeMember]
+        members: Sequence[CommitteeMember],
+        db_session: Any | None = None,
     ) -> list[dict[str, Any]]:
         """
         Runs a comprehensive deliberation round across all provided committee members in parallel.
@@ -166,8 +170,18 @@ class DeliberationEngine:
         """
         import asyncio
 
-        tasks = [self.generate_department_stance(member=m, proposal=proposal) for m in members]
-        statements = list(await asyncio.gather(*tasks))
+        if db_session is not None:
+            # SQLAlchemy AsyncSession is not safe for concurrent use. Each LLM
+            # call reserves and settles through the same session.
+            statements = [
+                await self.generate_department_stance(
+                    member=member, proposal=proposal, db_session=db_session
+                )
+                for member in members
+            ]
+        else:
+            tasks = [self.generate_department_stance(member=m, proposal=proposal) for m in members]
+            statements = list(await asyncio.gather(*tasks))
 
         if self.message_bus:
             for m, statement in zip(members, statements):
