@@ -46,7 +46,6 @@ ALLOWED_IMAGES = {
 }
 WORKSPACE_VOLUME_PREFIX = "ancos-workspace-"
 CONTAINER_PREFIX = "ancos-desktop-"
-NETWORK_NAME = "ancos-bridge-net"
 
 
 class ProvisionRequest(BaseModel):
@@ -129,14 +128,15 @@ def validate_container_id(container_id: str) -> None:
 
 
 def ensure_network(client: Any) -> None:
+    network_name = settings.EMPLOYEE_NETWORK
     try:
-        client.networks.get(NETWORK_NAME)
+        client.networks.get(network_name)
     except NotFound:
         try:
-            client.networks.create(NETWORK_NAME, driver="bridge", check_duplicate=True)
+            client.networks.create(network_name, driver="bridge", check_duplicate=True)
         except APIError:
             # Another broker instance may have created this fixed network concurrently.
-            client.networks.get(NETWORK_NAME)
+            client.networks.get(network_name)
 
 
 def list_used_ports(client: Any) -> set[int]:
@@ -316,7 +316,7 @@ def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
             privileged=False,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
-            network=NETWORK_NAME,
+            network=settings.EMPLOYEE_NETWORK,
         )
         result = serialize_container(container, payload.employee_id)
         result["vnc_password"] = vnc_password

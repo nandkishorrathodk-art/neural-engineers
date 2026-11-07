@@ -90,6 +90,25 @@ def _real_model_name(value: Any, *, context: str) -> str:
     return value
 
 
+def validate_terminal_acceptance_plan(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Require one atomic test-bearing task for this focused live runner."""
+    if len(tasks) != 1:
+        raise AcceptanceFailed(
+            "The focused acceptance mission requires one task that creates both source and tests before running them."
+        )
+    unsupported = [
+        task.get("task_id", "<unknown>") for task in tasks
+        if str(task.get("execution_mode", "")).lower() != "terminal"
+        or _normalize_acceptance(task.get("acceptance_criteria")) not in TEST_ONLY_ACCEPTANCE
+    ]
+    if unsupported:
+        raise AcceptanceFailed(
+            "Boss plan contains tasks outside terminal mode or the independent verifier's test-only allowlist: "
+            + ", ".join(str(task_id) for task_id in unsupported)
+        )
+    return tasks
+
+
 def validate_verified_task(task: dict[str, Any]) -> dict[str, Any]:
     """Validate allowlisted, persisted independent evidence from one owner-report task."""
     if str(task.get("status", "")).lower() != "completed" or task.get("verified") is not True:
@@ -274,9 +293,10 @@ class Neuro13AcceptanceRunner:
         payload: dict[str, Any],
         *,
         blocked_statuses: set[int] | frozenset[int] = frozenset(),
+        timeout: httpx.Timeout | float | None = None,
     ) -> Any:
         try:
-            response = await client.post(path, json=payload)
+            response = await client.post(path, json=payload, timeout=timeout)
         except httpx.HTTPError as exc:
             if isinstance(exc, httpx.ConnectError):
                 raise AcceptanceBlocked(f"Core API connection failed during POST {path}.") from exc
@@ -316,19 +336,23 @@ class Neuro13AcceptanceRunner:
 
     async def _create_mission(self) -> list[dict[str, Any]]:
         objective = (
-            "Complete one small, genuine software engineering deliverable in the newly recruited employee's "
-            "isolated workspace. Create a Python source file implementing a deterministic function and a "
-            "standard-library unittest file that exercises normal and edge cases. Use terminal execution only. "
-            "Run `python3 -m unittest -v` and require the worker run and independent verifier rerun to pass. "
-            "Set every task's acceptance criteria exactly to `tests pass`. Do not describe any work as completed "
-            "before it has actually run and passed. This is a real deliverable; the saved source and test files "
-            "must appear in the verifier's hashed workspace delta."
+            "Create one terminal task only in the newly recruited employee's isolated workspace; do not create "
+            "phases or split this work into implementation, test-writing, or test-running tasks. Set the task's "
+            "acceptance criteria exactly to `tests pass`. In that single task, create only one root-level file "
+            "`test_clamp.py`. Define `clamp(value, lower, upper)` in that file to return value constrained to "
+            "the inclusive bounds and raise ValueError when lower is greater than upper. In the same file, add "
+            "standard-library unittest cases for below-range, above-range, in-range, both endpoints, and invalid "
+            "bounds. Run `python3 -m unittest -v` from the workspace root after the file is complete. The worker "
+            "and independent verifier must both pass that command. Do not claim completion before both pass."
         )
         project = await self._post(
             self.owner,
             "/boss/objective",
             {"objective": objective, "project_name": f"NEURO-13 disposable acceptance {self.run_id}"},
             blocked_statuses={401, 403, 503},
+            # Planning can take longer than quick control-plane actions; the
+            # client must not abandon a write that persists after timeout.
+            timeout=httpx.Timeout(180.0, connect=3.0),
         )
         self.project_id = str(project.get("id", ""))
         self.report.project_id = self.project_id or None
@@ -349,18 +373,7 @@ class Neuro13AcceptanceRunner:
             phase_tasks = phase.get("tasks")
             if isinstance(phase_tasks, list):
                 planned_tasks.extend(task for task in phase_tasks if isinstance(task, dict))
-        if not planned_tasks:
-            raise AcceptanceFailed("Boss persisted an empty project DAG.")
-        unsupported = [
-            task.get("task_id", "<unknown>") for task in planned_tasks
-            if str(task.get("execution_mode", "")).lower() != "terminal"
-            or _normalize_acceptance(task.get("acceptance_criteria")) not in TEST_ONLY_ACCEPTANCE
-        ]
-        if unsupported:
-            raise AcceptanceFailed(
-                "Boss plan contains tasks outside terminal mode or the independent verifier's test-only allowlist: "
-                + ", ".join(unsupported)
-            )
+        validate_terminal_acceptance_plan(planned_tasks)
         self.report.checks.append({"name": "provider_planned_persisted_terminal_dag", "passed": True, "task_count": len(planned_tasks)})
 
         tasks = await self._get(f"/projects/{self.project_id}/tasks")

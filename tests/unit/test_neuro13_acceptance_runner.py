@@ -1,5 +1,11 @@
+import httpx
 import pytest
-from neural.acceptance.neuro13 import AcceptanceFailed, validate_verified_task
+from neural.acceptance.neuro13 import (
+    AcceptanceFailed,
+    Neuro13AcceptanceRunner,
+    validate_terminal_acceptance_plan,
+    validate_verified_task,
+)
 
 
 def _valid_verified_task():
@@ -69,6 +75,17 @@ def test_neuro13_runner_rejects_completion_without_independent_receipt():
         })
 
 
+def test_neuro13_acceptance_plan_keeps_implementation_and_tests_in_one_task():
+    with pytest.raises(AcceptanceFailed, match="requires one task"):
+        validate_terminal_acceptance_plan([
+            {"task_id": "TASK-SOURCE", "execution_mode": "terminal", "acceptance_criteria": "tests pass"},
+            {"task_id": "TASK-TESTS", "execution_mode": "terminal", "acceptance_criteria": "tests pass"},
+        ])
+
+    tasks = [{"task_id": "TASK-ATOMIC", "execution_mode": "terminal", "acceptance_criteria": "tests pass"}]
+    assert validate_terminal_acceptance_plan(tasks) == tasks
+
+
 def test_neuro13_runner_rejects_a_model_stub_even_if_task_claims_verified():
     with pytest.raises(AcceptanceFailed, match="simulated, fallback, or stub"):
         validate_verified_task({
@@ -116,3 +133,36 @@ def test_neuro13_runner_rejects_delta_hash_that_disagrees_with_snapshot():
 
     with pytest.raises(AcceptanceFailed, match="does not match"):
         validate_verified_task(task)
+
+
+@pytest.mark.asyncio
+async def test_neuro13_objective_post_can_use_long_provider_planning_timeout():
+    class Response:
+        status_code = 200
+        is_error = False
+
+        @staticmethod
+        def json():
+            return {"id": "project-1"}
+
+    class Client:
+        timeout = httpx.Timeout(15.0)
+        request_timeout = None
+
+        async def post(self, _path, *, json, timeout):
+            self.request_timeout = timeout
+            return Response()
+
+    runner = Neuro13AcceptanceRunner.__new__(Neuro13AcceptanceRunner)
+    client = Client()
+    request_timeout = httpx.Timeout(180.0, connect=3.0)
+
+    result = await runner._post(
+        client,
+        "/boss/objective",
+        {"objective": "Build and test"},
+        timeout=request_timeout,
+    )
+
+    assert result == {"id": "project-1"}
+    assert client.request_timeout is request_timeout

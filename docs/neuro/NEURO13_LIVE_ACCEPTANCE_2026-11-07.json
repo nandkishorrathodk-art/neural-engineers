@@ -1,0 +1,38 @@
+{
+  "api_url": "http://127.0.0.1:12010",
+  "blocked_reasons": [],
+  "checks": [
+    {
+      "name": "production_api_and_owner_auth",
+      "passed": true
+    },
+    {
+      "name": "provider_backed_boss_planner_available",
+      "passed": true
+    },
+    {
+      "name": "long_running_worker_and_verifier_healthy",
+      "passed": true
+    },
+    {
+      "name": "disposable_database_empty",
+      "passed": true
+    }
+  ],
+  "cleanup": {
+    "reason": "no workstation was provisioned by this run",
+    "status": "not_needed"
+  },
+  "employee_id": null,
+  "failures": [
+    "AcceptanceFailed: Core API request failed during POST /boss/objective: ReadTimeout."
+  ],
+  "finished_at_unix": 1794016637.7839963,
+  "project_id": null,
+  "project_name": null,
+  "run_id": "5599515913b4",
+  "started_at_unix": 1794016622.5758536,
+  "status": "FAIL",
+  "task_results": [],
+  "workstation_id": null
+}
