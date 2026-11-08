@@ -114,6 +114,8 @@ async def test_terminal_plan_is_generated_by_api_for_current_fenced_worker(
     assert gateway.calls[0]["project_id"] == project.id
     assert gateway.calls[0]["max_tokens"] == 500
     assert gateway.calls[0]["db_session"] is async_session
+    assert "Persist all source and test deliverables as files" in gateway.calls[0]["prompt"]
+    assert "Do not inline test definitions into a command" in gateway.calls[0]["prompt"]
 
 
 @pytest.mark.asyncio

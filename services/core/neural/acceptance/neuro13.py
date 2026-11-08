@@ -13,14 +13,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-TEST_ONLY_ACCEPTANCE = {
-    "test passes",
-    "tests pass",
-    "tests exit successfully",
-    "automated tests pass",
-    "automated validation passes",
-    "pytest passes",
-}
+from neural.verification.test_commands import TEST_ONLY_ACCEPTANCE, normalize_acceptance_criteria
+
 SIMULATION_MARKERS = {"mock", "stub", "simulation", "simulated", "fallback", "offline"}
 
 
@@ -67,7 +61,7 @@ def _bounded_env_int(name: str, default: int, low: int, high: int) -> int:
 
 
 def _normalize_acceptance(value: Any) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+    return normalize_acceptance_criteria(value)
 
 
 def _real_model_receipt(value: Any, *, context: str) -> dict[str, Any]:

@@ -4,46 +4,18 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import signal
 import uuid
 from typing import Any
 
 import httpx
 
+from neural.verification.test_commands import (
+    TEST_ONLY_ACCEPTANCE,
+    normalize_acceptance_criteria,
+    replayable_test_commands,
+)
 from neural.verification.workspace_manifest import build_workspace_delta, valid_workspace_manifest
-
-TEST_ONLY_ACCEPTANCE = {
-    "test passes",
-    "tests pass",
-    "tests exit successfully",
-    "automated tests pass",
-    "automated validation passes",
-    "pytest passes",
-}
-
-
-def replayable_test_commands(receipt: dict[str, Any]) -> list[list[str]]:
-    planned = receipt.get("planned_commands")
-    if not isinstance(planned, list):
-        return []
-    tests: list[list[str]] = []
-    for candidate in planned[:12]:
-        if not isinstance(candidate, list) or not candidate or not all(isinstance(arg, str) for arg in candidate):
-            continue
-        command = candidate
-        is_pytest = command[0] == "pytest" or (
-            command[0] in {"python", "python3"} and command[1:3] == ["-m", "pytest"]
-        )
-        is_unittest = (
-            command[0] in {"python", "python3"} and command[1:3] == ["-m", "unittest"]
-        )
-        is_npm_test = command[0] == "npm" and (
-            command[1:2] == ["test"] or command[1:3] == ["run", "test"]
-        )
-        if (is_pytest or is_unittest or is_npm_test) and command not in tests:
-            tests.append(command)
-    return tests
 
 
 def worker_test_exit_code(receipt: dict[str, Any], command: list[str]) -> int | None:
@@ -136,8 +108,7 @@ class VerificationWorker:
             else None
         )
 
-        criteria = str(item.get("acceptance_criteria", "")).lower()
-        normalized_criteria = " ".join(re.findall(r"[a-z0-9]+", criteria))
+        normalized_criteria = normalize_acceptance_criteria(item.get("acceptance_criteria"))
         criteria_is_testable = normalized_criteria in TEST_ONLY_ACCEPTANCE
         tests_passed = bool(test_runs) and all(
             run["worker_exit_code"] == 0 and run["verifier_exit_code"] == 0 for run in test_runs

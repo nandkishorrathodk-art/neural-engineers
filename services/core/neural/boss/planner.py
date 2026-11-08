@@ -73,7 +73,12 @@ class TaskPlanner:
                 "If missing information would materially change the plan, set clarification_required=true, "
                 "ask up to three short, specific clarifying_questions, and leave phases empty. "
                 "Do not invent the owner's intent. Otherwise set clarification_required=false and plan normally. "
-                "Use 2-6 phases and concrete tasks an engineering team can deliver. "
+                "Choose the number of phases and tasks to match the objective's scope and the owner's requested "
+                "granularity. Respect explicit atomicity constraints: when the owner asks for one task, one "
+                "deliverable, or no decomposition, return exactly one phase containing exactly one task; do not "
+                "split implementation, test creation, and test execution into separate tasks. For broader "
+                "objectives without an explicit atomicity constraint, use 2-6 phases and concrete, independently "
+                "verifiable tasks an engineering team can deliver. "
                 "Every task needs measurable acceptance criteria and required skills. "
                 "Every task must declare its execution_mode as one of gui, terminal, hybrid, or authorized_tools. "
                 "Dependencies must reference task_id values in this plan, point only "
@@ -108,10 +113,10 @@ class TaskPlanner:
                 "planning_model": response.model,
                 "phases": [],
             }
-        if not plan.requirements:
-            raise ModelProviderError("Boss plan rejected: no project requirements were extracted.")
         if not plan.phases:
             raise ModelProviderError("Boss plan rejected: no executable phases were planned.")
+
+        requirements = plan.requirements or [f"Deliver the owner's stated objective: {objective.strip()}"]
 
         raw_ids = [task.task_id for phase in plan.phases for task in phase.tasks]
         if len(raw_ids) != len(set(raw_ids)):
@@ -167,7 +172,7 @@ class TaskPlanner:
         return {
             "code_name": plan.code_name,
             "complexity": plan.complexity,
-            "requirements": plan.requirements,
+            "requirements": requirements,
             "risk_analysis": {
                 "technical_risks": plan.technical_risks,
                 "mitigation_strategies": plan.mitigation_strategies,

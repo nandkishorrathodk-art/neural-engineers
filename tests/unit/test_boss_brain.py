@@ -88,7 +88,10 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
     from neural.boss.planner import TaskPlanner
     from neural.llm.gateway import LLMGateway
 
-    async def invoke(**_kwargs):
+    captured_prompts = []
+
+    async def invoke(**kwargs):
+        captured_prompts.append(kwargs["prompt"])
         return {
             "content": json.dumps({
                 "code_name": "Sample",
@@ -145,6 +148,10 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
     assert second["dependencies"] == [first["task_id"]]
     assert first["execution_mode"] == "gui"
     assert second["execution_mode"] == "hybrid"
+    prompt = captured_prompts[0]
+    assert "Respect explicit atomicity constraints" in prompt
+    assert "exactly one phase containing exactly one task" in prompt
+    assert "For broader objectives without an explicit atomicity constraint" in prompt
 
 
 @pytest.mark.asyncio
@@ -178,6 +185,54 @@ async def test_boss_planner_preserves_model_clarification_without_creating_tasks
     assert plan["clarification_required"] is True
     assert plan["phases"] == []
     assert plan["clarifying_questions"] == ["Which system should be fixed, and what failure do you observe?"]
+
+
+@pytest.mark.asyncio
+async def test_boss_planner_uses_owner_objective_when_model_omits_requirements(monkeypatch):
+    import json
+
+    from neural.boss.planner import TaskPlanner
+    from neural.llm.gateway import LLMGateway
+
+    async def invoke(**_kwargs):
+        return {
+            "content": json.dumps({
+                "code_name": "AtomicTest",
+                "complexity": "low",
+                "requirements": [],
+                "technical_risks": [],
+                "mitigation_strategies": [],
+                "phases": [{
+                    "title": "Implement and verify",
+                    "tasks": [{
+                        "task_id": "atomic",
+                        "title": "Implement and test clamp",
+                        "objective": "Write the implementation and tests in one file.",
+                        "scope": "One self-contained Python file",
+                        "role_required": "software-engineer",
+                        "skills_required": ["Python", "unittest"],
+                        "execution_mode": "terminal",
+                        "dependencies": [],
+                        "acceptance_criteria": "tests pass",
+                        "subtasks": [],
+                        "estimated_hours": 1,
+                        "max_tokens": 4000,
+                    }],
+                }],
+            }),
+            "input_tokens": 20,
+            "output_tokens": 100,
+            "provider": "test",
+        }
+
+    gateway = LLMGateway(provider_invoker=invoke)
+    monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    objective = "Implement clamp and add tests in one atomic task."
+    plan = await TaskPlanner(llm_gateway=gateway).decompose_objective(objective)
+
+    assert plan["requirements"] == [f"Deliver the owner's stated objective: {objective}"]
+    assert len(plan["phases"]) == 1
+    assert len(plan["phases"][0]["tasks"]) == 1
 
 
 @pytest.mark.asyncio

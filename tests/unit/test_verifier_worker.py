@@ -5,6 +5,7 @@ import pytest
 from neural.api.schemas.requests import VerifierCommandRequest
 from neural.containers import broker_api
 from neural.containers.broker_api import VerificationExecRequest, VerificationManifestRequest
+from neural.verification.test_commands import validate_test_plan
 from neural.verification.workspace_manifest import build_workspace_delta, valid_workspace_manifest
 from neural.workers.verifier import VerificationWorker, replayable_test_commands
 
@@ -91,6 +92,17 @@ def test_replayable_test_commands_filter_out_non_test_commands():
         fencing_token=7,
         command=["python3", "-m", "unittest", "-v"],
     ).command == ["python3", "-m", "unittest", "-v"]
+
+
+def test_test_only_plan_requires_independently_replayable_test_command():
+    with pytest.raises(ValueError, match="must include a replayable"):
+        validate_test_plan("tests pass", [["python3", "-c", "print('inline test')"]])
+
+    validate_test_plan(
+        "tests pass",
+        [["python3", "-c", "write_file()"], ["python3", "-m", "unittest", "-v"]],
+    )
+    validate_test_plan("render the requested page", [["python3", "-c", "print('render')"]])
 
 
 @pytest.mark.asyncio

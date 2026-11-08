@@ -34,6 +34,7 @@ from neural.db.repositories import (
 from neural.exceptions import ContainerError, ModelProviderError, QuotaExceededError
 from neural.llm.gateway import LLMGateway
 from neural.security.kill_switch import get_kill_switch
+from neural.verification.test_commands import validate_test_plan
 from neural.verification.workspace_manifest import valid_workspace_manifest
 from neural.workers.terminal import TerminalCommandPlan
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -222,8 +223,11 @@ async def plan_terminal_task(
                 "inside the employee workspace. Commands run directly without a shell in a disposable, "
                 "non-root employee container. Do not access secrets, the host, Docker, or external services. "
                 "Do not use destructive commands. Use only python, python3, pytest, npm, or npx. "
-                "Include a relevant test or validation command when feasible. Commands must not claim "
-                "success unless their exit codes are zero.\n\n"
+                "Persist all source and test deliverables as files in the workspace; never implement or test "
+                "the deliverable only inside `python -c`. If acceptance requires tests to pass, include a "
+                "replayable test command such as `python3 -m unittest -v`, `pytest -q`, or `npm test` that "
+                "reads the persisted workspace files. Do not inline test definitions into a command. Commands "
+                "must not claim success unless their exit codes are zero.\n\n"
                 f"Title: {task.title}\nObjective: {task.objective}\nScope: {task.scope}\n"
                 f"Acceptance criteria: {task.acceptance_criteria}"
             ),
@@ -242,6 +246,11 @@ async def plan_terminal_task(
         raise HTTPException(status_code=429, detail="Budget reservation denied; provider was not called.") from exc
     except ModelProviderError as exc:
         raise HTTPException(status_code=502, detail="All configured planning providers failed.") from exc
+
+    try:
+        validate_test_plan(task.acceptance_criteria, plan.commands)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return {
         "plan": plan.model_dump(),
