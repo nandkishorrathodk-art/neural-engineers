@@ -106,3 +106,20 @@ def test_terminal_command_plan_rejects_shell_and_non_allowlisted_commands():
         TerminalCommandPlan(commands=[["sh", "-c", "id"]])
     with pytest.raises(ValueError):
         TerminalCommandPlan(commands=[["curl", "https://example.invalid"]])
+
+
+def test_terminal_command_plan_normalizes_plain_strings_to_argv_without_shell():
+    plan = TerminalCommandPlan(commands=[
+        "python3 -c \"from pathlib import Path; Path('result.py').write_text('value = 1')\"",
+        "python3 -m unittest -v",
+    ])
+
+    assert plan.commands == [
+        ["python3", "-c", "from pathlib import Path; Path('result.py').write_text('value = 1')"],
+        ["python3", "-m", "unittest", "-v"],
+    ]
+
+
+def test_terminal_command_plan_rejects_shell_command_strings_after_tokenization():
+    with pytest.raises(ValueError):
+        TerminalCommandPlan(commands=["echo hello > result.txt"])

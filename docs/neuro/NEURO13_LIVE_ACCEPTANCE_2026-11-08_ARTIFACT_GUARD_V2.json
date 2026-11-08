@@ -1,0 +1,64 @@
+{
+  "api_url": "http://127.0.0.1:12000",
+  "blocked_reasons": [],
+  "checks": [
+    {
+      "name": "production_api_and_owner_auth",
+      "passed": true
+    },
+    {
+      "name": "provider_backed_boss_planner_available",
+      "passed": true
+    },
+    {
+      "name": "long_running_worker_and_verifier_healthy",
+      "passed": true
+    },
+    {
+      "name": "disposable_database_empty",
+      "passed": true
+    },
+    {
+      "name": "provider_planned_persisted_terminal_dag",
+      "passed": true,
+      "task_count": 1
+    },
+    {
+      "name": "dynamic_employee_recruited_and_task_assigned",
+      "passed": true
+    },
+    {
+      "name": "independent_approval_provision_workstation",
+      "passed": true
+    },
+    {
+      "name": "approved_restricted_broker_workstation_running",
+      "passed": true
+    },
+    {
+      "name": "independent_approval_terminate_workstation",
+      "passed": true
+    },
+    {
+      "name": "approved_workstation_terminated_and_lease_released",
+      "passed": true
+    }
+  ],
+  "cleanup": {
+    "docker_id": "ancos-desktop-anc-emp-d96d869d45f4",
+    "status": "terminated",
+    "workspace_volume": "preserved_by_platform_policy"
+  },
+  "employee_id": "ANC-EMP-D96D869D45F4",
+  "failures": [
+    "AcceptanceFailed: Mission task(s) reached terminal unsuccessful state: TASK-01-01-811A"
+  ],
+  "finished_at_unix": 1794137033.963356,
+  "project_id": "fc9914c3-ce65-474f-9b89-8920f6d4082d",
+  "project_name": "NEURO-13 disposable acceptance e2d0ef6ac88d",
+  "run_id": "e2d0ef6ac88d",
+  "started_at_unix": 1794136536.8799903,
+  "status": "FAIL",
+  "task_results": [],
+  "workstation_id": "ancos-desktop-anc-emp-d96d869d45f4"
+}

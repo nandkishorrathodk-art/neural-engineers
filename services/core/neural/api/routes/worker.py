@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from neural.api.deps import (
@@ -33,8 +34,9 @@ from neural.db.repositories import (
 )
 from neural.exceptions import ContainerError, ModelProviderError, QuotaExceededError
 from neural.llm.gateway import LLMGateway
+from neural.logger import get_logger
 from neural.security.kill_switch import get_kill_switch
-from neural.verification.test_commands import validate_test_plan
+from neural.verification.test_commands import validate_test_plan, validate_workspace_artifact_plan
 from neural.verification.workspace_manifest import valid_workspace_manifest
 from neural.workers.terminal import TerminalCommandPlan
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +46,7 @@ router = APIRouter(
     tags=["Worker protocol"],
     dependencies=[Depends(require_worker_token), Depends(require_execution_not_halted)],
 )
+logger = get_logger("ancos.api.worker")
 
 
 @router.post("/runtime/heartbeat")
@@ -216,41 +219,77 @@ async def plan_terminal_task(
         f"project:{project.id}": project_cap,
         f"task:{task.task_id}": task_cap,
     }
+    base_prompt = (
+        "Produce a short, bounded sequence of terminal argv commands to complete this task "
+        "inside the employee workspace. Commands run directly without a shell in a disposable, "
+        "non-root employee container. Do not access secrets, the host, Docker, or external services. "
+        "Do not use destructive commands. Use only python, python3, pytest, npm, or npx. "
+        "Return `commands` as a JSON array of argv arrays; every command must be a nested array of "
+        "separate argument strings, never a shell command string. For example, use "
+        "`{\"commands\":[[\"python3\",\"-c\",\"from pathlib import Path; Path('example.py').write_text('value = 1\\n')\"],[\"python3\",\"-m\",\"unittest\",\"-v\"]]}`. "
+        "A short `python3 -c` command may write source or test content into workspace files, but the "
+        "deliverable must persist in those files; never implement or test it only in memory. For a "
+        "requested named source/test file, at least one command must write that exact path before a "
+        "separate replayable test command. Do not put function/class definitions or test assertions "
+        "directly in a command without writing them to a workspace file. Do not inline test definitions "
+        "in the test-running command. If acceptance requires tests to pass, include a replayable command "
+        "such as `python3 -m unittest -v`, `pytest -q`, or `npm test` "
+        "that reads the persisted workspace files. Commands must not claim success unless their exit "
+        "codes are zero.\n\n"
+        f"Title: {task.title}\nObjective: {task.objective}\nScope: {task.scope}\n"
+        f"Acceptance criteria: {task.acceptance_criteria}"
+    )
+    system_prompt = (
+        "You are a terminal-mode software engineering employee. Return only valid JSON matching the "
+        "provided schema. The commands property is a list of argv arrays, not a list of shell strings. "
+        "Persist requested files in the workspace and run tests against those persisted files."
+    )
+    plan: TerminalCommandPlan
+    response: Any
+    validation_error: ValueError | None = None
     try:
-        plan, response = await gateway.generate_structured(
-            prompt=(
-                "Produce a short, bounded sequence of terminal argv commands to complete this task "
-                "inside the employee workspace. Commands run directly without a shell in a disposable, "
-                "non-root employee container. Do not access secrets, the host, Docker, or external services. "
-                "Do not use destructive commands. Use only python, python3, pytest, npm, or npx. "
-                "Persist all source and test deliverables as files in the workspace; never implement or test "
-                "the deliverable only inside `python -c`. If acceptance requires tests to pass, include a "
-                "replayable test command such as `python3 -m unittest -v`, `pytest -q`, or `npm test` that "
-                "reads the persisted workspace files. Do not inline test definitions into a command. Commands "
-                "must not claim success unless their exit codes are zero.\n\n"
-                f"Title: {task.title}\nObjective: {task.objective}\nScope: {task.scope}\n"
-                f"Acceptance criteria: {task.acceptance_criteria}"
-            ),
-            response_model=TerminalCommandPlan,
-            route="code_generation",
-            system_prompt="You are a terminal-mode software engineering employee. Return only executable argv arrays.",
-            employee_id=task.assigned_to,
-            task_id=task.task_id,
-            project_id=task.project_id,
-            temperature=0.1,
-            max_tokens=max_tokens,
-            db_session=session,
-            budget_scope_caps=budget_scope_caps,
-        )
+        for planning_attempt in range(2):
+            correction = ""
+            if validation_error is not None:
+                correction = (
+                    "\n\nYour previous command plan was rejected before execution: "
+                    f"{validation_error} Return a corrected plan that writes every requested workspace file "
+                    "to its exact path and then runs a separate replayable test command. Do not execute the "
+                    "implementation or tests only inside `python3 -c`."
+                )
+            plan, response = await gateway.generate_structured(
+                prompt=base_prompt + correction,
+                response_model=TerminalCommandPlan,
+                route="code_generation",
+                system_prompt=system_prompt,
+                employee_id=task.assigned_to,
+                task_id=task.task_id,
+                project_id=task.project_id,
+                temperature=0.1,
+                max_tokens=max_tokens,
+                db_session=session,
+                budget_scope_caps=budget_scope_caps,
+            )
+            try:
+                validate_test_plan(task.acceptance_criteria, plan.commands)
+                task_context = "\n".join((task.title or "", task.objective or "", task.scope or ""))
+                validate_workspace_artifact_plan(task_context, task.acceptance_criteria, plan.commands)
+                validation_error = None
+                break
+            except ValueError as exc:
+                validation_error = exc
+                logger.warning(
+                    "Terminal command plan rejected before execution",
+                    task_id=task.task_id,
+                    planning_attempt=planning_attempt + 1,
+                    reason=str(exc),
+                )
+        if validation_error is not None:
+            raise HTTPException(status_code=422, detail=str(validation_error))
     except QuotaExceededError as exc:
         raise HTTPException(status_code=429, detail="Budget reservation denied; provider was not called.") from exc
     except ModelProviderError as exc:
         raise HTTPException(status_code=502, detail="All configured planning providers failed.") from exc
-
-    try:
-        validate_test_plan(task.acceptance_criteria, plan.commands)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return {
         "plan": plan.model_dump(),

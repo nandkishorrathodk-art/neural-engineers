@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import signal
 import uuid
 from typing import Annotated, Any
@@ -16,6 +17,23 @@ class TerminalCommandPlan(BaseModel):
     commands: list[list[Annotated[str, Field(min_length=1, max_length=8192)]]] = Field(
         ..., min_length=1, max_length=12
     )
+
+    @field_validator("commands", mode="before")
+    @classmethod
+    def normalize_argv_commands(cls, commands: Any) -> Any:
+        """Normalize model-emitted command strings without invoking a shell."""
+        if not isinstance(commands, list):
+            return commands
+        normalized: list[Any] = []
+        for command in commands:
+            if isinstance(command, str):
+                try:
+                    normalized.append(shlex.split(command, posix=True))
+                except ValueError as exc:
+                    raise ValueError("Plan contains an invalid quoted command string.") from exc
+            else:
+                normalized.append(command)
+        return normalized
 
     @field_validator("commands")
     @classmethod

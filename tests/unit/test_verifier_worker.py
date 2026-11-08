@@ -5,7 +5,7 @@ import pytest
 from neural.api.schemas.requests import VerifierCommandRequest
 from neural.containers import broker_api
 from neural.containers.broker_api import VerificationExecRequest, VerificationManifestRequest
-from neural.verification.test_commands import validate_test_plan
+from neural.verification.test_commands import validate_test_plan, validate_workspace_artifact_plan
 from neural.verification.workspace_manifest import build_workspace_delta, valid_workspace_manifest
 from neural.workers.verifier import VerificationWorker, replayable_test_commands
 
@@ -103,6 +103,53 @@ def test_test_only_plan_requires_independently_replayable_test_command():
         [["python3", "-c", "write_file()"], ["python3", "-m", "unittest", "-v"]],
     )
     validate_test_plan("render the requested page", [["python3", "-c", "print('render')"]])
+
+
+def test_test_task_with_requested_file_requires_persisted_artifact_plan():
+    context = "Create test_clamp.py with clamp and unittest cases in the workspace."
+    inline_only = [
+        ["python3", "-c", "class TestClamp: pass"],
+        ["python3", "-m", "unittest", "-v"],
+    ]
+    with pytest.raises(ValueError, match="does not persist a requested file"):
+        validate_workspace_artifact_plan(context, "tests pass", inline_only)
+
+    wrong_path = [[
+        "python3",
+        "-c",
+        "from pathlib import Path; Path('other.py').write_text('value = 1')",
+    ], ["python3", "-m", "unittest", "-v"]]
+    with pytest.raises(ValueError, match="does not persist a requested file"):
+        validate_workspace_artifact_plan(context, "tests pass", wrong_path)
+
+    persisted = [[
+        "python3",
+        "-c",
+        "from pathlib import Path; Path('test_clamp.py').write_text('value = 1')",
+    ], ["python3", "-m", "unittest", "-v"]]
+    validate_workspace_artifact_plan(context, "tests pass", persisted)
+
+    open_write = [[
+        "python3",
+        "-c",
+        "open('test_clamp.py', 'w').write('value = 1')",
+    ], ["python3", "-m", "unittest", "-v"]]
+    validate_workspace_artifact_plan(context, "tests pass", open_write)
+
+    context_manager_write = [[
+        "python3",
+        "-c",
+        "with open('test_clamp.py', 'w') as output: output.write('value = 1')",
+    ], ["python3", "-m", "unittest", "-v"]]
+    validate_workspace_artifact_plan(context, "tests pass", context_manager_write)
+
+
+def test_non_file_test_task_does_not_require_a_workspace_write():
+    validate_workspace_artifact_plan(
+        "Run the existing test suite in the workspace.",
+        "tests pass",
+        [["python3", "-m", "unittest", "-v"]],
+    )
 
 
 @pytest.mark.asyncio
