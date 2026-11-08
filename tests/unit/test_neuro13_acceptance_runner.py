@@ -137,6 +137,14 @@ def test_neuro13_runner_rejects_artifacts_outside_the_single_requested_root_file
         validate_verified_task(task)
 
 
+def test_neuro13_runner_rejects_a_nonempty_task_start_workspace():
+    task = _valid_verified_task()
+    task["verification_evidence"]["workspace_manifest_before"]["file_count"] = 1
+
+    with pytest.raises(AcceptanceFailed, match="required empty employee workspace"):
+        validate_verified_task(task)
+
+
 def test_neuro13_runner_rejects_delta_hash_that_disagrees_with_snapshot():
     task = _valid_verified_task()
     task["verification_evidence"]["workspace_delta"]["created"][0]["sha256"] = "c" * 64

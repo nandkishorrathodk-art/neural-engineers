@@ -163,6 +163,8 @@ def validate_verified_task(task: dict[str, Any]) -> dict[str, Any]:
     delta = evidence.get("workspace_delta")
     if not isinstance(baseline, dict) or baseline.get("complete") is not True:
         raise AcceptanceFailed(f"Task {task.get('task_id')} has no complete task-start workspace baseline.")
+    if type(baseline.get("file_count")) is not int or baseline["file_count"] != 0:
+        raise AcceptanceFailed(f"Task {task.get('task_id')} did not start with the required empty employee workspace.")
     if (
         not isinstance(manifest, dict)
         or manifest.get("complete") is not True
@@ -212,6 +214,15 @@ def validate_verified_task(task: dict[str, Any]) -> dict[str, Any]:
             or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256", "")))
         ):
             raise AcceptanceFailed(f"Task {task.get('task_id')} manifest contains an invalid artifact path or hash.")
+    if (
+        manifest["file_count"] != 1
+        or manifest["returned_file_count"] != 1
+        or len(manifest["files"]) != 1
+        or manifest["files"][0]["path"] != "test_clamp.py"
+    ):
+        raise AcceptanceFailed(
+            f"Task {task.get('task_id')} did not produce exactly the requested root-level test_clamp.py artifact."
+        )
     final_hashes = {item["path"]: item["sha256"] for item in manifest["files"]}
     if any(final_hashes.get(path) != digest for path, digest in changed_hashes.items()):
         raise AcceptanceFailed(f"Task {task.get('task_id')} workspace delta hash does not match the verification manifest.")
