@@ -13,11 +13,14 @@ logger = get_logger("ancos.security.network")
 
 class NetworkSecurityPerimeter:
     """
-    Zero-Trust Network Perimeter for sandboxed execution and containerized workstations.
-    Enforces strict egress filtering:
+    Static network-target and source-code policy checks for sandboxed execution.
+    Blocks known dangerous destinations when callers invoke these checks:
     - Blocks all cloud instance metadata endpoints (AWS, GCP, Azure, OpenStack, Alibaba).
     - Blocks access to internal RFC1918 private subnets unless explicitly allowlisted.
-    - Intercepts and audits prohibited egress attempts.
+    - Records prohibited targets observed by the application-level checker.
+
+    This class is not a packet filter or Docker egress firewall. Runtime container
+    egress must be restricted independently by the container network or proxy.
     """
 
     # Cloud metadata endpoints and hostnames
@@ -31,12 +34,15 @@ class NetworkSecurityPerimeter:
         "fd00:ec2::254",
     }
 
-    # Private IP networks (RFC1918 + loopback)
+    # Private, loopback, and unique-local IP networks.
     PRIVATE_NETWORKS = [
         ipaddress.ip_network("10.0.0.0/8"),
         ipaddress.ip_network("172.16.0.0/12"),
         ipaddress.ip_network("192.168.0.0/16"),
-        ipaddress.ip_network("169.254.0.0/16"),  # Link-local / Cloud metadata
+        ipaddress.ip_network("127.0.0.0/8"),
+        ipaddress.ip_network("169.254.0.0/16"),
+        ipaddress.ip_network("::1/128"),
+        ipaddress.ip_network("fc00::/7"),
     ]
 
     def __init__(
@@ -66,6 +72,16 @@ class NetworkSecurityPerimeter:
             bracket_end = raw.find("]")
             if bracket_end != -1:
                 return raw[1:bracket_end].strip().lower()
+
+        # Parse raw IPv6 literals before the host:port fallback. Splitting on
+        # the first colon would reduce e.g. "fd00::1" to the harmless token
+        # "fd00" and bypass the private-address checks below.
+        try:
+            address = ipaddress.ip_address(raw)
+            if address.version == 6:
+                return str(address).lower()
+        except ValueError:
+            pass
 
         # Handle host:port
         if ":" in raw:
@@ -110,6 +126,11 @@ class NetworkSecurityPerimeter:
         # 2. Check if host parses as an IP address
         try:
             ip_obj = ipaddress.ip_address(host)
+            if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped:
+                mapped_host = str(ip_obj.ipv4_mapped)
+                mapped_blocked, mapped_reason = self.is_blocked_target(mapped_host)
+                if mapped_blocked:
+                    return True, f"IPv4-mapped IPv6 target is blocked: {mapped_reason}"
             # Link-local is always blocked
             if ip_obj.is_link_local:
                 return True, f"Link-local network access blocked: '{host}'"
@@ -156,8 +177,15 @@ class NetworkSecurityPerimeter:
             if meta in code:
                 violations.append(f"Hardcoded cloud metadata endpoint reference detected: {meta}")
 
-        # Scan for IPv4 addresses in code
+        # Scan for IPv4 and IPv6 literals in code. This is a static guard only;
+        # actual container egress must be enforced by the runtime network.
         ip_matches = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", code)
+        ip_matches.extend(
+            re.findall(
+                r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?:%[0-9A-Za-z_.-]+)?(?![0-9A-Fa-f:])",
+                code,
+            )
+        )
         for ip_str in ip_matches:
             blocked, reason = self.is_blocked_target(ip_str)
             if blocked:

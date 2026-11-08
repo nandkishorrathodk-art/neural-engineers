@@ -225,7 +225,7 @@ async def test_workstation_sandbox_integration_with_security_perimeter(tmp_path)
 
 
 def test_network_security_perimeter_ipv6_and_hex_metadata_edge_cases():
-    """Validates that bracketed IPv6 and hex/integer representations of metadata are strictly blocked."""
+    """Validates IPv6 parsing and encoded metadata/private-network edge cases."""
     perimeter = NetworkSecurityPerimeter()
 
     # Bracketed IPv6 metadata endpoint
@@ -237,6 +237,12 @@ def test_network_security_perimeter_ipv6_and_hex_metadata_edge_cases():
     blocked, reason = perimeter.is_blocked_target("[fd00:ec2::254]:80")
     assert blocked is True
 
+    # Raw IPv6 was previously truncated at its first colon by host:port parsing.
+    assert perimeter.is_blocked_target("fd00:ec2::254")[0] is True
+    assert perimeter.is_blocked_target("fd00::1")[0] is True
+    assert perimeter.is_blocked_target("http://[::1]:8080/")[0] is True
+    assert perimeter.is_blocked_target("::ffff:169.254.169.254")[0] is True
+
     # Hex representation of 169.254.169.254 (0xA9FEA9FE)
     blocked, reason = perimeter.is_blocked_target("0xA9FEA9FE")
     assert blocked is True
@@ -244,6 +250,16 @@ def test_network_security_perimeter_ipv6_and_hex_metadata_edge_cases():
     # Decimal integer representation of 169.254.169.254 (2852039166)
     blocked, reason = perimeter.is_blocked_target("2852039166")
     assert blocked is True
+
+
+def test_network_security_perimeter_scans_ipv6_literals_but_marks_them_static_only():
+    perimeter = NetworkSecurityPerimeter()
+    safe, violations = perimeter.scan_code_for_network_violations(
+        "url = 'http://[fd00::1]/internal'"
+    )
+
+    assert safe is False
+    assert any("private" in violation.lower() or "internal" in violation.lower() for violation in violations)
 
 
 def test_resource_governor_iec_memory_parsing_edge_cases():
