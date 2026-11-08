@@ -1433,6 +1433,54 @@ class TaskRepository:
             await self.session.execute(stmt)
             await self.session.commit()
 
+    async def recover_running_after_emergency_stop(self) -> int:
+        """Requeue running tasks and invalidate their active worker attempts atomically."""
+        now = utc_now()
+        async with get_session_lock(self.session):
+            running = (
+                await self.session.execute(
+                    select(Task.id, Task.fencing_token)
+                    .where(Task.status == TaskStatus.RUNNING)
+                    .with_for_update()
+                )
+            ).all()
+
+            recovered = 0
+            for task_id, fencing_token in running:
+                await self.session.execute(
+                    update(TaskAttempt)
+                    .where(
+                        TaskAttempt.task_id == task_id,
+                        TaskAttempt.fencing_token == fencing_token,
+                        TaskAttempt.status.in_(["leased", "running"]),
+                    )
+                    .values(
+                        status="cancelled",
+                        finished_at=now,
+                        lease_expires_at=now,
+                        error_message=(
+                            "Emergency-stop recovery cancelled this attempt and superseded its lease."
+                        ),
+                    )
+                )
+                result = await self.session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task_id,
+                        Task.status == TaskStatus.RUNNING,
+                        Task.fencing_token == fencing_token,
+                    )
+                    .values(
+                        status=TaskStatus.PENDING,
+                        fencing_token=fencing_token + 1,
+                        started_at=None,
+                    )
+                )
+                recovered += result.rowcount or 0
+
+            await self.session.commit()
+            return recovered
+
     async def complete_with_receipt(
         self,
         task_id: str,

@@ -217,13 +217,15 @@ class GlobalEmergencyKillSwitch:
 
         # State recovery: reset interrupted/running tasks to PENDING if task_repo is provided
         if task_repo:
-            try:
+            if hasattr(task_repo, "recover_running_after_emergency_stop"):
+                recovered_tasks_count = await task_repo.recover_running_after_emergency_stop()
+            else:
+                # Keep test doubles and older adapters compatible. The production
+                # TaskRepository uses the atomic attempt-cancellation/fencing path above.
                 running_tasks = await task_repo.list_by_status(TaskStatus.RUNNING)
                 for t in running_tasks:
                     await task_repo.update_status(t.task_id, TaskStatus.PENDING)
                     recovered_tasks_count += 1
-            except Exception as e:
-                logger.warning("Failed to recover task states during resume", error=str(e))
 
         # Unpause Boss AI and schedulers
         for brain in self._boss_brains:

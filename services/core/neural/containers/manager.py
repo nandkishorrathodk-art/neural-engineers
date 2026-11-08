@@ -134,7 +134,7 @@ class ContainerManager:
                 await container_repo.update_status(spec["docker_id"], target_status)
             except Exception as exc:
                 logger.warning("Failed to persist refreshed workstation status", error=str(exc))
-        if spec.get("novnc_port"):
+        if spec.get("novnc_port") and not live.get("desktop_url"):
             spec["desktop_url"] = f"http://localhost:{spec['novnc_port']}/vnc.html?autoconnect=true"
         return spec
 
@@ -281,6 +281,7 @@ class ContainerManager:
             image_name = f"ancos/{role_image}:latest" if ":" not in role_image else f"ancos/{role_image}"
         client = self._get_client()
         vnc_password: Optional[str] = None
+        remote: dict[str, Any] = {}
 
         if client is None:
             remote = await self._broker_request(
@@ -353,7 +354,10 @@ class ContainerManager:
             "dockerfile_path": "broker-managed-image",
             "vnc_port": vnc_port,
             "novnc_port": novnc_port,
-            "desktop_url": f"http://localhost:{novnc_port}/vnc.html?autoconnect=true",
+            "desktop_url": str(
+                remote.get("desktop_url")
+                or f"http://localhost:{novnc_port}/vnc.html?autoconnect=true"
+            ),
             "cpu_limit": effective_cpu,
             "mem_limit": effective_mem,
             "pids_limit": 200,
@@ -362,7 +366,7 @@ class ContainerManager:
             "workspace": workspace_path,
             "status": str(remote.get("status", "running")) if client is None else ContainerStatus.RUNNING.value,
             "started_at": str(remote.get("started_at") or datetime.now(timezone.utc).isoformat()) if client is None else datetime.now(timezone.utc).isoformat(),
-            "network": self.settings.EMPLOYEE_NETWORK
+            "network": str(remote.get("network") or self.settings.EMPLOYEE_NETWORK)
         }
 
         self._containers[docker_id] = container_spec
@@ -377,7 +381,7 @@ class ContainerManager:
                     vnc_port=vnc_port,
                     novnc_port=novnc_port,
                     resource_limits={"cpu_limit": effective_cpu, "mem_limit": effective_mem, "pids_limit": 200},
-                    network_config={"network": self.settings.EMPLOYEE_NETWORK},
+                    network_config={"network": container_spec["network"]},
                     workspace_path=workspace_path
                 )
                 container_spec["db_id"] = db_container.id
@@ -396,7 +400,11 @@ class ContainerManager:
         logger.info(
             "Desktop workstation ready",
             employee_id=employee_id,
-            desktop_url=container_spec["desktop_url"],
+            desktop_url=(
+                "localhost:12003/workstation session"
+                if "token=" in container_spec["desktop_url"]
+                else container_spec["desktop_url"]
+            ),
             vnc_port=vnc_port,
             novnc_port=novnc_port
         )

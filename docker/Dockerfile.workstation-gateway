@@ -1,0 +1,18 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    squid \
+    novnc \
+    websockify \
+    python3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/ancos-vnc-tokens /var/log/squid /var/spool/squid
+
+COPY docker/squid-ancos.conf /etc/squid/squid.conf
+COPY docker/entrypoint-workstation-gateway.sh /entrypoint.sh
+RUN chmod 0555 /entrypoint.sh && chown -R proxy:proxy /var/spool/squid /var/log/squid
+
+EXPOSE 3128 6080
+ENTRYPOINT ["/entrypoint.sh"]

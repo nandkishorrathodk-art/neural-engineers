@@ -30,9 +30,12 @@ services:
       - DOCKER_HOST=unix:///var/run/docker.sock
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
       - ANCOS_MAX_ACTIVE_DESKTOPS=${ANCOS_MAX_ACTIVE_DESKTOPS:-1}
+      - EMPLOYEE_NETWORK=ancos-employee-net
+      - VNC_TOKEN_DIR=/run/ancos-vnc-tokens
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./docker:/opt/ancos-docker:ro
+      - vnc_tokens:/run/ancos-vnc-tokens
     networks:
       - ancos-docker-control
     cap_drop:
@@ -41,6 +44,46 @@ services:
       - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS -H \"Authorization: Bearer $$DOCKER_BROKER_TOKEN\" http://127.0.0.1:12002/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      workstation-gateway:
+        condition: service_healthy
+
+  workstation-gateway:
+    image: ancos-workstation-gateway:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.workstation-gateway
+    container_name: ancos-workstation-gateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:12003:6080"
+    volumes:
+      - vnc_tokens:/run/ancos-vnc-tokens:ro
+    user: "13:13"
+    networks:
+      - workstation-egress
+    read_only: true
+    tmpfs:
+      - /run:uid=13,gid=13
+      - /var/run/squid:uid=13,gid=13
+      - /var/log/squid:uid=13,gid=13
+      - /var/spool/squid:uid=13,gid=13
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import socket; ports=(3128,6080); sockets=[socket.create_connection(('127.0.0.1',port),2) for port in ports]; [sock.close() for sock in sockets]"
       interval: 10s
       timeout: 3s
       retries: 5
@@ -181,8 +224,12 @@ networks:
   ancos-docker-control:
     name: ancos-docker-control
     internal: true
+  workstation-egress:
+    name: ancos-workstation-egress
+    driver: bridge
 
 volumes:
   redis_data:
+  vnc_tokens:
 
 

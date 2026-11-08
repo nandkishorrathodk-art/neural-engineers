@@ -43,7 +43,8 @@ class Settings(BaseSettings):
     DOCKER_BROKER_URL: Optional[str] = None
     DOCKER_BROKER_TOKEN: Optional[str] = None
     EMPLOYEE_WORKSPACE_BASE: str = "./data/workspaces"
-    EMPLOYEE_NETWORK: str = "ancos-bridge-net"
+    EMPLOYEE_NETWORK: str = "ancos-employee-net"
+    VNC_TOKEN_DIR: str = "/run/ancos-vnc-tokens"
     VNC_PORT_START: int = 5901
     NOVNC_PORT_START: int = 6081
 

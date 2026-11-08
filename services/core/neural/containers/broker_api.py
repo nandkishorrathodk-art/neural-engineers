@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import shutil
@@ -35,6 +36,7 @@ app = FastAPI(title="ANCOS Restricted Docker Broker", docs_url=None, redoc_url=N
 _docker_client: Any = None
 _port_lock = threading.Lock()
 _provision_lock = threading.Lock()
+_token_lock = threading.Lock()
 
 EMPLOYEE_ID_PATTERN = r"^ANC-EMP-[0-9A-Za-z_-]{1,48}$"
 ALLOWED_IMAGES = {
@@ -127,16 +129,119 @@ def validate_container_id(container_id: str) -> None:
         raise HTTPException(status_code=400, detail="Only ANCOS employee workstations are addressable.")
 
 
-def ensure_network(client: Any) -> None:
-    network_name = settings.EMPLOYEE_NETWORK
+def employee_network_name(employee_id: str) -> str:
+    return f"{settings.EMPLOYEE_NETWORK}-{employee_id.lower()}"
+
+
+def ensure_network(client: Any, employee_id: str) -> Any:
+    network_name = employee_network_name(employee_id)
     try:
-        client.networks.get(network_name)
+        network = client.networks.get(network_name)
     except NotFound:
         try:
-            client.networks.create(network_name, driver="bridge", check_duplicate=True)
+            network = client.networks.create(
+                network_name,
+                driver="bridge",
+                internal=True,
+                labels={"ancos.managed": "true", "ancos.employee_id": employee_id},
+                check_duplicate=True,
+            )
         except APIError:
             # Another broker instance may have created this fixed network concurrently.
-            client.networks.get(network_name)
+            network = client.networks.get(network_name)
+    if hasattr(network, "reload"):
+        network.reload()
+    network_attrs = getattr(network, "attrs", {}) or {}
+    network_labels = network_attrs.get("Labels") or {}
+    if (
+        not bool(network_attrs.get("Internal"))
+        or network_labels.get("ancos.managed") != "true"
+        or network_labels.get("ancos.employee_id") != employee_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Employee network must be Docker-internal; refusing workstation provisioning.",
+        )
+    try:
+        gateway = client.containers.get("ancos-workstation-gateway")
+    except NotFound as exc:
+        raise HTTPException(status_code=503, detail="Workstation gateway is unavailable.") from exc
+    if hasattr(gateway, "reload"):
+        gateway.reload()
+    gateway_state = ((getattr(gateway, "attrs", {}) or {}).get("State") or {})
+    gateway_health = gateway_state.get("Health") or {}
+    if gateway_state.get("Status") != "running" or gateway_health.get("Status") != "healthy":
+        raise HTTPException(status_code=503, detail="Workstation gateway is not healthy.")
+    attached = (getattr(network, "attrs", {}) or {}).get("Containers") or {}
+    if gateway.id not in attached:
+        network.connect(gateway, aliases=["ancos-egress-gateway"])
+    return network
+
+
+def remove_employee_network(client: Any, employee_id: str) -> None:
+    try:
+        network = client.networks.get(employee_network_name(employee_id))
+        network_attrs = getattr(network, "attrs", {}) or {}
+        network_labels = network_attrs.get("Labels") or {}
+        if (
+            not network_attrs.get("Internal")
+            or network_labels.get("ancos.managed") != "true"
+            or network_labels.get("ancos.employee_id") != employee_id
+        ):
+            raise HTTPException(status_code=409, detail="Employee network ownership check failed.")
+        gateway = client.containers.get("ancos-workstation-gateway")
+        attached = (getattr(network, "attrs", {}) or {}).get("Containers") or {}
+        if gateway.id in attached:
+            network.disconnect(gateway)
+        network.remove()
+    except NotFound:
+        return
+
+
+def token_file_path() -> Path:
+    return Path(settings.VNC_TOKEN_DIR) / "tokens"
+
+
+def write_vnc_token(container_name: str) -> str:
+    token = secrets.token_urlsafe(32)
+    token_path = token_file_path()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    with _token_lock:
+        current = token_path.read_text(encoding="utf-8").splitlines() if token_path.exists() else []
+        target = f"{container_name}:5901"
+        current = [line for line in current if line.rpartition(": ")[2] != target]
+        current.append(f"{token}: {target}")
+        temporary = token_path.with_name(f"tokens.{uuid.uuid4().hex}.tmp")
+        temporary.write_text("\n".join(current) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o444)
+        os.replace(temporary, token_path)
+    return token
+
+
+def read_vnc_token(container_name: str) -> str | None:
+    token_path = token_file_path()
+    if not token_path.exists():
+        return None
+    target = f"{container_name}:5901"
+    for line in token_path.read_text(encoding="utf-8").splitlines():
+        token, separator, mapped_target = line.partition(": ")
+        if separator and mapped_target == target:
+            return token
+    return None
+
+
+def revoke_vnc_token(container_name: str) -> None:
+    token_path = token_file_path()
+    with _token_lock:
+        if not token_path.exists():
+            return
+        current = token_path.read_text(encoding="utf-8").splitlines()
+        target = f"{container_name}:5901"
+        remaining = [line for line in current if line.rpartition(": ")[2] != target]
+        temporary = token_path.with_name(f"tokens.{uuid.uuid4().hex}.tmp")
+        temporary.write_text("\n".join(remaining) + ("\n" if remaining else ""), encoding="utf-8")
+        os.chmod(temporary, 0o444)
+        os.replace(temporary, token_path)
 
 
 def list_used_ports(client: Any) -> set[int]:
@@ -181,31 +286,31 @@ def serialize_container(container: Any, employee_id: str | None = None) -> dict[
     container.reload()
     labels = container.labels or {}
     employee_id = employee_id or labels.get("ancos.employee_id")
-    bindings = container.attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
-
-    def host_port(target: str) -> int | None:
-        values = bindings.get(target) or []
-        if not values:
-            return None
-        try:
-            return int(values[0]["HostPort"])
-        except (KeyError, TypeError, ValueError):
-            return None
-
-    return {
+    result = {
         "docker_id": container.name,
         "employee_id": employee_id,
         "image": container.image.tags[0] if container.image.tags else "unknown",
         "status": container.status,
-        "vnc_port": host_port("5901/tcp"),
-        "novnc_port": host_port("6081/tcp"),
+        "vnc_port": 5901 if container.status == "running" else None,
+        "novnc_port": 12003 if container.status == "running" else None,
         "workspace": labels.get("ancos.workspace_volume"),
         "cpu_limit": labels.get("ancos.cpu_limit"),
         "mem_limit": labels.get("ancos.mem_limit"),
         "user": "1000:1000",
         "privileged": False,
         "started_at": container.attrs.get("State", {}).get("StartedAt"),
+        "network": next(
+            iter((container.attrs.get("NetworkSettings", {}).get("Networks") or {}).keys()),
+            None,
+        ),
     }
+    token = read_vnc_token(container.name)
+    if token and container.status == "running":
+        result["desktop_url"] = (
+            "http://localhost:12003/vnc.html?autoconnect=true&path="
+            f"websockify%3Ftoken%3D{token}"
+        )
+    return result
 
 
 @app.middleware("http")
@@ -279,9 +384,9 @@ def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
     except ImageNotFound as exc:
         raise HTTPException(status_code=409, detail=f"Allowlisted image {payload.image} has not been built.") from exc
 
-    vnc_port, novnc_port = allocate_ports(client)
+    novnc_port = 12003
     volume_name = ensure_employee_volume(client, payload.employee_id)
-    ensure_network(client)
+    network = ensure_network(client, payload.employee_id)
     labels = {
         "ancos.managed": "true",
         "ancos.employee_id": payload.employee_id,
@@ -297,10 +402,6 @@ def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
             detach=True,
             labels=labels,
             user="1000:1000",
-            ports={
-                "5901/tcp": ("127.0.0.1", vnc_port),
-                "6081/tcp": ("127.0.0.1", novnc_port),
-            },
             volumes={volume_name: {"bind": "/home/employee/workspace", "mode": "rw"}},
             environment={
                 "DISPLAY": ":1",
@@ -308,6 +409,12 @@ def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
                 "NOVNC_PORT": "6081",
                 "EMPLOYEE_ID": payload.employee_id,
                 "VNC_PASSWORD": vnc_password,
+                "HTTP_PROXY": "http://ancos-egress-gateway:3128",
+                "HTTPS_PROXY": "http://ancos-egress-gateway:3128",
+                "http_proxy": "http://ancos-egress-gateway:3128",
+                "https_proxy": "http://ancos-egress-gateway:3128",
+                "NO_PROXY": "localhost,127.0.0.1,::1,ancos-core-api,ancos-egress-gateway",
+                "no_proxy": "localhost,127.0.0.1,::1,ancos-core-api,ancos-egress-gateway",
             },
             nano_cpus=int(payload.cpu_limit * 1_000_000_000),
             mem_limit=payload.mem_limit,
@@ -316,12 +423,28 @@ def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
             privileged=False,
             cap_drop=["ALL"],
             security_opt=["no-new-privileges:true"],
-            network=settings.EMPLOYEE_NETWORK,
+            network=network.name,
         )
+        token = write_vnc_token(name)
         result = serialize_container(container, payload.employee_id)
+        result["novnc_port"] = novnc_port
+        result["desktop_url"] = (
+            "http://localhost:12003/vnc.html?autoconnect=true&path="
+            f"websockify%3Ftoken%3D{token}"
+        )
         result["vnc_password"] = vnc_password
         return result
     except Exception as exc:
+        revoke_vnc_token(name)
+        try:
+            container = client.containers.get(name)
+            container.remove(force=True)
+        except Exception:
+            pass
+        try:
+            remove_employee_network(client, payload.employee_id)
+        except Exception:
+            pass
         raise HTTPException(status_code=503, detail=f"Docker refused workstation creation: {exc}") from exc
 
 
@@ -352,6 +475,10 @@ def terminate_container(container_id: str) -> dict[str, str]:
     if container.status == "running":
         container.stop(timeout=5)
     container.remove()
+    revoke_vnc_token(container_id)
+    employee_id = (container.labels or {}).get("ancos.employee_id")
+    if employee_id:
+        remove_employee_network(docker_client(), employee_id)
     return {"docker_id": container_id, "status": "terminated"}
 
 
