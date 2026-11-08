@@ -20,10 +20,14 @@ def test_model_routing_config_tiers_and_routes():
     reasoning_models = gateway.get_models_for_tier("reasoning")
     assert reasoning_models[0].startswith("nim/")
     assert len(reasoning_models) >= 2
+    assert reasoning_models[1] == "nim/nvidia/nemotron-3.5-bolt-e4b"
+    assert "nemotron-3-super-120b-a12b" not in reasoning_models
 
     coding_models = gateway.get_models_for_tier("coding")
     assert coding_models[0].startswith("nim/")
     assert len(coding_models) >= 2
+    assert coding_models[1] == "nim/nvidia/nemotron-3.5-bolt-e4b"
+    assert "nemotron-3-super-120b-a12b" not in coding_models
 
     fast_models = gateway.get_models_for_tier("fast")
     assert fast_models[0].startswith("nim/")

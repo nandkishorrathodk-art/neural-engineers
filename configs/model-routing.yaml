@@ -2,13 +2,13 @@ tiers:
   reasoning:
     primary: "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
     fallbacks:
-      - "nim/nvidia/nemotron-3-super-120b-a12b"
+      - "nim/nvidia/nemotron-3.5-bolt-e4b"
       - "nim/openai/gpt-oss-20b"
   
   coding:
     primary: "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
     fallbacks:
-      - "nim/nvidia/nemotron-3-super-120b-a12b"
+      - "nim/nvidia/nemotron-3.5-bolt-e4b"
       - "nim/openai/gpt-oss-20b"
 
   fast:
