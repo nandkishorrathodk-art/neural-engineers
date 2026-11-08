@@ -10,7 +10,6 @@ from neural.acceptance.neuro13 import (
 
 def _valid_verified_task():
     source_hash = "a" * 64
-    test_hash = "b" * 64
     checks = [
         "acceptance_criteria_is_supported_test_only_contract",
         "worker_test_result_and_independent_rerun_passed",
@@ -44,18 +43,16 @@ def _valid_verified_task():
             "workspace_manifest_before": {"complete": True, "file_count": 0},
             "workspace_manifest": {
                 "complete": True,
-                "file_count": 2,
-                "returned_file_count": 2,
+                "file_count": 1,
+                "returned_file_count": 1,
                 "files": [
-                    {"path": "src/main.py", "size_bytes": 10, "sha256": source_hash},
-                    {"path": "tests/test_main.py", "size_bytes": 20, "sha256": test_hash},
+                    {"path": "test_clamp.py", "size_bytes": 30, "sha256": source_hash},
                 ],
             },
             "workspace_delta": {
                 "complete": True,
                 "created": [
-                    {"path": "src/main.py", "size_bytes": 10, "sha256": source_hash},
-                    {"path": "tests/test_main.py", "size_bytes": 20, "sha256": test_hash},
+                    {"path": "test_clamp.py", "size_bytes": 30, "sha256": source_hash},
                 ],
                 "modified": [],
             },
@@ -123,8 +120,21 @@ def test_neuro13_runner_accepts_real_allowlisted_receipt_and_hash_delta():
     assert result["task_id"] == "TASK-REAL-RECEIPT"
     assert result["verifier_id"] == "verifier-1"
     assert result["test_executables"] == ["python3"]
-    assert result["artifact_paths"] == ["src/main.py", "tests/test_main.py"]
-    assert len(result["artifact_hashes"]) == 2
+    assert result["artifact_paths"] == ["test_clamp.py"]
+    assert len(result["artifact_hashes"]) == 1
+
+
+def test_neuro13_runner_rejects_artifacts_outside_the_single_requested_root_file():
+    task = _valid_verified_task()
+    evidence = task["verification_evidence"]
+    extra = {"path": "README.md", "size_bytes": 1, "sha256": "c" * 64}
+    evidence["workspace_manifest"]["file_count"] = 2
+    evidence["workspace_manifest"]["returned_file_count"] = 2
+    evidence["workspace_manifest"]["files"].append(extra)
+    evidence["workspace_delta"]["created"].append(extra)
+
+    with pytest.raises(AcceptanceFailed, match="exactly the requested root-level test_clamp.py"):
+        validate_verified_task(task)
 
 
 def test_neuro13_runner_rejects_delta_hash_that_disagrees_with_snapshot():

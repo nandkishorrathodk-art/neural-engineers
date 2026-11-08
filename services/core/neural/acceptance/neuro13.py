@@ -190,9 +190,14 @@ def validate_verified_task(task: dict[str, Any]) -> dict[str, Any]:
             changed_hashes[item["path"]] = item["after_sha256"]
     if not changed_hashes:
         raise AcceptanceFailed(f"Task {task.get('task_id')} did not create or modify a workspace artifact.")
-    changed_python_paths = [path for path in changed_hashes if path.lower().endswith(".py")]
-    if len(changed_python_paths) < 2 or not any("test" in path.rsplit("/", 1)[-1].lower() for path in changed_python_paths):
-        raise AcceptanceFailed(f"Task {task.get('task_id')} did not produce both a Python source artifact and a Python test artifact.")
+    # The focused mission intentionally asks for one combined source-and-test
+    # file (`test_clamp.py`). Requiring separate implementation and test files
+    # here would contradict the owner's acceptance objective and reject every
+    # otherwise-valid receipt for that mission.
+    if set(changed_hashes) != {"test_clamp.py"}:
+        raise AcceptanceFailed(
+            f"Task {task.get('task_id')} did not produce exactly the requested root-level test_clamp.py artifact."
+        )
     for item in manifest["files"]:
         if (
             not isinstance(item, dict)
