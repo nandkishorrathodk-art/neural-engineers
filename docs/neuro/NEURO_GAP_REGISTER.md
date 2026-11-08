@@ -1,6 +1,6 @@
 # ANCOS NEURO gap register
 
-Baseline: 2026-11-02; updated 2026-11-07. Priorities reflect safety and ability to prove delivered work, not feature count.
+Baseline: 2026-11-02; updated 2026-11-08. Priorities reflect safety and ability to prove delivered work, not feature count.
 
 | ID | Priority | Gap | Evidence / risk | Exit evidence |
 |---|---|---|---|---|

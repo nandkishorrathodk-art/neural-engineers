@@ -38,6 +38,9 @@ def fake_container_manager(monkeypatch):
 
 
 def test_hardware_profiler_and_scaling_profiles(monkeypatch):
+    # This test checks profile ceilings themselves, independent of a
+    # deployment-specific cap supplied by the developer's local environment.
+    monkeypatch.delenv("ANCOS_MAX_ACTIVE_DESKTOPS", raising=False)
     profiler = HardwareProfiler(profile=PROFILE_16GB)
 
     # Initial 16GB profile

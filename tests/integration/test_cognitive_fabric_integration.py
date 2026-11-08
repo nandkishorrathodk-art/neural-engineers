@@ -307,7 +307,10 @@ async def test_controlled_intelligence_loops_and_cycle_guard():
 
 
 @pytest.mark.asyncio
-async def test_resource_scheduler_workforce_stress_and_64gb_scaling():
+async def test_resource_scheduler_workforce_stress_and_64gb_scaling(monkeypatch):
+    # Exercise synthetic hardware profile ceilings, not the machine's
+    # deployment-specific desktop cap.
+    monkeypatch.delenv("ANCOS_MAX_ACTIVE_DESKTOPS", raising=False)
     temp_dir = tempfile.mkdtemp()
     try:
         ck_mgr = CheckpointManager(base_dir=temp_dir)
@@ -375,7 +378,10 @@ async def test_resource_scheduler_workforce_stress_and_64gb_scaling():
 
 
 @pytest.mark.asyncio
-async def test_ancos_cognitive_benchmark_runner():
+async def test_ancos_cognitive_benchmark_runner(monkeypatch):
+    # The benchmark verifies profile capacity; deployment caps are covered by
+    # dedicated workstation lease and scheduler tests.
+    monkeypatch.delenv("ANCOS_MAX_ACTIVE_DESKTOPS", raising=False)
     benchmark = ANCOSCognitiveBenchmark()
 
     # 1. Retrieval Benchmark

@@ -361,11 +361,15 @@ async def test_phase2_llm_gateway_transparent_fallback_under_execution():
     the gateway transparently switches to the fallback provider without dropping the task.
     """
     call_history = []
+    primary_model = None
 
     async def mock_failing_provider(model: str, prompt: str, **kwargs):
+        nonlocal primary_model
         call_history.append(model)
-        if model == "claude-3-5-sonnet-20241022":
-            raise ModelProviderError("500 Internal Server Error: Claude API unreachable")
+        if primary_model is None:
+            primary_model = model
+        if model == primary_model:
+            raise ModelProviderError("500 Internal Server Error: primary model unavailable")
         return {
             "content": f"Generated code implementation via {model}",
             "input_tokens": 200,
@@ -380,9 +384,8 @@ async def test_phase2_llm_gateway_transparent_fallback_under_execution():
     )
 
     # Primary failed, fallback succeeded
-    assert response.model == "gpt-4o"
-    assert "Generated code implementation via gpt-4o" in response.content
-    assert "claude-3-5-sonnet-20241022" in call_history
-    assert "gpt-4o" in call_history
+    assert len(set(call_history)) >= 2
+    assert response.model != primary_model
+    assert f"Generated code implementation via {response.model}" in response.content
     assert response.cost_usd > 0
 

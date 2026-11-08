@@ -79,7 +79,10 @@ async def create_provision_approval(session, employee_id: str):
 
 
 @pytest.mark.asyncio
-async def test_approved_workstation_lifecycle_claims_renews_and_releases_durable_slot(async_session):
+async def test_approved_workstation_lifecycle_claims_renews_and_releases_durable_slot(async_session, monkeypatch):
+    # This lifecycle regression specifically verifies the single-slot laptop
+    # deployment configuration; synthetic profile-capacity tests override it.
+    monkeypatch.setenv("ANCOS_MAX_ACTIVE_DESKTOPS", "1")
     first = await create_employee(async_session, "ANC-EMP-LEASE-1")
     second = await create_employee(async_session, "ANC-EMP-LEASE-2")
     first_approval = await create_provision_approval(async_session, first.employee_id)

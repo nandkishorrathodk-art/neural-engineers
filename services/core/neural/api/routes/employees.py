@@ -224,10 +224,14 @@ async def provision_employee_workstation(
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
 
-    docker_id = f"ancos-desktop-{employee.employee_id.lower()}"
+    # Approval consumption commits the shared AsyncSession and can expire ORM
+    # instances. Snapshot all employee fields needed below before that commit.
+    canonical_employee_id = employee.employee_id
+    employee_config = dict(employee.model_config_data or {})
+    docker_id = f"ancos-desktop-{canonical_employee_id.lower()}"
     lease = await claim_workstation_lease(
         resource_lease_repo,
-        employee.employee_id,
+        canonical_employee_id,
         docker_id,
     )
     if lease is None:
@@ -239,7 +243,7 @@ async def provision_employee_workstation(
     approval = await approval_repo.consume_once(
         approval_id,
         "PROVISION_WORKSTATION",
-        {"employee_id": employee.employee_id},
+        {"employee_id": canonical_employee_id},
         actor,
     )
     if not approval:
@@ -247,12 +251,12 @@ async def provision_employee_workstation(
         raise HTTPException(status_code=409, detail="A current, approved, unused workstation-provision approval is required.")
 
     role_image = "employee-base"
-    if employee.model_config_data and "container_template" in employee.model_config_data:
-        role_image = employee.model_config_data["container_template"]
+    if "container_template" in employee_config:
+        role_image = employee_config["container_template"]
 
     try:
         spec = await container_mgr.provision_employee_desktop(
-            employee_id=employee.employee_id,
+            employee_id=canonical_employee_id,
             role_image=role_image,
             container_repo=container_repo,
             employee_repo=employee_repo
@@ -280,7 +284,7 @@ async def provision_employee_workstation(
         resource_type="Container",
         resource_id=spec["docker_id"],
         details={
-            "employee_id": employee.employee_id,
+            "employee_id": canonical_employee_id,
             "vnc_port": spec["vnc_port"],
             "approval_id": approval.id,
         },
