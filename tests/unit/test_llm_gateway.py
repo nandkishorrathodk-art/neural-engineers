@@ -1,4 +1,6 @@
+import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 from neural.db.repositories import EmployeeRepository, PerformanceRepository
@@ -19,25 +21,124 @@ def test_model_routing_config_tiers_and_routes():
 
     reasoning_models = gateway.get_models_for_tier("reasoning")
     assert reasoning_models[0].startswith("nim/")
-    assert len(reasoning_models) >= 2
+    assert len(reasoning_models) == 5
     assert reasoning_models[1] == "nim/nvidia/nemotron-3.5-bolt-e4b"
+    assert reasoning_models[2] == "openai/gpt-6.1-sol"
+    assert reasoning_models[3] == "anthropic/claude-sonnet-5-5"
+    assert reasoning_models[4] == "gemini/gemini-3.5-flash"
     assert "nemotron-3-super-120b-a12b" not in reasoning_models
 
     coding_models = gateway.get_models_for_tier("coding")
     assert coding_models[0].startswith("nim/")
-    assert len(coding_models) >= 2
+    assert len(coding_models) == 5
     assert coding_models[1] == "nim/nvidia/nemotron-3.5-bolt-e4b"
+    assert coding_models[2] == "openai/gpt-6.1-sol"
+    assert coding_models[3] == "anthropic/claude-sonnet-5-5"
+    assert coding_models[4] == "gemini/gemini-3.5-flash"
     assert "nemotron-3-super-120b-a12b" not in coding_models
 
     fast_models = gateway.get_models_for_tier("fast")
     assert fast_models[0].startswith("nim/")
-    assert len(fast_models) >= 2
+    assert fast_models == [
+        "nim/openai/gpt-oss-20b",
+        "nim/nvidia/nemotron-3.5-lightning-30b-a3b",
+        "openai/gpt-6-luna",
+        "anthropic/claude-haiku-5-5",
+        "gemini/gemini-3.5-flash-lite",
+    ]
 
     # Verify routes mapped to tiers
     assert gateway.resolve_tier_for_route("boss_brain") == "reasoning"
     assert gateway.resolve_tier_for_route("code_generation") == "coding"
     assert gateway.resolve_tier_for_route("status_reporting") == "fast"
     assert gateway.resolve_tier_for_route("independent_verifier") == "reasoning"
+
+
+def test_model_routing_uses_only_configured_provider_credentials(monkeypatch):
+    gateway = LLMGateway(config_path="configs/model-routing.yaml")
+    candidates = gateway.get_models_for_tier("coding")
+    available_keys = {"nvidia", "anthropic"}
+    monkeypatch.setattr(
+        gateway,
+        "_provider_key",
+        lambda provider: "configured" if provider in available_keys else None,
+    )
+
+    assert gateway._filter_candidates_by_credentials(candidates) == [
+        "nim/nvidia/nemotron-3.5-lightning-30b-a3b",
+        "nim/nvidia/nemotron-3.5-bolt-e4b",
+        "anthropic/claude-sonnet-5-5",
+    ]
+
+
+def test_model_routing_keeps_offline_development_candidates_when_no_keys_exist(monkeypatch):
+    gateway = LLMGateway(config_path="configs/model-routing.yaml")
+    candidates = gateway.get_models_for_tier("fast")
+    monkeypatch.setattr(gateway, "_provider_key", lambda _provider: None)
+
+    assert gateway._filter_candidates_by_credentials(candidates) == candidates
+
+
+def test_model_routing_can_fail_over_across_each_configured_vendor(monkeypatch):
+    gateway = LLMGateway(config_path="configs/model-routing.yaml")
+    candidates = gateway.get_models_for_tier("coding")
+    configured = {"nvidia", "openai", "anthropic", "gemini"}
+    monkeypatch.setattr(
+        gateway,
+        "_provider_key",
+        lambda provider: "configured" if provider in configured else None,
+    )
+
+    assert gateway._filter_candidates_by_credentials(candidates) == candidates
+    assert {gateway._model_provider(model) for model in candidates} == configured
+
+
+def test_model_routing_defaults_use_live_multivendor_model_ids():
+    gateway = LLMGateway(config_path="missing-routing-config.yaml")
+
+    assert gateway.get_models_for_tier("coding") == [
+        "openai/gpt-6.1-sol",
+        "anthropic/claude-sonnet-5-5",
+        "gemini/gemini-3.5-flash",
+    ]
+    assert gateway.get_models_for_tier("unknown-tier") == ["openai/gpt-6-luna"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "expected_provider"),
+    [
+        ("openai/gpt-6.1-sol", "openai"),
+        ("anthropic/claude-sonnet-5-5", "anthropic"),
+        ("gemini/gemini-3.5-flash", "gemini"),
+    ],
+)
+async def test_direct_provider_invocation_receipt_names_vendor(monkeypatch, model, expected_provider):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        model=model.split("/", 1)[-1],
+    )
+
+    call_args = {}
+
+    async def fake_acompletion(**kwargs):
+        call_args.update(kwargs)
+        return response
+
+    monkeypatch.setitem(sys.modules, "litellm", SimpleNamespace(acompletion=fake_acompletion))
+    gateway = LLMGateway(provider_invoker=None)
+
+    result = await gateway._invoke_provider(model=model, prompt="test")
+
+    assert result["provider"] == expected_provider
+    assert call_args["model"] == model
+    assert call_args["max_tokens"] == 2000
+    if expected_provider == "anthropic":
+        assert "temperature" not in call_args
+    else:
+        assert call_args["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
@@ -204,6 +305,14 @@ def test_cost_tracker_calculation_and_aggregation():
     # Local / open model: $0.00
     cost_local = tracker.calculate_cost("qwen-2.5-coder-32b", 500_000, 500_000)
     assert cost_local == 0.0
+
+    # Provider fallbacks use explicit catalog pricing in their durable budget quote.
+    assert tracker.calculate_cost("openai/gpt-6.1-sol", 10_000, 1_000) == 0.03
+    assert tracker.calculate_cost("openai/gpt-6-luna", 10_000, 1_000) == 0.0015
+    assert tracker.calculate_cost("anthropic/claude-sonnet-5-5", 10_000, 1_000) == 0.03
+    assert tracker.calculate_cost("anthropic/claude-haiku-5-5", 10_000, 1_000) == 0.0075
+    assert tracker.calculate_cost("gemini/gemini-3.5-flash", 10_000, 1_000) == 0.024
+    assert tracker.calculate_cost("gemini/gemini-3.5-flash-lite", 10_000, 1_000) == 0.0055
 
     # 2. Record usage by task and employee
     tracker.record_usage(

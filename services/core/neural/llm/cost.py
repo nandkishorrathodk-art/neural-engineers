@@ -16,6 +16,11 @@ def utc_now() -> datetime:
 
 # Pricing table in USD per 1,000,000 tokens (Standard benchmark rates)
 MODEL_PRICING_PER_1M = {
+    # Verified provider fallback models (2026-11-08). Anthropic Haiku uses its
+    # >100k-token rate here so reservations are conservative for long prompts.
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00},
+    "claude-haiku-5-5": {"input": 0.50, "output": 2.50},
+
     # Anthropic Claude
     "claude-3-7-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
@@ -24,12 +29,16 @@ MODEL_PRICING_PER_1M = {
     "claude-3-opus": {"input": 15.00, "output": 75.00},
 
     # OpenAI
+    "gpt-6.1-sol": {"input": 2.00, "output": 10.00},
+    "gpt-6-luna": {"input": 0.10, "output": 0.50},
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "o1-preview": {"input": 15.00, "output": 60.00},
     "o1-mini": {"input": 3.00, "output": 12.00},
 
     # Google Gemini
+    "gemini-3.5-flash": {"input": 1.50, "output": 9.00},
+    "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
     "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
 

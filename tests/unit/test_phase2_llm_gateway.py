@@ -46,7 +46,7 @@ async def test_llm_gateway_transparent_fallback_cascade():
 
     assert response.model == route[2]
     assert f"Success from {route[2]}" in response.content
-    assert response.metadata["attempted_models"] == route
+    assert response.metadata["attempted_models"] == route[:3]
     assert response.cost_usd > 0
 
 

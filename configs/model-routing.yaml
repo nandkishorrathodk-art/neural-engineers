@@ -3,18 +3,25 @@ tiers:
     primary: "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
     fallbacks:
       - "nim/nvidia/nemotron-3.5-bolt-e4b"
-      - "nim/openai/gpt-oss-20b"
+      - "openai/gpt-6.1-sol"
+      - "anthropic/claude-sonnet-5-5"
+      - "gemini/gemini-3.5-flash"
   
   coding:
     primary: "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
     fallbacks:
       - "nim/nvidia/nemotron-3.5-bolt-e4b"
-      - "nim/openai/gpt-oss-20b"
+      - "openai/gpt-6.1-sol"
+      - "anthropic/claude-sonnet-5-5"
+      - "gemini/gemini-3.5-flash"
 
   fast:
     primary: "nim/openai/gpt-oss-20b"
     fallbacks:
       - "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+      - "openai/gpt-6-luna"
+      - "anthropic/claude-haiku-5-5"
+      - "gemini/gemini-3.5-flash-lite"
 
 routes:
   boss_brain: "reasoning"

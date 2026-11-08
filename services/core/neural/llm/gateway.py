@@ -137,16 +137,16 @@ class LLMGateway:
     def _load_fallback_defaults(self) -> None:
         self.tiers_config = {
             "reasoning": {
-                "primary": "claude-3-7-sonnet",
-                "fallbacks": ["gpt-4o", "gemini-1.5-pro"]
+                "primary": "openai/gpt-6.1-sol",
+                "fallbacks": ["anthropic/claude-sonnet-5-5", "gemini/gemini-3.5-flash"]
             },
             "coding": {
-                "primary": "claude-3-5-sonnet-20241022",
-                "fallbacks": ["gpt-4o", "qwen-2.5-coder-32b"]
+                "primary": "openai/gpt-6.1-sol",
+                "fallbacks": ["anthropic/claude-sonnet-5-5", "gemini/gemini-3.5-flash"]
             },
             "fast": {
-                "primary": "gpt-4o-mini",
-                "fallbacks": ["claude-3-5-haiku", "gemini-1.5-flash"]
+                "primary": "openai/gpt-6-luna",
+                "fallbacks": ["anthropic/claude-haiku-5-5", "gemini/gemini-3.5-flash-lite"]
             }
         }
         self.routes_config = {
@@ -178,7 +178,53 @@ class LLMGateway:
         for fb in fallbacks:
             if fb not in models:
                 models.append(fb)
-        return models or ["gpt-4o-mini"]
+        return models or ["openai/gpt-6-luna"]
+
+    @staticmethod
+    def _model_provider(model: str) -> str | None:
+        normalized = model.lower()
+        prefix = normalized.split("/", 1)[0] if "/" in normalized else ""
+        if normalized.startswith("nim/"):
+            return "nvidia"
+        if prefix in {"openai", "anthropic", "gemini", "nvidia"}:
+            return prefix
+        if normalized.startswith("gpt-") or normalized.startswith("o1") or normalized.startswith("o3"):
+            return "openai"
+        if normalized.startswith("claude-"):
+            return "anthropic"
+        if normalized.startswith("gemini-"):
+            return "gemini"
+        return None
+
+    def _provider_key(self, provider: str) -> str | None:
+        setting_names = {
+            "openai": "OPENAI_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "nvidia": "NVIDIA_API_KEY",
+        }
+        setting_name = setting_names.get(provider)
+        if setting_name is None:
+            return None
+        return getattr(self.settings, setting_name, None) or os.getenv(setting_name)
+
+    def _filter_candidates_by_credentials(self, candidates: list[str]) -> list[str]:
+        """Use other configured providers as fallback; skip providers without keys."""
+        if self.custom_invoker:
+            return candidates
+        configured_providers = {
+            provider
+            for provider in ("openai", "anthropic", "gemini", "nvidia")
+            if self._provider_key(provider)
+        }
+        # Preserve the explicit offline-development simulation when no keys
+        # exist. Production readiness checks reject this mode separately.
+        if not configured_providers:
+            return candidates
+        return [
+            model for model in candidates
+            if (provider := self._model_provider(model)) is None or provider in configured_providers
+        ]
 
     def resolve_tier_for_route(self, route: str) -> str:
         """Resolves functional route name to corresponding tier."""
@@ -278,11 +324,17 @@ class LLMGateway:
                         **({"extra_body": extra_body} if extra_body else {}),
                     )
             else:
+                completion_args: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                }
+                # Current Claude models reject non-default temperature
+                # settings; omit the optional parameter and use provider defaults.
+                if self._model_provider(model) != "anthropic":
+                    completion_args["temperature"] = temperature
                 response = await litellm.acompletion(
-                    model=model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
+                    **completion_args,
                 )
             content = response.choices[0].message.content or ""
             usage = getattr(response, "usage", None)
@@ -294,7 +346,7 @@ class LLMGateway:
                 "content": content,
                 "input_tokens": in_tok,
                 "output_tokens": out_tok,
-                "provider": "nvidia" if model.startswith("nim/") else provider
+                "provider": self._model_provider(model) or provider
             }
         except Exception as e:
             if self._is_rate_limit(e):
@@ -326,6 +378,11 @@ class LLMGateway:
             candidates = [model]
         else:
             candidates = self.get_models_for_tier(effective_tier)
+        candidates = self._filter_candidates_by_credentials(candidates)
+        if not candidates:
+            raise ModelProviderError(
+                f"No candidate model for tier '{effective_tier}' has a configured provider credential."
+            )
 
         if budget_scope_caps is None:
             if db_session is not None:
@@ -514,6 +571,11 @@ class LLMGateway:
 
         effective_tier = tier or (self.resolve_tier_for_route(route) if route else "reasoning")
         candidates = [model] if model else self.get_models_for_tier(effective_tier)
+        candidates = self._filter_candidates_by_credentials(candidates)
+        if not candidates:
+            raise ModelProviderError(
+                f"No candidate model for tier '{effective_tier}' has a configured provider credential."
+            )
 
         last_error: Optional[Exception] = None
         for candidate_model in candidates:
