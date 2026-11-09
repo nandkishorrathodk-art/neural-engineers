@@ -1,5 +1,6 @@
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -64,8 +65,17 @@ class TaskPlanner:
         self,
         objective: str,
         db_session: Optional[Any] = None,
+        project_id: Optional[str] = None,
+        budget_usd: Optional[float] = None,
     ) -> dict[str, Any]:
         assert self.llm_gateway is not None
+        budget_scope_caps = None
+        if project_id is not None and budget_usd is not None:
+            month_scope = datetime.now(timezone.utc).strftime("%Y-%m")
+            budget_scope_caps = {
+                f"organization-month:{month_scope}": self.llm_gateway.cost_tracker.monthly_hard_cap_usd,
+                f"project:{project_id}": budget_usd,
+            }
         plan, response = await self.llm_gateway.generate_structured(
             prompt=(
                 "Create a practical software project plan for this human objective. "
@@ -94,6 +104,8 @@ class TaskPlanner:
             temperature=0.1,
             max_tokens=3500,
             db_session=db_session,
+            project_id=project_id,
+            budget_scope_caps=budget_scope_caps,
         )
 
         if plan.clarification_required:
@@ -277,13 +289,20 @@ class TaskPlanner:
         self,
         objective: str,
         db_session: Optional[Any] = None,
+        project_id: Optional[str] = None,
+        budget_usd: Optional[float] = None,
     ) -> dict[str, Any]:
         """
         Decomposes natural language objective into hierarchical execution plan:
         Projects -> Phases -> Tasks -> Subtasks
         """
         if objective and objective.strip() and self.llm_gateway and self._has_configured_provider(self.llm_gateway):
-            return await self._decompose_with_model(objective.strip(), db_session=db_session)
+            return await self._decompose_with_model(
+                objective.strip(),
+                db_session=db_session,
+                project_id=project_id,
+                budget_usd=budget_usd,
+            )
 
         normalized = " ".join(re.findall(r"[a-z0-9]+", objective.lower())) if objective else ""
         words = normalized.split()

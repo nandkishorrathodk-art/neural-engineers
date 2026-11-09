@@ -93,3 +93,76 @@ async def test_ambiguous_provider_failure_keeps_reservation_and_is_not_retried(a
     assert reservation is not None and reservation.status == "reserved"
     account = await async_session.get(BudgetAccount, "project:uncertain")
     assert account is not None and account.reserved_usd == reservation.reserved_usd
+
+
+@pytest.mark.asyncio
+async def test_boss_planning_reserves_owner_project_budget_before_inference(async_session, monkeypatch):
+    import json
+
+    from neural.boss.planner import TaskPlanner
+    from neural.config import get_settings
+
+    calls = []
+
+    async def invoke(**kwargs):
+        calls.append(kwargs)
+        return {
+            "content": json.dumps({
+                "code_name": "Budgeted",
+                "complexity": "low",
+                "requirements": ["Produce one bounded task"],
+                "technical_risks": [],
+                "mitigation_strategies": [],
+                "phases": [{
+                    "title": "Implementation",
+                    "tasks": [{
+                        "task_id": "budgeted-task",
+                        "title": "Build the requested feature",
+                        "objective": "Implement the requested feature.",
+                        "scope": "One implementation task",
+                        "role_required": "software-engineer",
+                        "skills_required": ["Python"],
+                        "execution_mode": "terminal",
+                        "dependencies": [],
+                        "acceptance_criteria": "A persisted implementation passes independent verification.",
+                        "subtasks": [],
+                        "estimated_hours": 1,
+                        "max_tokens": 4000,
+                    }],
+                }],
+            }),
+            "input_tokens": 20,
+            "output_tokens": 100,
+            "provider": "test-provider",
+        }
+
+    gateway = LLMGateway(provider_invoker=invoke)
+    monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    get_settings.cache_clear()
+    planner = TaskPlanner(llm_gateway=gateway)
+    project_id = "planned-project-budget-test"
+
+    with pytest.raises(QuotaExceededError):
+        await planner.decompose_objective(
+            "Implement the requested feature",
+            db_session=async_session,
+            project_id=project_id,
+            budget_usd=0.000001,
+        )
+
+    assert calls == []
+    assert await async_session.get(BudgetAccount, f"project:{project_id}") is None
+
+    result = await planner.decompose_objective(
+        "Implement the requested feature",
+        db_session=async_session,
+        project_id=project_id,
+        budget_usd=5.0,
+    )
+    account = await async_session.get(BudgetAccount, f"project:{project_id}")
+    assert result["plan_source"] == "llm"
+    assert len(calls) == 1
+    assert account is not None
+    assert account.cap_usd == Decimal("5.00000000")
+    assert account.reserved_usd == Decimal("0E-8")
+    assert account.spent_usd > Decimal("0E-8")

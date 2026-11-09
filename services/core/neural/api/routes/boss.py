@@ -32,6 +32,7 @@ from neural.exceptions import (
     ClarificationRequiredError,
     ContainerError,
     ModelProviderError,
+    QuotaExceededError,
     UnsupportedExecutionModeError,
 )
 from neural.security.approval_gates import HumanApprovalGate
@@ -92,12 +93,6 @@ async def submit_objective(
 ):
     if not payload.objective or not payload.objective.strip():
         raise HTTPException(status_code=400, detail="Objective cannot be empty")
-    if payload.budget_usd is not None:
-        raise HTTPException(
-            status_code=501,
-            detail="Project-level hard budget enforcement is not wired to durable multi-worker accounting yet.",
-        )
-
     employees_before = await employee_repo.list_all()
     existing_ids = {employee.employee_id for employee in employees_before}
     brain = BossBrain(project_repo=project_repo, task_repo=task_repo, employee_repo=employee_repo)
@@ -110,6 +105,7 @@ async def submit_objective(
             auto_recruit_workforce=True,
             deadline_days=payload.deadline_days,
             scheduled_at=payload.scheduled_at,
+            budget_usd=payload.budget_usd,
         )
     except ClarificationRequiredError as exc:
         raise HTTPException(
@@ -125,6 +121,11 @@ async def submit_objective(
         raise HTTPException(
             status_code=503,
             detail={"code": "planning_unavailable", "message": str(exc)},
+        ) from exc
+    except QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "budget_limit_exceeded", "message": str(exc)},
         ) from exc
 
     employees_after = await employee_repo.list_all()
@@ -145,6 +146,7 @@ async def submit_objective(
             "tasks_count": len(tasks),
             "deadline_days": payload.deadline_days,
             "scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
+            "budget_usd": payload.budget_usd,
             "plan_source": (project.execution_plan or {}).get("plan_source", "unknown"),
         }
     )

@@ -771,10 +771,17 @@ async def test_production_objective_is_owner_authenticated_and_audited(
             json={"objective": "Create a cost-bounded API service", "budget_usd": 10},
             headers={"Authorization": f"Bearer {owner_token}"},
         )
-        assert budget_request.status_code == 501
-        assert await ProjectRepository(async_session).list_all() == []
-        assert await EmployeeRepository(async_session).list_all() == []
-        assert await AuditRepository(async_session).list_all() == []
+        assert budget_request.status_code == 200
+        budget_project_id = budget_request.json()["id"]
+        budget_project = await ProjectRepository(async_session).get_by_id(budget_project_id)
+        assert budget_project is not None
+        assert budget_project.execution_plan["budget_usd"] == 10
+        assert await TaskRepository(async_session).list_by_project(budget_project_id)
+        budget_events = [
+            event for event in await AuditRepository(async_session).list_all()
+            if event.resource_id == budget_project_id and event.action == "SUBMIT_OBJECTIVE"
+        ]
+        assert len(budget_events) == 1 and budget_events[0].details["budget_usd"] == 10
 
         accepted = await client.post(
             "/boss/objective",

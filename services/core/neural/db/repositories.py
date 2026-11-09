@@ -92,8 +92,16 @@ class ProjectRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, name: str, objective: str, execution_plan: Optional[dict[str, Any]] = None) -> Project:
+    async def create(
+        self,
+        name: str,
+        objective: str,
+        execution_plan: Optional[dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+    ) -> Project:
         project = Project(name=name, objective=objective, execution_plan=execution_plan)
+        if project_id is not None:
+            project.id = project_id
         self.session.add(project)
         await self.session.commit()
         await self.session.refresh(project)

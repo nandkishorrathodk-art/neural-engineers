@@ -1,4 +1,6 @@
+import math
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -107,7 +109,11 @@ class BossBrain:
         return self.scheduler
 
     async def analyze_and_plan(
-        self, objective: str, db_session: Optional[Any] = None
+        self,
+        objective: str,
+        db_session: Optional[Any] = None,
+        project_id: Optional[str] = None,
+        budget_usd: Optional[float] = None,
     ) -> dict[str, Any]:
         from neural.exceptions import ClarificationRequiredError, EmergencyStopTriggered
         from neural.security.kill_switch import get_kill_switch
@@ -117,7 +123,12 @@ class BossBrain:
             raise EmergencyStopTriggered("BossBrain is currently paused due to emergency halt.")
 
         logger.info("Boss AI analyzing incoming objective", objective=objective)
-        plan = await self.planner.decompose_objective(objective, db_session=db_session)
+        plan = await self.planner.decompose_objective(
+            objective,
+            db_session=db_session,
+            project_id=project_id,
+            budget_usd=budget_usd,
+        )
         if plan.get("clarification_required") is True:
             questions = plan.get("clarifying_questions")
             if not isinstance(questions, list) or not questions:
@@ -137,6 +148,7 @@ class BossBrain:
         auto_recruit_workforce: bool = False,
         deadline_days: Optional[int] = None,
         scheduled_at: Optional[datetime] = None,
+        budget_usd: Optional[float] = None,
     ) -> tuple[Project, list[Task]]:
         """
         Analyzes objective, produces structured execution plan,
@@ -150,9 +162,19 @@ class BossBrain:
         if not p_repo:
             raise ValueError("ProjectRepository is required to persist project")
 
+        if budget_usd is not None and (
+            not math.isfinite(budget_usd) or budget_usd <= 0 or budget_usd > 1_000_000
+        ):
+            raise ValueError("budget_usd must be greater than 0 and at most 1000000")
+        project_id = str(uuid.uuid4())
         plan = await self.analyze_and_plan(
-            objective, db_session=getattr(p_repo, "session", None)
+            objective,
+            db_session=getattr(p_repo, "session", None),
+            project_id=project_id,
+            budget_usd=budget_usd,
         )
+        if budget_usd is not None:
+            plan["budget_usd"] = budget_usd
         project_deadline: Optional[datetime] = None
         if deadline_days is not None:
             if deadline_days < 1 or deadline_days > 3650:
@@ -177,7 +199,8 @@ class BossBrain:
         project = await p_repo.create(
             name=name,
             objective=objective,
-            execution_plan=plan
+            execution_plan=plan,
+            project_id=project_id,
         )
         logger.info("Project persisted in database", project_id=project.id, name=project.name)
 
