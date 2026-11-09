@@ -279,6 +279,7 @@ class Task(Base):
     fencing_token: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
     deadline: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 

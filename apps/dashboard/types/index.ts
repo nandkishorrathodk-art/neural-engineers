@@ -43,6 +43,7 @@ export interface Task {
   status: string;
   assigned_to?: string | null;
   priority: string;
+  scheduled_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
 }

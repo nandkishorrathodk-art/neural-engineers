@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
 from neural.constants import ActionItemStatus, ExecutionMode, MeetingType, ProposalType, VoteChoice
@@ -10,6 +10,21 @@ class ObjectiveSubmissionRequest(BaseModel):
     project_name: Optional[str] = Field(None, description="Optional name for the project")
     budget_usd: Optional[float] = Field(None, gt=0, le=1_000_000, description="Requested hard project budget in USD")
     deadline_days: Optional[int] = Field(None, ge=1, le=3650, description="Target project deadline in days")
+    scheduled_at: Optional[datetime] = Field(
+        None, description="Optional UTC start time; task execution is held until this time."
+    )
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def normalize_scheduled_at(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("scheduled_at must include a timezone offset")
+        normalized = value.astimezone(timezone.utc).replace(tzinfo=None)
+        if normalized <= datetime.now(timezone.utc).replace(tzinfo=None):
+            raise ValueError("scheduled_at must be in the future")
+        return normalized
 
 
 class TaskRecoveryApprovalRequest(BaseModel):

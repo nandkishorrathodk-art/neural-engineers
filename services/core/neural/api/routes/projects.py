@@ -60,6 +60,7 @@ async def get_project_tasks(
             status=t.status,
             assigned_to=t.assigned_to,
             priority=t.priority.value if hasattr(t.priority, "value") else str(t.priority),
+            scheduled_at=t.scheduled_at,
             started_at=t.started_at,
             completed_at=t.completed_at
         )
@@ -89,6 +90,7 @@ async def get_project_task_by_id(
         status=task.status,
         assigned_to=task.assigned_to,
         priority=task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+        scheduled_at=task.scheduled_at,
         started_at=task.started_at,
         completed_at=task.completed_at
     )

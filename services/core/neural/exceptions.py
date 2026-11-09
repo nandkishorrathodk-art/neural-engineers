@@ -64,6 +64,11 @@ class ModelProviderError(ANCOSError):
     pass
 
 
+class UnsupportedExecutionModeError(ANCOSError):
+    """Raised when a plan requires a task mode without a running worker consumer."""
+    pass
+
+
 class FabricatedProgressError(ANCOSError):
     """Raised when an employee progress report contains ungrounded or fabricated percentages/metrics."""
     pass

@@ -398,6 +398,7 @@ class TaskRepository:
         candidate_query = select(Task).where(
             Task.assigned_to.is_not(None),
             Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
+            or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
         )
         if execution_modes is not None:
             mode_values = [getattr(mode, "value", mode) for mode in execution_modes]
@@ -562,6 +563,7 @@ class TaskRepository:
         ready_query = select(Task).where(
             Task.status == TaskStatus.PENDING,
             Task.assigned_to.is_(None),
+            or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
         )
         if execution_modes is not None:
             mode_values = [getattr(mode, "value", mode) for mode in execution_modes]

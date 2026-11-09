@@ -1522,6 +1522,75 @@ async def test_worker_claim_filters_execution_modes_before_leasing(async_session
     assert persisted.fencing_token == 0
 
 
+@pytest.mark.asyncio
+async def test_worker_claim_waits_until_scheduled_task_is_due(async_session):
+    project = await ProjectRepository(async_session).create(name="Scheduled", objective="Wait for schedule")
+    container = await ContainerRepository(async_session).create(
+        docker_id="ancos-desktop-anc-emp-scheduled-test",
+        image="test-image",
+        status=ContainerStatus.RUNNING,
+        workspace_path="/tmp/scheduled-test",
+    )
+    employee = await EmployeeRepository(async_session).create(
+        employee_id="ANC-EMP-SCHEDULED-TEST",
+        name="Scheduled Worker",
+        title="Backend Engineer",
+        system_prompt="test employee",
+        status=EmployeeStatus.IDLE,
+        container_id=container.id,
+    )
+    task_repo = TaskRepository(async_session)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    task = await task_repo.create(
+        task_id="TASK-SCHEDULED-TEST",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Wait for start time",
+        objective="Do not claim this work before its scheduled time",
+        scope="Scheduling",
+        acceptance_criteria="Claim only after the schedule is due",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.ASSIGNED,
+        scheduled_at=now + timedelta(hours=1),
+    )
+
+    assert await task_repo.claim_next_task("scheduled-worker", execution_modes=[ExecutionMode.TERMINAL]) is None
+    assert await task_repo.list_attempts_by_project(project.id) == []
+
+    task.scheduled_at = now - timedelta(seconds=1)
+    await async_session.commit()
+    claimed = await task_repo.claim_next_task("scheduled-worker", execution_modes=[ExecutionMode.TERMINAL])
+    assert claimed is not None
+    assert claimed["task_id"] == task.task_id
+
+
+@pytest.mark.asyncio
+async def test_dag_scheduler_holds_future_tasks_until_their_start_time(async_session):
+    from neural.tasks.scheduler import TaskScheduler
+
+    project = await ProjectRepository(async_session).create(name="Scheduled DAG", objective="Wait for start time")
+    task_repo = TaskRepository(async_session)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    task = await task_repo.create(
+        task_id="TASK-SCHEDULED-DAG",
+        project_id=project.id,
+        title="Wait for scheduled dispatch",
+        objective="Remain pending until start time",
+        scope="Scheduling",
+        acceptance_criteria="Dispatch only after the scheduled time",
+        execution_mode=ExecutionMode.TERMINAL,
+        status=TaskStatus.PENDING,
+        scheduled_at=now + timedelta(hours=1),
+    )
+    scheduler = TaskScheduler(task_repo=task_repo)
+
+    assert await scheduler.get_ready_tasks(project.id) == []
+    task.scheduled_at = now - timedelta(seconds=1)
+    await async_session.commit()
+    ready = await scheduler.get_ready_tasks(project.id)
+    assert [ready_task.task_id for ready_task in ready] == [task.task_id]
+
+
 def test_worker_terminal_command_contract_rejects_shells_and_unapproved_executables():
     assert WorkerCommandRequest.model_validate(
         {"fencing_token": 3, "command": ["pytest", "-q", "tests"]}

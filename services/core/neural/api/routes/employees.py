@@ -434,6 +434,7 @@ async def get_employee_tasks(
             status=t.status,
             assigned_to=t.assigned_to,
             priority=t.priority.value if hasattr(t.priority, "value") else str(t.priority),
+            scheduled_at=t.scheduled_at,
             started_at=t.started_at,
             completed_at=t.completed_at
         )

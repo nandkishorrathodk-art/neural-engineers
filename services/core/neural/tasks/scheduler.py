@@ -136,7 +136,11 @@ class TaskScheduler:
 
         ready_tasks = [
             task_map[tid] for tid in ready_ids
-            if tid in task_map and task_map[tid].status == TaskStatus.PENDING
+            if (
+                tid in task_map
+                and task_map[tid].status == TaskStatus.PENDING
+                and (task_map[tid].scheduled_at is None or task_map[tid].scheduled_at <= utc_now())
+            )
         ]
         return ready_tasks
 

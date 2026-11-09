@@ -136,6 +136,7 @@ class BossBrain:
         auto_assign_first_task: bool = True,
         auto_recruit_workforce: bool = False,
         deadline_days: Optional[int] = None,
+        scheduled_at: Optional[datetime] = None,
     ) -> tuple[Project, list[Task]]:
         """
         Analyzes objective, produces structured execution plan,
@@ -161,6 +162,15 @@ class BossBrain:
                 **_json_object(plan.get("owner_constraints")),
                 "deadline_days": deadline_days,
                 "deadline_at": project_deadline.isoformat(),
+            }
+        if scheduled_at is not None:
+            if scheduled_at.tzinfo is not None:
+                scheduled_at = scheduled_at.astimezone(timezone.utc).replace(tzinfo=None)
+            if scheduled_at <= datetime.now(timezone.utc).replace(tzinfo=None):
+                raise ValueError("scheduled_at must be in the future")
+            plan["owner_constraints"] = {
+                **_json_object(plan.get("owner_constraints")),
+                "scheduled_at": scheduled_at.isoformat(),
             }
         name = project_name or f"Project-{plan.get('code_name', 'Alpha')}"
 
@@ -198,6 +208,7 @@ class BossBrain:
                         status=TaskStatus.PENDING,
                         resource_budget=task_info.get("resource_budget", {"estimated_hours": 4, "max_tokens": 50000}),
                         deadline=project_deadline,
+                        scheduled_at=scheduled_at,
                     )
                     created_tasks.append(task)
                     phase_to_task_ids[phase_id].append(task.task_id)
@@ -571,6 +582,7 @@ class BossBrain:
                 "assigned_employee_id": employee.employee_id if employee else None,
                 "assigned_employee_name": employee.name if employee else None,
                 "deadline": task.deadline,
+                "scheduled_at": task.scheduled_at,
                 "overdue": overdue,
                 "started_at": task.started_at,
                 "completed_at": task.completed_at,

@@ -109,7 +109,7 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
                             "scope": "Frontend implementation",
                             "role_required": "frontend-engineer",
                             "skills_required": ["HTML"],
-                            "execution_mode": "gui",
+                            "execution_mode": "terminal",
                             "dependencies": [],
                             "acceptance_criteria": "The page renders and contains the requested content.",
                             "subtasks": ["Draft the page"],
@@ -123,7 +123,7 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
                             "scope": "Independent review",
                             "role_required": "qa-engineer",
                             "skills_required": ["Browser QA"],
-                            "execution_mode": "hybrid",
+                            "execution_mode": "terminal",
                             "dependencies": ["draft"],
                             "acceptance_criteria": "A reviewer confirms the rendered page meets the criteria.",
                             "subtasks": ["Inspect the page"],
@@ -146,12 +146,72 @@ async def test_boss_planner_uses_configured_llm_and_rewrites_task_dependencies(m
     assert plan["plan_source"] == "llm"
     assert plan["planning_model"] == gateway.get_models_for_tier("reasoning")[0]
     assert second["dependencies"] == [first["task_id"]]
-    assert first["execution_mode"] == "gui"
-    assert second["execution_mode"] == "hybrid"
+    assert first["execution_mode"] == "terminal"
+    assert second["execution_mode"] == "terminal"
     prompt = captured_prompts[0]
     assert "Respect explicit atomicity constraints" in prompt
     assert "exactly one phase containing exactly one task" in prompt
     assert "For broader objectives without an explicit atomicity constraint" in prompt
+
+
+@pytest.mark.asyncio
+async def test_boss_planner_rejects_modes_without_worker_consumers(monkeypatch):
+    import json
+
+    from neural.boss.planner import TaskPlanner
+    from neural.exceptions import UnsupportedExecutionModeError
+    from neural.llm.gateway import LLMGateway
+
+    async def invoke(**_kwargs):
+        return {
+            "content": json.dumps({
+                "code_name": "GuiOnly",
+                "complexity": "low",
+                "requirements": ["Use the desktop"],
+                "technical_risks": [],
+                "mitigation_strategies": [],
+                "phases": [{
+                    "title": "Desktop work",
+                    "tasks": [{
+                        "task_id": "gui-task",
+                        "title": "Operate the desktop",
+                        "objective": "Complete the requested visible desktop workflow.",
+                        "scope": "GUI workflow",
+                        "role_required": "qa-engineer",
+                        "skills_required": ["Visual QA"],
+                        "execution_mode": "gui",
+                        "dependencies": [],
+                        "acceptance_criteria": "A visual verifier confirms the final desktop state.",
+                        "subtasks": [],
+                        "estimated_hours": 1,
+                        "max_tokens": 4000,
+                    }],
+                }],
+            }),
+            "input_tokens": 20,
+            "output_tokens": 100,
+            "provider": "test",
+        }
+
+    gateway = LLMGateway(provider_invoker=invoke)
+    monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    with pytest.raises(UnsupportedExecutionModeError, match="gui"):
+        await TaskPlanner(llm_gateway=gateway).decompose_objective("Use the desktop to verify this workflow")
+
+
+def test_objective_schedule_requires_future_timezone_qualified_datetime():
+    from datetime import datetime, timedelta, timezone
+
+    from neural.api.schemas.requests import ObjectiveSubmissionRequest
+    from pydantic import ValidationError
+
+    valid_time = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    request = ObjectiveSubmissionRequest(objective="Build a report", scheduled_at=valid_time)
+    assert request.scheduled_at is not None
+    assert request.scheduled_at.tzinfo is None  # normalized UTC-naive value used by SQL storage
+
+    with pytest.raises(ValidationError, match="timezone offset"):
+        ObjectiveSubmissionRequest(objective="Build a report", scheduled_at="2030-01-01T00:00:00")
 
 
 @pytest.mark.asyncio

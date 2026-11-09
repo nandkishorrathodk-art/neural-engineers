@@ -139,15 +139,16 @@ export async function triggerBlockerMeeting(taskId: string, blockerReason: strin
   return res.json();
 }
 
-export async function submitObjective(objective: string, projectName?: string) {
+export async function submitObjective(objective: string, projectName?: string, scheduledAt?: string) {
   const res = await fetch(`${API_BASE}/boss/objective`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ objective, project_name: projectName }),
+    body: JSON.stringify({ objective, project_name: projectName, scheduled_at: scheduledAt }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to submit objective');
+    const detail = typeof err.detail === 'string' ? err.detail : err.detail?.message;
+    throw new Error(detail || 'Failed to submit objective');
   }
   return res.json();
 }

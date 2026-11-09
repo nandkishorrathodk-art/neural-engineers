@@ -56,6 +56,7 @@ class BossTaskReport(BaseModel):
     assigned_employee_id: Optional[str] = None
     assigned_employee_name: Optional[str] = None
     deadline: Optional[datetime] = None
+    scheduled_at: Optional[datetime] = None
     overdue: bool = False
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -86,6 +87,7 @@ class TaskResponse(BaseModel):
     status: TaskStatus
     assigned_to: Optional[str]
     priority: str
+    scheduled_at: Optional[datetime] = None
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
 

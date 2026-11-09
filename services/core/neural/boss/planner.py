@@ -5,7 +5,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 from neural.constants import ExecutionMode
-from neural.exceptions import ModelProviderError
+from neural.exceptions import ModelProviderError, UnsupportedExecutionModeError
 from neural.llm.gateway import LLMGateway
 
 
@@ -81,6 +81,9 @@ class TaskPlanner:
                 "verifiable tasks an engineering team can deliver. "
                 "Every task needs measurable acceptance criteria and required skills. "
                 "Every task must declare its execution_mode as one of gui, terminal, hybrid, or authorized_tools. "
+                "In this deployment, only terminal tasks have a long-running worker consumer. "
+                "Do not assign gui, hybrid, or authorized_tools unless the objective cannot be met safely "
+                "through terminal work; those modes will be rejected before any project or employee is persisted. "
                 "Dependencies must reference task_id values in this plan, point only "
                 "to earlier tasks, and form an acyclic graph. Do not claim work is "
                 "already completed.\n\nOBJECTIVE:\n" + objective
@@ -115,6 +118,19 @@ class TaskPlanner:
             }
         if not plan.phases:
             raise ModelProviderError("Boss plan rejected: no executable phases were planned.")
+
+        unsupported_modes = sorted({
+            task.execution_mode.value
+            for phase in plan.phases
+            for task in phase.tasks
+            if task.execution_mode != ExecutionMode.TERMINAL
+        })
+        if unsupported_modes:
+            raise UnsupportedExecutionModeError(
+                "No active task worker is registered for execution mode(s): "
+                + ", ".join(unsupported_modes)
+                + ". No project or employee was persisted."
+            )
 
         requirements = plan.requirements or [f"Deliver the owner's stated objective: {objective.strip()}"]
 

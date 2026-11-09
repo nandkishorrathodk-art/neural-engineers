@@ -28,7 +28,12 @@ from neural.db.repositories import (
     ServiceHeartbeatRepository,
     TaskRepository,
 )
-from neural.exceptions import ClarificationRequiredError, ContainerError
+from neural.exceptions import (
+    ClarificationRequiredError,
+    ContainerError,
+    ModelProviderError,
+    UnsupportedExecutionModeError,
+)
 from neural.security.approval_gates import HumanApprovalGate
 from neural.security.kill_switch import get_kill_switch
 
@@ -104,11 +109,22 @@ async def submit_objective(
             auto_assign_first_task=True,
             auto_recruit_workforce=True,
             deadline_days=payload.deadline_days,
+            scheduled_at=payload.scheduled_at,
         )
     except ClarificationRequiredError as exc:
         raise HTTPException(
             status_code=409,
             detail={"code": "clarification_required", "questions": exc.questions},
+        ) from exc
+    except UnsupportedExecutionModeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "execution_mode_unavailable", "message": str(exc)},
+        ) from exc
+    except ModelProviderError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "planning_unavailable", "message": str(exc)},
         ) from exc
 
     employees_after = await employee_repo.list_all()
@@ -128,6 +144,7 @@ async def submit_objective(
             "objective": payload.objective,
             "tasks_count": len(tasks),
             "deadline_days": payload.deadline_days,
+            "scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
             "plan_source": (project.execution_plan or {}).get("plan_source", "unknown"),
         }
     )

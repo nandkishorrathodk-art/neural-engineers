@@ -21,6 +21,7 @@ export default function EmployeesPage() {
 
   // Objective submission state
   const [objectiveInput, setObjectiveInput] = useState('');
+  const [objectiveScheduledAt, setObjectiveScheduledAt] = useState('');
   const [submittingObjective, setSubmittingObjective] = useState(false);
   const [objectiveSuccess, setObjectiveSuccess] = useState<string | null>(null);
 
@@ -70,9 +71,16 @@ export default function EmployeesPage() {
     try {
       setSubmittingObjective(true);
       setError(null);
-      const project = await submitObjective(objectiveInput.trim());
-      setObjectiveSuccess(`Mission planned: ${project.name} (${project.execution_plan?.phases?.length || 0} phases)`);
+      const scheduledAt = objectiveScheduledAt
+        ? new Date(objectiveScheduledAt).toISOString()
+        : undefined;
+      const project = await submitObjective(objectiveInput.trim(), undefined, scheduledAt);
+      const scheduleText = scheduledAt
+        ? ` · starts ${new Date(scheduledAt).toLocaleString()}`
+        : '';
+      setObjectiveSuccess(`Mission planned: ${project.name} (${project.execution_plan?.phases?.length || 0} phases)${scheduleText}`);
       setObjectiveInput('');
+      setObjectiveScheduledAt('');
       await loadData();
     } catch (err: any) {
       setError(err.message || 'Failed to submit objective to Boss AI');
@@ -186,6 +194,20 @@ export default function EmployeesPage() {
                 </>
               )}
             </button>
+          </div>
+          <div className="flex flex-col gap-1 pt-1">
+            <label htmlFor="objective-scheduled-at" className="text-[11px] font-medium text-slate-400">
+              Start later (optional)
+            </label>
+            <input
+              id="objective-scheduled-at"
+              type="datetime-local"
+              value={objectiveScheduledAt}
+              onChange={(e) => setObjectiveScheduledAt(e.target.value)}
+              disabled={submittingObjective}
+              className="w-full sm:w-72 bg-[#060b14] border border-[#1b2b4a] focus:border-sky-500 rounded-xl px-3 py-2 text-xs text-white focus:outline-none transition-colors"
+            />
+            <p className="text-[10px] text-slate-500">Time uses this device’s local timezone; ANCOS stores and dispatches it in UTC.</p>
           </div>
           {objectiveSuccess && (
             <div className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 rounded-lg p-2.5 mt-2">

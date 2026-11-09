@@ -51,6 +51,7 @@ async def list_tasks(
                 status=t.status,
                 assigned_to=t.assigned_to,
                 priority=t.priority.value if hasattr(t.priority, "value") else str(t.priority),
+                scheduled_at=t.scheduled_at,
                 started_at=t.started_at,
                 completed_at=t.completed_at
             )
@@ -76,6 +77,7 @@ async def get_task(
         status=task.status,
         assigned_to=task.assigned_to,
         priority=task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+        scheduled_at=task.scheduled_at,
         started_at=task.started_at,
         completed_at=task.completed_at
     )
@@ -133,6 +135,7 @@ async def assign_task(
             status=task.status,
             assigned_to=task.assigned_to,
             priority=task.priority.value if hasattr(task.priority, "value") else str(task.priority),
+            scheduled_at=task.scheduled_at,
             started_at=task.started_at,
             completed_at=task.completed_at,
         )
@@ -175,6 +178,7 @@ async def assign_task(
         status=updated.status,
         assigned_to=updated.assigned_to,
         priority=updated.priority.value if hasattr(updated.priority, "value") else str(updated.priority),
+        scheduled_at=updated.scheduled_at,
         started_at=updated.started_at,
         completed_at=updated.completed_at
     )
@@ -236,6 +240,7 @@ async def update_task_status(
         status=updated.status,
         assigned_to=updated.assigned_to,
         priority=updated.priority.value if hasattr(updated.priority, "value") else str(updated.priority),
+        scheduled_at=updated.scheduled_at,
         started_at=updated.started_at,
         completed_at=updated.completed_at
     )
