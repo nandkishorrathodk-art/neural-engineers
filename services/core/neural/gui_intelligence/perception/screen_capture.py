@@ -258,6 +258,58 @@ class ScreenCaptureEngine:
             )
         return self.render_synthetic_desktop()
 
+    def render_multi_app_desktop(
+        self,
+        active_app: str = "editor",
+        include_dialog: bool = False,
+    ) -> ScreenFrame:
+        """
+        Renders a dual-application desktop with Document Editor and Spreadsheet Calculator.
+        Allows testing cross-application workflows and popup handling.
+        """
+        windows = [
+            {
+                "title": "Document Editor - Report.txt",
+                "rect": (40, 40, 560, 520),
+                "is_active": (active_app == "editor"),
+                "elements": [
+                    {"type": "menu", "text": "File", "rect": (60, 80, 50, 24)},
+                    {"type": "menu", "text": "Edit", "rect": (120, 80, 50, 24)},
+                    {"type": "text_input", "text": "Report Body", "rect": (60, 120, 480, 180), "is_focused": (active_app == "editor")},
+                    {"type": "button", "text": "Save", "rect": (60, 320, 90, 32)},
+                    {"type": "button", "text": "Export PDF", "rect": (170, 320, 100, 32)},
+                ],
+            },
+            {
+                "title": "Spreadsheet Calculator - Sheet1",
+                "rect": (640, 40, 580, 520),
+                "is_active": (active_app == "calculator"),
+                "elements": [
+                    {"type": "menu", "text": "Data", "rect": (660, 80, 50, 24)},
+                    {"type": "text_input", "text": "Formula", "rect": (660, 120, 300, 32), "is_focused": (active_app == "calculator")},
+                    {"type": "button", "text": "Calculate", "rect": (660, 170, 100, 32)},
+                    {"type": "button", "text": "Export CSV", "rect": (780, 170, 100, 32)},
+                    {"type": "button", "text": "Result: 42", "rect": (660, 220, 120, 32)},
+                ],
+            },
+        ]
+        if include_dialog:
+            windows.append({
+                "title": "System Alert - Unsaved Changes",
+                "rect": (380, 200, 480, 240),
+                "is_active": True,
+                "bg_color": (255, 250, 245),
+                "elements": [
+                    {"type": "dialog", "title": "Confirm Action", "text": "Do you want to save before closing?", "rect": (400, 240, 440, 100)},
+                    {"type": "button", "text": "Dismiss", "rect": (420, 360, 90, 32), "color": (180, 60, 60)},
+                    {"type": "button", "text": "Cancel", "rect": (530, 360, 90, 32), "color": (120, 120, 130)},
+                ],
+            })
+        self._is_multi_app = True
+        self._multi_app_active_app = active_app
+        self._multi_app_include_dialog = include_dialog
+        return self.render_synthetic_desktop(windows=windows)
+
     def apply_visual_action(
         self,
         action_type: str,
@@ -284,9 +336,16 @@ class ScreenCaptureEngine:
 
         if action_type in ("MOUSE_CLICK", "MOUSE_DOUBLE_CLICK", "MOUSE_RIGHT_CLICK", "MOUSE_DOWN") and coords:
             cx, cy = coords
-            r = 6
-            fill_color = (100, 180, 255) if action_type == "MOUSE_CLICK" else (255, 180, 100)
-            draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], outline=fill_color, width=2)
+            self._action_counter = getattr(self, "_action_counter", 0) + 1
+            c_val = 150 + (self._action_counter % 3) * 35
+            fill_color = (c_val, 180, 255) if action_type == "MOUSE_CLICK" else (255, 180, c_val)
+            draw.ellipse([(cx - 7, cy - 7), (cx + 7, cy + 7)], fill=fill_color, outline=(255, 255, 255), width=2)
+            for item in ScreenCaptureEngine._last_rendered_elements:
+                xmin, ymin, xmax, ymax = item["rect"]
+                if xmin <= cx <= xmax and ymin <= cy <= ymax:
+                    if item.get("type") in ("button", "menu_item", "menu"):
+                        draw.rectangle([(xmin, ymin), (xmax, ymax)], outline=(255, 255, 255), width=2)
+                    break
 
         elif action_type == "KEY_TYPE" and text:
             target_item = None
@@ -306,7 +365,11 @@ class ScreenCaptureEngine:
             if target_item:
                 xmin, ymin, xmax, ymax = target_item["rect"]
                 old_text = target_item.get("text", "")
-                new_text = f"{old_text} {text}".strip()
+                new_text = (
+                    text
+                    if old_text in ("Username", "Formula", "Report Body", "") or not old_text
+                    else f"{old_text} {text}".strip()
+                )
                 target_item["text"] = new_text
                 draw.rectangle([(xmin + 2, ymin + 2), (xmax - 2, ymax - 2)], fill=(255, 255, 255))
                 draw.text((xmin + 8, ymin + 8), new_text, fill=(0, 0, 0))
@@ -319,6 +382,12 @@ class ScreenCaptureEngine:
             ScreenCaptureEngine._last_rendered_elements = [
                 item for item in ScreenCaptureEngine._last_rendered_elements if item.get("type") != "dialog"
             ]
+            if getattr(self, "_is_multi_app", False):
+                self.render_multi_app_desktop(
+                    active_app=getattr(self, "_multi_app_active_app", "editor"),
+                    include_dialog=False,
+                )
+                return
 
         self._mock_pixels = np.array(img, dtype=np.uint8)
         h, w = self._mock_pixels.shape[:2]

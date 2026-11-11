@@ -2,16 +2,38 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from neural.constants import MeetingStatus, MeetingType
-from neural.db.models import ActionItem, Meeting
-from neural.db.repositories import ActionItemRepository, MeetingRepository
+from neural.constants import (
+    MeetingStatus,
+    MeetingType,
+    ProposalStatus,
+    ProposalType,
+    TaskStatus,
+    VoteChoice,
+)
+from neural.db.models import ActionItem, DecisionLedgerEntry, Meeting, Proposal, Task
+from neural.db.repositories import (
+    ActionItemRepository,
+    DecisionLedgerRepository,
+    MeetingRepository,
+    ProjectRepository,
+    ProposalRepository,
+    TaskRepository,
+    VoteRepository,
+)
+from neural.exceptions import (
+    FabricatedProgressError,
+    MeetingPolicyViolationError,
+)
+from neural.governance.engine import BoardroomGovernanceEngine
 from neural.logger import get_logger
 from neural.meetings.actions import ActionItemTracker
 from neural.meetings.minutes import MeetingMinutesGenerator
 from neural.meetings.participants import ParticipantSelector
+from neural.meetings.policy import MeetingPolicyConfig, MeetingPolicyEnforcer
 from neural.meetings.reports import (
     FactGroundedProgressReport,
     ProgressReportCompiler,
+    StructuredProgressClaim,
     validate_report_data,
 )
 
@@ -35,13 +57,43 @@ class MeetingConductor:
         meeting_repo: MeetingRepository,
         action_item_repo: ActionItemRepository | None = None,
         participant_selector: ParticipantSelector | None = None,
-        message_bus: Any | None = None
+        message_bus: Any | None = None,
+        task_repo: TaskRepository | None = None,
+        project_repo: ProjectRepository | None = None,
+        governance_engine: BoardroomGovernanceEngine | None = None,
+        policy_config: MeetingPolicyConfig | None = None,
     ):
         self.meeting_repo = meeting_repo
         self.action_item_repo = action_item_repo or ActionItemRepository(meeting_repo.session)
         self.action_tracker = ActionItemTracker(self.action_item_repo)
         self.participant_selector = participant_selector
         self.message_bus = message_bus
+        self.task_repo = task_repo or TaskRepository(meeting_repo.session)
+        self.project_repo = project_repo or ProjectRepository(meeting_repo.session)
+        self.policy_config = policy_config or MeetingPolicyConfig()
+        self.policy_enforcer = MeetingPolicyEnforcer(self.policy_config)
+
+        if governance_engine:
+            self.governance_engine = governance_engine
+        else:
+            self.governance_engine = BoardroomGovernanceEngine(
+                proposal_repo=ProposalRepository(meeting_repo.session),
+                vote_repo=VoteRepository(meeting_repo.session),
+                ledger_repo=DecisionLedgerRepository(meeting_repo.session),
+                task_repo=self.task_repo,
+                project_repo=self.project_repo,
+                message_bus=message_bus,
+            )
+
+    def _get_or_init_policy_state(self, meeting: Meeting) -> dict[str, Any]:
+        minutes = dict(meeting.minutes or {})
+        if "policy_state" not in minutes:
+            minutes["policy_state"] = MeetingPolicyEnforcer.init_policy_state(
+                agenda=meeting.agenda,
+                config=self.policy_config,
+            )
+            meeting.minutes = minutes
+        return minutes["policy_state"]
 
     def _record_activity(
         self,
@@ -110,9 +162,16 @@ class MeetingConductor:
         if meeting.status == MeetingStatus.CONCLUDED:
             raise ValueError(f"Meeting {meeting_id} has already concluded and cannot be reconvened")
 
+        if meeting.status == MeetingStatus.IN_PROGRESS:
+            # Idempotent replay: already convened and in progress
+            return meeting
+
         meeting.status = MeetingStatus.IN_PROGRESS
         if meeting.started_at is None:
             meeting.started_at = utc_now()
+
+        policy_state = self._get_or_init_policy_state(meeting)
+        meeting.current_stage = policy_state.get("current_stage", "CONVENE")
 
         initial_speaker = meeting.participants[0] if meeting.participants else "BossAI"
         meeting.active_speaker_id = initial_speaker
@@ -122,6 +181,7 @@ class MeetingConductor:
             speaker_id=initial_speaker,
             event_type="convened",
             summary=f"Meeting '{meeting.title}' convened and active speaker set to {initial_speaker}",
+            data={"current_stage": meeting.current_stage},
         )
 
         await self.meeting_repo.session.commit()
@@ -129,6 +189,171 @@ class MeetingConductor:
 
         logger.info("Meeting convened and in progress", meeting_id=meeting_id, active_speaker=initial_speaker)
         return meeting
+
+    async def advance_agenda_stage(self, meeting_id: str, target_stage: str) -> Meeting:
+        """
+        Advances the meeting to the next designated agenda stage in monotonic order.
+        """
+        meeting = await self.meeting_repo.get_by_meeting_id(meeting_id)
+        if not meeting:
+            raise ValueError(f"Meeting {meeting_id} not found")
+
+        if meeting.status == MeetingStatus.CONCLUDED:
+            raise ValueError(f"Meeting {meeting_id} has already concluded and cannot accept new reports")
+        if meeting.status != MeetingStatus.IN_PROGRESS:
+            raise ValueError(f"Cannot advance agenda for meeting in status '{meeting.status.value}'")
+
+        policy_state = self._get_or_init_policy_state(meeting)
+        old_stage = policy_state.get("current_stage")
+        new_stage = self.policy_enforcer.advance_agenda_stage(policy_state, target_stage)
+        meeting.current_stage = new_stage
+
+        current_minutes = dict(meeting.minutes or {})
+        current_minutes["policy_state"] = policy_state
+        meeting.minutes = current_minutes
+
+        if old_stage != new_stage:
+            self._record_activity(
+                meeting=meeting,
+                speaker_id=meeting.active_speaker_id or "BossAI",
+                event_type="stage_advanced",
+                summary=f"Agenda stage advanced to '{new_stage}'",
+                data={"stage": new_stage},
+            )
+            await self.meeting_repo.session.commit()
+            await self.meeting_repo.session.refresh(meeting)
+        return meeting
+
+    async def validate_progress_claim(
+        self,
+        claim: dict[str, Any] | StructuredProgressClaim,
+        meeting_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Validates progress claims against repository evidence:
+        Evidence-Grounded Progress (Hash != Truth):
+        Requires structured evidence matching real tasks, commits, artifacts, and test runs.
+        Rejects ungrounded or fabricated claims with FabricatedProgressError.
+        """
+        if isinstance(claim, StructuredProgressClaim):
+            claim_dict = claim.model_dump(mode="json")
+        elif isinstance(claim, dict):
+            structured = StructuredProgressClaim(**claim)
+            claim_dict = structured.model_dump(mode="json")
+        else:
+            raise FabricatedProgressError("Claim must be a StructuredProgressClaim or dictionary.")
+
+        task_id = claim_dict["task_id"]
+        task = await self.task_repo.get_by_task_id(task_id)
+        if not task:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: task '{task_id}' does not exist in repository records."
+            )
+
+        if task.status != TaskStatus.COMPLETED:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: task '{task_id}' status is '{task.status.value}', not COMPLETED. "
+                "Only completed deliverables with passing verification may be claimed as progress."
+            )
+
+        vr = task.verification_result or {}
+        receipt = vr.get("receipt", vr) if isinstance(vr, dict) else {}
+        if not receipt:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: task '{task_id}' has no independent verification receipt."
+            )
+
+        # Verification pass check
+        is_passed = receipt.get("passed") is True or str(receipt.get("verification_status")).upper() == "PASSED"
+        if not is_passed:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: verification receipt for task '{task_id}' indicates failure."
+            )
+
+        # test_run_id check
+        valid_run_ids = {
+            str(receipt.get("receipt_id", "")),
+            str(receipt.get("test_run_id", "")),
+            str(receipt.get("attempt_id", "")),
+            str(task.id),
+            str(task.task_id),
+        }
+        valid_run_ids.discard("")
+        if claim_dict["test_run_id"] not in valid_run_ids:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: test_run_id '{claim_dict['test_run_id']}' does not match "
+                f"verified repository test records ({valid_run_ids})."
+            )
+
+        # artifact_hash check
+        valid_hashes = set()
+        if receipt.get("artifact_digests"):
+            valid_hashes.update(receipt["artifact_digests"].values())
+        if receipt.get("artifact_hashes"):
+            valid_hashes.update(receipt["artifact_hashes"])
+        if receipt.get("artifact_hash"):
+            valid_hashes.add(receipt["artifact_hash"])
+        if receipt.get("signature"):
+            valid_hashes.add(receipt["signature"])
+
+        if not valid_hashes:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: task '{task_id}' has no verified artifact hashes in repository records."
+            )
+        if claim_dict["artifact_hash"] not in valid_hashes:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: artifact_hash '{claim_dict['artifact_hash']}' does not match "
+                f"verified repository artifact hashes ({valid_hashes})."
+            )
+
+        # commit_sha check
+        valid_commits = {
+            str(receipt.get("commit_sha", "")).lower(),
+            str(receipt.get("commit_hash", "")).lower(),
+            str(receipt.get("head_commit", "")).lower(),
+        }
+        valid_commits.discard("")
+        if not valid_commits:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: task '{task_id}' has no verified commit records in repository records."
+            )
+        if claim_dict["commit_sha"].lower() not in valid_commits:
+            raise FabricatedProgressError(
+                f"Progress claim rejected: commit_sha '{claim_dict['commit_sha']}' does not match "
+                f"verified repository commit ({valid_commits})."
+            )
+
+        # If meeting_id is supplied, record verified claim in minutes and activity log
+        if meeting_id:
+            meeting = await self.meeting_repo.get_by_meeting_id(meeting_id)
+            if meeting:
+                if meeting.status == MeetingStatus.CONCLUDED:
+                    raise ValueError(f"Meeting {meeting_id} has already concluded and cannot accept new claims.")
+
+                current_minutes = dict(meeting.minutes or {})
+                verified_claims = list(current_minutes.get("verified_claims", []))
+                already_verified = any(
+                    c.get("task_id") == claim_dict["task_id"]
+                    and c.get("artifact_hash") == claim_dict["artifact_hash"]
+                    and c.get("commit_sha") == claim_dict["commit_sha"]
+                    for c in verified_claims
+                )
+                if not already_verified:
+                    verified_claims.append(claim_dict)
+                    current_minutes["verified_claims"] = verified_claims
+                    meeting.minutes = current_minutes
+
+                    self._record_activity(
+                        meeting=meeting,
+                        speaker_id=meeting.active_speaker_id or "BossAI",
+                        event_type="progress_claim_verified",
+                        summary=f"Progress claim verified for task {task_id}: {claim_dict['claim']}",
+                        data=claim_dict,
+                    )
+                    await self.meeting_repo.session.commit()
+                    await self.meeting_repo.session.refresh(meeting)
+
+        return claim_dict
 
     async def set_speaker(
         self,
@@ -142,6 +367,9 @@ class MeetingConductor:
         meeting = await self.meeting_repo.get_by_meeting_id(meeting_id)
         if not meeting:
             raise ValueError(f"Meeting {meeting_id} not found")
+
+        if meeting.status == MeetingStatus.CONCLUDED:
+            raise ValueError(f"Meeting {meeting_id} has already concluded and cannot accept new reports")
 
         if meeting.status != MeetingStatus.IN_PROGRESS:
             raise ValueError(f"Cannot change speaker for meeting in status '{meeting.status.value}'")
@@ -191,6 +419,9 @@ class MeetingConductor:
         if not meeting:
             raise ValueError(f"Meeting {meeting_id} not found")
 
+        if meeting.status == MeetingStatus.CONCLUDED:
+            raise ValueError(f"Meeting {meeting_id} has already concluded and cannot accept new reports")
+
         if isinstance(report_data, FactGroundedProgressReport):
             validated_dict = report_data.model_dump(mode="json")
         else:
@@ -210,6 +441,24 @@ class MeetingConductor:
 
         emp_id = validated_dict.get("employee_id", "UNKNOWN")
         meeting.active_speaker_id = emp_id
+
+        # Policy controls enforcement: turns, per-speaker token budget, duplicate statements
+        current_minutes = dict(meeting.minutes or {})
+        policy_state = self._get_or_init_policy_state(meeting)
+        turn_statement = f"{validated_dict.get('what_was_done', '')} {validated_dict.get('what_remains', '')}".strip()
+        self.policy_enforcer.record_statement(
+            policy_state=policy_state,
+            speaker_id=emp_id,
+            statement=turn_statement,
+            tokens=100,
+        )
+        current_minutes["policy_state"] = policy_state
+
+        # Evidence-Grounded Progress validation if claim or completion is reported
+        raw_input = report_data if isinstance(report_data, dict) else {}
+        claim_payload = validated_dict.get("progress_claim") or raw_input.get("progress_claim")
+        if claim_payload:
+            await self.validate_progress_claim(claim_payload, meeting_id=meeting.meeting_id)
 
         # Record presentation event
         self._record_activity(
@@ -265,14 +514,34 @@ class MeetingConductor:
         decision: str,
         rationale: str,
         decided_by: str = "BossAI",
-        impact: str = "Standard workflow"
+        impact: str = "Standard workflow",
+        as_governance: bool = False,
+        proposal_type: ProposalType = ProposalType.ARCHITECTURE_CHANGE,
+        project_id: str | None = None,
+        tasks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
         Records an explicit decision with its architectural or operational rationale.
+        If as_governance is True, routes the decision through ANCOS's formal Governance Engine.
         """
+        if as_governance:
+            dec_obj, _, _, _ = await self.route_decision_to_governance(
+                meeting_id=meeting_id,
+                topic=topic,
+                description=f"{decision}. Rationale: {rationale}",
+                proposal_type=proposal_type,
+                proposer_id=decided_by,
+                project_id=project_id,
+                tasks=tasks,
+            )
+            return dec_obj
+
         meeting = await self.meeting_repo.get_by_meeting_id(meeting_id)
         if not meeting:
             raise ValueError(f"Meeting {meeting_id} not found")
+
+        if meeting.status == MeetingStatus.CONCLUDED:
+            raise ValueError(f"Meeting {meeting_id} has already concluded and cannot accept new reports")
 
         decision_obj = {
             "decision_id": f"DEC-{uuid.uuid4().hex[:6].upper()}",
@@ -307,38 +576,187 @@ class MeetingConductor:
         )
         return decision_obj
 
+    async def route_decision_to_governance(
+        self,
+        meeting_id: str,
+        topic: str,
+        description: str,
+        proposal_type: ProposalType = ProposalType.ARCHITECTURE_CHANGE,
+        proposer_id: str = "BossAI",
+        project_id: str | None = None,
+        tasks: list[dict[str, Any]] | None = None,
+        auto_deliberate: bool = True,
+        auto_vote: bool = True,
+        executive_veto_reason: str | None = None,
+    ) -> tuple[dict[str, Any], Proposal, DecisionLedgerEntry, list[Task]]:
+        """
+        Unified Governance Engine Linkage:
+        Routes meeting architectural deliberations through ANCOS's formal Governance Engine:
+        Meeting Discussion -> Decision Proposal -> Governance Deliberation -> Voting / Executive Veto -> Approved Decision -> Decision Ledger -> Task DAG Creation.
+        """
+        meeting = await self.meeting_repo.get_by_meeting_id(meeting_id)
+        if not meeting:
+            raise ValueError(f"Meeting {meeting_id} not found")
+
+        if meeting.status == MeetingStatus.CONCLUDED:
+            raise ValueError(f"Meeting {meeting_id} has already concluded and cannot accept new reports")
+
+        # 1. Propose formal governance proposal
+        params = {}
+        if tasks:
+            params["tasks"] = tasks
+        proposal = await self.governance_engine.create_proposal(
+            title=topic,
+            description=description,
+            proposal_type=proposal_type,
+            proposer_id=proposer_id,
+            project_id=project_id,
+            parameters=params,
+            auto_discuss=True,
+        )
+
+        self._record_activity(
+            meeting=meeting,
+            speaker_id=proposer_id,
+            event_type="governance_proposal_created",
+            summary=f"Governance proposal '{proposal.proposal_id}' created on topic '{topic}'",
+            data={"proposal_id": proposal.proposal_id, "type": proposal_type.value},
+        )
+
+        # 2. Deliberate
+        statements = []
+        if auto_deliberate:
+            proposal, statements = await self.governance_engine.run_deliberation(proposal.proposal_id)
+            self._record_activity(
+                meeting=meeting,
+                speaker_id="BossAI",
+                event_type="governance_deliberation_completed",
+                summary=f"Boardroom committee completed {len(statements)} deliberation statements on '{proposal.proposal_id}'",
+                data={"statements_count": len(statements)},
+            )
+
+        # 3. Voting / Executive Veto
+        if executive_veto_reason:
+            proposal, ledger_entry = await self.governance_engine.veto_proposal(
+                proposal_id=proposal.proposal_id,
+                reason=executive_veto_reason,
+                vetoed_by=proposer_id,
+            )
+            created_tasks = []
+        else:
+            if auto_vote:
+                await self.governance_engine.open_voting(proposal.proposal_id)
+                members = self.governance_engine.committee.get_members(active_only=True)
+                for mem in members:
+                    await self.governance_engine.cast_vote(
+                        proposal_id=proposal.proposal_id,
+                        voter_id=mem.member_id,
+                        choice=VoteChoice.AYE,
+                        rationale=f"Approved during meeting {meeting_id} deliberation.",
+                    )
+                proposal, ledger_entry = await self.governance_engine.finalize_voting(proposal.proposal_id)
+            else:
+                proposal, ledger_entry = await self.governance_engine.finalize_voting(
+                    proposal.proposal_id, force_decision="APPROVED"
+                )
+
+            # 4. Task DAG Creation on approval
+            if proposal.status == ProposalStatus.APPROVED:
+                proposal, created_tasks = await self.governance_engine.execute_proposal(proposal.proposal_id)
+            else:
+                created_tasks = []
+
+        # 5. Record decision in meeting minutes
+        decision_obj = {
+            "decision_id": ledger_entry.entry_id,
+            "topic": topic,
+            "decision": f"Governance {proposal.status.value}: {description}",
+            "rationale": ledger_entry.rationale,
+            "decided_by": proposer_id,
+            "impact": f"Ratified in Decision Ledger with hash {ledger_entry.entry_hash[:16]}",
+            "proposal_id": proposal.proposal_id,
+            "ledger_entry_id": ledger_entry.entry_id,
+            "ledger_hash": ledger_entry.entry_hash,
+            "created_task_ids": [t.task_id for t in created_tasks],
+            "timestamp": utc_now().isoformat(),
+        }
+
+        meeting.active_speaker_id = proposer_id
+        self._record_activity(
+            meeting=meeting,
+            speaker_id=proposer_id,
+            event_type="governance_decision_finalized",
+            summary=f"Governance decision recorded in Decision Ledger [{ledger_entry.entry_id}]: {proposal.status.value}",
+            data=decision_obj,
+        )
+
+        decisions = list(meeting.decisions or [])
+        decisions.append(decision_obj)
+        meeting.decisions = decisions
+
+        await self.meeting_repo.session.commit()
+        await self.meeting_repo.session.refresh(meeting)
+
+        return decision_obj, proposal, ledger_entry, created_tasks
+
     async def add_action_item(
         self,
         meeting_id: str,
         description: str,
         assigned_to: str,
-        deadline: datetime | None = None
+        deadline: datetime | None = None,
+        linked_task_id: str | None = None,
+        acceptance_criteria: str | None = None,
     ) -> ActionItem:
         """
-        Adds a tracked action item to the meeting.
+        Adds a tracked action item to the meeting, linked to a real Task DAG item.
+        Idempotent: Replaying the same action item will not create duplicates.
         """
+        meeting = await self.meeting_repo.get_by_meeting_id(meeting_id)
+        if meeting and meeting.status == MeetingStatus.CONCLUDED:
+            existing_items = await self.action_item_repo.list_by_meeting(meeting.id)
+            for ex in existing_items:
+                if (
+                    (linked_task_id and ex.linked_task_id == linked_task_id)
+                    or (ex.assigned_to == assigned_to and ActionItemTracker.normalize_desc(ex.description) == ActionItemTracker.normalize_desc(description))
+                ):
+                    return ex
+            raise ValueError(f"Meeting {meeting_id} has already concluded and cannot add new action items.")
+
         item = await self.action_tracker.create_action_item(
             meeting_id=meeting_id,
             description=description,
             assigned_to=assigned_to,
-            deadline=deadline
+            deadline=deadline,
+            linked_task_id=linked_task_id,
+            acceptance_criteria=acceptance_criteria,
         )
         meeting = await self.meeting_repo.get_by_meeting_id(meeting_id)
         if meeting:
-            self._record_activity(
-                meeting=meeting,
-                speaker_id="BossAI",
-                event_type="action_item_assigned",
-                summary=f"Action item assigned to {assigned_to}: {description}",
-                data={
-                    "action_item_id": item.id,
-                    "assigned_to": assigned_to,
-                    "deadline": deadline.isoformat() if hasattr(deadline, "isoformat") else (str(deadline) if deadline else None),
-                },
+            # Check if this action item assignment was already recorded (idempotency check)
+            existing_log = (meeting.minutes or {}).get("activity_log", [])
+            already_logged = any(
+                e.get("event_type") == "action_item_assigned"
+                and e.get("data", {}).get("action_item_id") == item.id
+                for e in existing_log
             )
-            await self.meeting_repo.session.commit()
-            await self.meeting_repo.session.refresh(meeting)
-            await self.meeting_repo.session.refresh(item)
+            if not already_logged:
+                self._record_activity(
+                    meeting=meeting,
+                    speaker_id="BossAI",
+                    event_type="action_item_assigned",
+                    summary=f"Action item assigned to {assigned_to}: {description}",
+                    data={
+                        "action_item_id": item.id,
+                        "assigned_to": assigned_to,
+                        "deadline": deadline.isoformat() if hasattr(deadline, "isoformat") else (str(deadline) if deadline else None),
+                        "linked_task_id": linked_task_id,
+                        "acceptance_criteria": acceptance_criteria,
+                    },
+                )
+                await self.meeting_repo.session.commit()
+                await self.meeting_repo.session.refresh(meeting)
+                await self.meeting_repo.session.refresh(item)
 
         return item
 
@@ -367,11 +785,26 @@ class MeetingConductor:
         if not meeting:
             raise ValueError(f"Meeting {meeting_id} not found")
 
+        if meeting.status == MeetingStatus.CONCLUDED:
+            # Idempotent replay: meeting already concluded
+            return meeting
+
         now_dt = utc_now()
         action_items = await self.action_tracker.list_for_meeting(meeting.id)
         existing_minutes = dict(meeting.minutes or {})
         progress_reports = existing_minutes.get("progress_reports", [])
         activity_log = list(existing_minutes.get("activity_log", []))
+        verified_claims = list(existing_minutes.get("verified_claims", []))
+
+        # Enforce meeting policy controls before concluding
+        if "policy_state" in existing_minutes:
+            policy_state = dict(existing_minutes["policy_state"])
+            can_conclude, violation_reason = self.policy_enforcer.check_can_conclude(
+                policy_state=policy_state,
+                decisions_count=len(meeting.decisions or []),
+            )
+            if not can_conclude:
+                raise MeetingPolicyViolationError(violation_reason)
 
         # Record concluded event in activity log
         conclusion_activity = {
@@ -395,14 +828,24 @@ class MeetingConductor:
             progress_reports=progress_reports,
             decisions=meeting.decisions,
             action_items=list(action_items),
-            summary=summary
+            summary=summary,
+            verified_claims=verified_claims,
         )
 
         final_minutes["activity_log"] = activity_log
+        if "verified_claims" in existing_minutes:
+            final_minutes["verified_claims"] = existing_minutes["verified_claims"]
+        if "policy_state" in existing_minutes:
+            policy_state = dict(existing_minutes["policy_state"])
+            policy_state["current_stage"] = "ADJOURN"
+            policy_state["concluded_cleanly"] = True
+            final_minutes["policy_state"] = policy_state
+
         meeting.minutes = final_minutes
         meeting.status = MeetingStatus.CONCLUDED
         meeting.concluded_at = now_dt
         meeting.active_speaker_id = None
+        meeting.current_stage = "ADJOURN"
 
         await self.meeting_repo.session.commit()
         await self.meeting_repo.session.refresh(meeting)
@@ -545,7 +988,8 @@ class MeetingConductor:
         )
         await self.collect_report(meeting.meeting_id, report)
 
-        # 4. Boss AI records remediation decision
+        # 4. Boss AI records remediation decision (optionally routed through Governance Engine)
+        as_governance = kwargs.get("as_governance", False)
         dec = await self.record_decision(
             meeting_id=meeting.meeting_id,
             topic=decision_topic,
@@ -553,14 +997,22 @@ class MeetingConductor:
             rationale=decision_rationale,
             decided_by="BossAI",
             impact=f"Unblocks {task_id}",
+            as_governance=as_governance,
+            project_id=project_id,
         )
 
-        # 5. Add tracked action item referencing decision
+        # 5. Add tracked action item referencing decision and linked task DAG
+        linked_task_id = kwargs.get("action_item_linked_task_id") or kwargs.get("linked_task_id")
+        if not linked_task_id and dec.get("created_task_ids"):
+            linked_task_id = dec["created_task_ids"][0]
+        acceptance_criteria = kwargs.get("action_item_acceptance_criteria") or kwargs.get("acceptance_criteria")
         await self.add_action_item(
             meeting_id=meeting.id,
             description=f"[{dec['decision_id']}] {action_item_description}",
             assigned_to=action_item_assigned_to,
             deadline=action_item_deadline or (utc_now() + timedelta(hours=24)),
+            linked_task_id=linked_task_id,
+            acceptance_criteria=acceptance_criteria,
         )
 
         # 6. Conclude meeting

@@ -52,6 +52,8 @@ class EmployeeExecutionQueue:
         # Check if already in queue
         for item in self._queue:
             if item.employee_id == employee_id and item.task_id == task_id:
+                if PRIORITY_RANK.get(priority, 2) > PRIORITY_RANK.get(item.priority, 2):
+                    item.priority = priority
                 return item
 
         item = QueuedStandbyEmployee(
@@ -76,13 +78,15 @@ class EmployeeExecutionQueue:
             return None
 
         # Sort key:
-        # 1. Priority rank descending (CRITICAL first)
+        # 1. Effective priority rank descending (CRITICAL first, with anti-starvation aging boost)
         # 2. Department fairness bonus (if different from last served department)
         # 3. Wait time descending (longest waiting first)
-        def sort_key(item: QueuedStandbyEmployee) -> tuple[int, int, float]:
-            p_val = PRIORITY_RANK.get(item.priority, 2)
+        def sort_key(item: QueuedStandbyEmployee) -> tuple[float, int, float]:
+            p_val = float(PRIORITY_RANK.get(item.priority, 2))
+            # Anti-starvation aging: tasks waiting > 60s receive an aging boost (up to +2 ranks)
+            aging_boost = min(2.0, item.wait_time_seconds / 60.0) if item.wait_time_seconds > 60.0 else 0.0
             dept_bonus = 1 if item.department != self._last_served_department else 0
-            return (p_val, dept_bonus, item.wait_time_seconds)
+            return (p_val + aging_boost, dept_bonus, item.wait_time_seconds)
 
         self._queue.sort(key=sort_key, reverse=True)
         selected = self._queue.pop(0)

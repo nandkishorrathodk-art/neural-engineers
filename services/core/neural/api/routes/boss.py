@@ -1,27 +1,37 @@
+from datetime import datetime, timezone
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException
 from neural.api.deps import (
     get_approval_repo,
     get_audit_repo,
+    get_budget_repo,
     get_container_manager,
+    get_db_session,
     get_employee_repo,
     get_project_repo,
     get_resource_lease_repo,
     get_service_heartbeat_repo,
     get_task_repo,
+    require_boss_or_owner_identity,
     require_owner_identity,
 )
+from neural.api.routes.security import EmergencyStopRequest, ResumeRequest
 from neural.api.schemas.requests import (
+    BossChatRequest,
     ObjectiveSubmissionRequest,
     TaskRecoveryApprovalRequest,
     TaskRecoveryRequest,
 )
-from neural.api.schemas.responses import BossProjectReport, ProjectResponse
+from neural.api.schemas.responses import BossChatResponse, BossProjectReport, ProjectResponse
 from neural.boss.brain import BossBrain
 from neural.constants import TaskStatus
 from neural.containers.manager import ContainerManager, DockerBrokerRequestError
 from neural.db.repositories import (
     ApprovalRepository,
     AuditRepository,
+    BudgetRepository,
+    EmergencyStopRepository,
     EmployeeRepository,
     ProjectRepository,
     ResourceLeaseRepository,
@@ -37,6 +47,7 @@ from neural.exceptions import (
 )
 from neural.security.approval_gates import HumanApprovalGate
 from neural.security.kill_switch import get_kill_switch
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/boss", tags=["Boss AI"])
 
@@ -88,11 +99,30 @@ async def submit_objective(
     project_repo: ProjectRepository = Depends(get_project_repo),
     task_repo: TaskRepository = Depends(get_task_repo),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    budget_repo: BudgetRepository = Depends(get_budget_repo),
     audit_repo: AuditRepository = Depends(get_audit_repo),
     owner_identity: str = Depends(require_owner_identity),
 ):
     if not payload.objective or not payload.objective.strip():
         raise HTTPException(status_code=400, detail="Objective cannot be empty")
+
+    effective_budget = (
+        payload.project_budget_usd
+        if payload.project_budget_usd is not None
+        else payload.budget_usd
+    )
+    if effective_budget is not None:
+        month_scope = f"organization-month:{datetime.now(timezone.utc):%Y-%m}"
+        available_quota = await budget_repo.get_available_quota(month_scope)
+        if Decimal(str(effective_budget)) > available_quota:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "budget_limit_exceeded",
+                    "message": f"Requested project budget ${effective_budget} exceeds available monthly quota ${available_quota}",
+                },
+            )
+
     employees_before = await employee_repo.list_all()
     existing_ids = {employee.employee_id for employee in employees_before}
     brain = BossBrain(project_repo=project_repo, task_repo=task_repo, employee_repo=employee_repo)
@@ -105,7 +135,9 @@ async def submit_objective(
             auto_recruit_workforce=True,
             deadline_days=payload.deadline_days,
             scheduled_at=payload.scheduled_at,
-            budget_usd=payload.budget_usd,
+            budget_usd=effective_budget,
+            project_budget_usd=effective_budget,
+            clarifications=payload.clarifications,
         )
     except ClarificationRequiredError as exc:
         raise HTTPException(
@@ -146,7 +178,8 @@ async def submit_objective(
             "tasks_count": len(tasks),
             "deadline_days": payload.deadline_days,
             "scheduled_at": payload.scheduled_at.isoformat() if payload.scheduled_at else None,
-            "budget_usd": payload.budget_usd,
+            "budget_usd": effective_budget,
+            "project_budget_usd": effective_budget,
             "plan_source": (project.execution_plan or {}).get("plan_source", "unknown"),
         }
     )
@@ -177,6 +210,36 @@ async def submit_objective(
         updated_at=project.updated_at
     )
 
+
+@router.post("/chat", response_model=BossChatResponse)
+async def chat_with_boss(
+    payload: BossChatRequest,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    session: AsyncSession = Depends(get_db_session),
+    _actor: str = Depends(require_boss_or_owner_identity),
+) -> BossChatResponse:
+    """
+    NEURO: Boss AI Executive Conversational Chat.
+    Enables interactive discussion with Boss AI (CEO) grounded in live company state,
+    blockers, budget, deliverables, and automated mission DAG proposal & one-click launch.
+    """
+    if not payload.message or not payload.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    brain = BossBrain(
+        project_repo=project_repo,
+        task_repo=task_repo,
+        employee_repo=employee_repo,
+    )
+    result = await brain.chat(
+        message=payload.message,
+        conversation_history=payload.conversation_history,
+        project_id=payload.project_id,
+        db_session=session,
+    )
+    return BossChatResponse(**result)
 
 
 @router.get("/status")
@@ -273,4 +336,73 @@ async def recover_orphaned_task(
             detail="Recovery conditions changed or the independent approval is missing, mismatched, or already consumed.",
         )
     return result
+
+
+@router.post("/emergency-stop")
+async def trigger_boss_emergency_stop(
+    body: EmergencyStopRequest,
+    session: AsyncSession = Depends(get_db_session),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
+    actor: str = Depends(require_boss_or_owner_identity),
+) -> dict[str, object]:
+    """
+    NEURO-12: Boss Emergency Stop & Durable Kill-Switch.
+    Halts all running attempts, cancels task-attempt leases, sets persistent shared latch in DB,
+    and returns HTTP 503 for all worker/verifier execution routes.
+    """
+    kill_switch = get_kill_switch()
+    audit_repo = AuditRepository(session)
+    state_repo = EmergencyStopRepository(session)
+    try:
+        receipt = await kill_switch.emergency_halt(
+            reason=body.reason,
+            actor=actor,
+            audit_repo=audit_repo,
+            state_repo=state_repo,
+            task_repo=task_repo,
+            resource_lease_repo=resource_lease_repo,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Emergency-stop state could not be persisted; system halt was not confirmed.",
+        ) from exc
+    return receipt
+
+
+@router.post("/emergency-resume")
+@router.post("/resume")
+async def trigger_boss_emergency_resume(
+    body: ResumeRequest,
+    session: AsyncSession = Depends(get_db_session),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
+    actor: str = Depends(require_boss_or_owner_identity),
+) -> dict[str, object]:
+    """
+    NEURO-12: Boss Emergency Resume.
+    Increments task fencing tokens, releases expired leases, safely requeues tasks,
+    and propagates recovery failure before clearing the halt latch.
+    """
+    kill_switch = get_kill_switch()
+    audit_repo = AuditRepository(session)
+    state_repo = EmergencyStopRepository(session)
+    try:
+        receipt = await kill_switch.resume(
+            actor=actor,
+            recovery_strategy=body.recovery_strategy,
+            auth_token=None,
+            task_repo=task_repo,
+            audit_repo=audit_repo,
+            state_repo=state_repo,
+            resource_lease_repo=resource_lease_repo,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Emergency-stop state could not be persisted; system remains halted.",
+        ) from exc
+    return receipt
+
 

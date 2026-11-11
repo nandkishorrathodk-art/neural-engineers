@@ -61,10 +61,10 @@ class EvidenceEvaluator:
                 e2 = retrieved_evidence[j]
 
                 # If one is superseded by the other
-                m1 = e1.get("metadata", {})
-                m2 = e2.get("metadata", {})
-                prov1 = m1.get("provenance", {})
-                prov2 = m2.get("provenance", {})
+                m1 = e1.get("metadata") or {}
+                m2 = e2.get("metadata") or {}
+                prov1 = m1.get("provenance") or {}
+                prov2 = m2.get("provenance") or {}
 
                 if prov1.get("superseded_by") == e2.get("id"):
                     conflicts.append({

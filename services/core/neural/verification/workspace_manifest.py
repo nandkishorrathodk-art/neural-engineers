@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from typing import Any
@@ -69,6 +71,17 @@ def build_workspace_delta(before: dict[str, Any], after: dict[str, Any]) -> dict
                 "after_sha256": new["sha256"],
             })
 
+    delta_content = {
+        "created": created,
+        "modified": modified,
+        "deleted": deleted,
+        "baseline_captured_at_unix": before["captured_at_unix"],
+        "verified_captured_at_unix": after["captured_at_unix"],
+    }
+    sha256_delta_digest = hashlib.sha256(
+        json.dumps(delta_content, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
     return {
         "complete": True,
         "baseline_captured_at_unix": before["captured_at_unix"],
@@ -81,5 +94,6 @@ def build_workspace_delta(before: dict[str, Any], after: dict[str, Any]) -> dict
             "modified": len(modified),
             "deleted": len(deleted),
         },
+        "sha256_delta_digest": sha256_delta_digest,
         "scope": "path and SHA-256 delta; file contents are not included",
     }

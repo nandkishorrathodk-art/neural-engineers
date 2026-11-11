@@ -5,6 +5,7 @@ from neural.api.deps import get_employee_repo, get_message_bus, get_project_repo
 from neural.api.schemas.requests import (
     AssignTaskRequest,
     ExecuteDagRequest,
+    TaskCancelRequest,
     UpdateTaskStatusRequest,
 )
 from neural.api.schemas.responses import ExecuteDagResponse, TaskDAGResponse, TaskResponse
@@ -244,6 +245,42 @@ async def update_task_status(
         started_at=updated.started_at,
         completed_at=updated.completed_at
     )
+
+
+@router.post("/{task_id}/cancel")
+async def cancel_task_attempt(
+    task_id: str,
+    request: TaskCancelRequest,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    bus = Depends(get_message_bus),
+):
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+
+    try:
+        outcome = await task_repo.cancel_task(
+            task_id=task.task_id,
+            reason=request.reason,
+            requeue=request.requeue,
+            standby_employee_id=request.standby_employee_id,
+            actor="ControlPlane",
+        )
+    except Exception as err:
+        raise HTTPException(status_code=409, detail=f"Task cancellation failed: {err}") from err
+
+    if bus:
+        try:
+            await bus.publish_task_event(
+                task_id=task.task_id,
+                event_type="task_cancelled" if not request.requeue else "task_cancelled_requeued",
+                status=outcome["status"],
+                details=outcome,
+            )
+        except Exception:
+            pass
+
+    return outcome
 
 
 @router.get("/{task_id}/dependencies")

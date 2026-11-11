@@ -105,7 +105,7 @@ class DenseVectorStore:
         """
         Returns list of (doc_id, similarity_score, doc_dict) sorted descending by score.
         """
-        if not self._docs:
+        if not self._docs or not query or not query.strip():
             return []
 
         query_emb = _compute_embedding(query)

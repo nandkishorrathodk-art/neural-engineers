@@ -96,7 +96,11 @@ class OSWorldRunner:
         total_actions = execution_meta.get("total_actions_dispatched", 1)
         avg_step_ms = (elapsed_sec * 1000.0) / max(1, total_actions)
 
-        passed = verification.passed and error_msg is None
+        passed = bool(
+            verification.passed
+            and error_msg is None
+            and execution_meta.get("success", False)
+        )
 
         return OSWorldTaskResult(
             task_id=task_id,

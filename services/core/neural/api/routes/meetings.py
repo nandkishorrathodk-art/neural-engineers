@@ -14,16 +14,19 @@ from neural.api.deps import (
     get_task_repo,
 )
 from neural.api.schemas.requests import (
+    AdvanceAgendaStageRequest,
     ConductMeetingRequest,
     ConductOperationalReviewRequest,
     CreateActionItemRequest,
     RecordDecisionRequest,
+    ReopenActionItemRequest,
     ScheduleMeetingRequest,
     SetMeetingSpeakerRequest,
     SubmitProgressReportRequest,
     TriggerBlockerMeetingRequest,
     TriggerPhaseMeetingRequest,
     UpdateActionItemRequest,
+    ValidateClaimRequest,
 )
 from neural.api.schemas.responses import (
     ActionItemResponse,
@@ -31,7 +34,7 @@ from neural.api.schemas.responses import (
     MeetingDetailResponse,
     MeetingResponse,
 )
-from neural.constants import ActionItemStatus
+from neural.constants import ActionItemStatus, ProposalType
 from neural.db.repositories import (
     ActionItemRepository,
     ApprovalRepository,
@@ -42,7 +45,12 @@ from neural.db.repositories import (
     ProjectRepository,
     TaskRepository,
 )
-from neural.exceptions import FabricatedProgressError
+from neural.exceptions import (
+    ActionItemConflictError,
+    DuplicateStatementError,
+    FabricatedProgressError,
+    MeetingPolicyViolationError,
+)
 from neural.meetings.actions import ActionItemTracker
 from neural.meetings.briefings import ExecutiveBriefingGenerator
 from neural.meetings.conductor import MeetingConductor
@@ -65,7 +73,9 @@ def serialize_action_item_model(ai) -> ActionItemResponse:
         deadline=ai.deadline,
         status=ai.status,
         created_at=ai.created_at,
-        is_overdue=ActionItemTracker.is_overdue(ai)
+        is_overdue=ActionItemTracker.is_overdue(ai),
+        linked_task_id=getattr(ai, "linked_task_id", None),
+        acceptance_criteria=getattr(ai, "acceptance_criteria", None),
     )
 
 
@@ -81,6 +91,7 @@ def serialize_meeting_model(m) -> MeetingResponse:
         agenda=m.agenda,
         minutes=m.minutes,
         active_speaker_id=getattr(m, "active_speaker_id", None),
+        current_stage=getattr(m, "current_stage", None),
     )
 
 
@@ -101,6 +112,7 @@ def serialize_meeting_detail_model(m, action_items) -> MeetingDetailResponse:
         action_items=[serialize_action_item_model(ai) for ai in action_items],
         active_speaker_id=getattr(m, "active_speaker_id", None),
         activity_log=(m.minutes or {}).get("activity_log", []),
+        current_stage=getattr(m, "current_stage", None),
     )
 
 
@@ -195,7 +207,9 @@ async def create_action_item(
         meeting_id=meeting.id,
         description=payload.description,
         assigned_to=payload.assigned_to,
-        deadline=payload.deadline
+        deadline=payload.deadline,
+        linked_task_id=payload.linked_task_id,
+        acceptance_criteria=payload.acceptance_criteria,
     )
     return serialize_action_item_model(item)
 
@@ -216,12 +230,36 @@ async def update_action_item(
         kwargs["status"] = payload.status
     if payload.deadline is not None:
         kwargs["deadline"] = payload.deadline
+    if payload.linked_task_id is not None:
+        kwargs["linked_task_id"] = payload.linked_task_id
+    if payload.acceptance_criteria is not None:
+        kwargs["acceptance_criteria"] = payload.acceptance_criteria
 
     try:
         updated = await tracker.repo.update_item(action_item_id, **kwargs)
-    except ValueError as exc:
+    except (ActionItemConflictError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return serialize_action_item_model(updated)
+
+
+@router.post("/action-items/{action_item_id}/reopen", response_model=ActionItemResponse)
+async def reopen_action_item(
+    action_item_id: str,
+    payload: ReopenActionItemRequest,
+    action_item_repo: ActionItemRepository = Depends(get_action_item_repo)
+):
+    tracker = ActionItemTracker(action_item_repo)
+    try:
+        reopened = await tracker.reopen_action_item(
+            action_item_id=action_item_id,
+            reason=payload.reason,
+            reopened_by=payload.reopened_by or "BossAI"
+        )
+    except ActionItemConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return serialize_action_item_model(reopened)
 
 
 @router.post("/trigger/standup", response_model=MeetingResponse)
@@ -316,6 +354,9 @@ async def conduct_operational_review_endpoint(
             action_item_assigned_to=payload.action_item_assigned_to,
             action_item_deadline=deadline,
             project_id=payload.project_id,
+            as_governance=bool(payload.as_governance),
+            action_item_linked_task_id=payload.linked_task_id,
+            action_item_acceptance_criteria=payload.acceptance_criteria,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -358,9 +399,10 @@ async def start_meeting(
 async def submit_progress_report(
     meeting_id: str,
     payload: SubmitProgressReportRequest,
-    meeting_repo: MeetingRepository = Depends(get_meeting_repo)
+    meeting_repo: MeetingRepository = Depends(get_meeting_repo),
+    task_repo: TaskRepository = Depends(get_task_repo),
 ):
-    conductor = MeetingConductor(meeting_repo)
+    conductor = MeetingConductor(meeting_repo, task_repo=task_repo)
     try:
         report = await conductor.collect_report(
             meeting_id=meeting_id,
@@ -369,8 +411,41 @@ async def submit_progress_report(
         return {"status": "accepted", "report": report}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except (FabricatedProgressError, DuplicateStatementError, MeetingPolicyViolationError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{meeting_id}/claims/validate")
+async def validate_progress_claim_endpoint(
+    meeting_id: str,
+    payload: ValidateClaimRequest,
+    meeting_repo: MeetingRepository = Depends(get_meeting_repo),
+    task_repo: TaskRepository = Depends(get_task_repo),
+):
+    conductor = MeetingConductor(meeting_repo, task_repo=task_repo)
+    try:
+        result = await conductor.validate_progress_claim(payload.model_dump(), meeting_id=meeting_id)
+        return {"status": "verified", "claim": result}
     except FabricatedProgressError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{meeting_id}/agenda/advance", response_model=MeetingResponse)
+async def advance_agenda_stage_endpoint(
+    meeting_id: str,
+    payload: AdvanceAgendaStageRequest,
+    meeting_repo: MeetingRepository = Depends(get_meeting_repo),
+):
+    conductor = MeetingConductor(meeting_repo)
+    try:
+        meeting = await conductor.advance_agenda_stage(meeting_id, payload.stage)
+        return serialize_meeting_model(meeting)
+    except MeetingPolicyViolationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/{meeting_id}/decisions")
@@ -387,11 +462,17 @@ async def record_decision(
             decision=payload.decision,
             rationale=payload.rationale,
             decided_by=payload.decided_by,
-            impact=payload.impact
+            impact=payload.impact,
+            as_governance=payload.as_governance,
+            proposal_type=payload.proposal_type or ProposalType.ARCHITECTURE_CHANGE,
+            project_id=payload.project_id,
+            tasks=payload.tasks,
         )
         return {"status": "recorded", "decision": dec}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except MeetingPolicyViolationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/{meeting_id}/speaker", response_model=MeetingResponse)

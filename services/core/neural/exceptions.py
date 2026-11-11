@@ -89,6 +89,21 @@ class ArtifactIntegrityError(ANCOSError):
     pass
 
 
+class ActionItemConflictError(ANCOSError, ValueError):
+    """Raised when an action item transition conflicts with state machine or concurrent update."""
+    pass
+
+
+class DuplicateStatementError(ANCOSError, ValueError):
+    """Raised when duplicate or repetitive statements are detected in a meeting."""
+    pass
+
+
+class MeetingPolicyViolationError(ANCOSError, ValueError):
+    """Raised when a meeting policy control (turns, tokens, deadline) is violated."""
+    pass
+
+
 class RetriesExhaustedError(ANCOSError):
     """Raised when a task has exceeded its maximum retry limit and must be escalated."""
     pass
@@ -184,6 +199,32 @@ class ShadowModeViolationError(DecisionIntelligenceError):
 class BatchManagerError(DecisionIntelligenceError):
     """Raised when micro-batch manager encounters an internal processing error."""
     pass
+
+
+class CapabilityPolicyViolationError(SecurityViolationError):
+    """Raised when an operation violates the task mode's capability contract."""
+    pass
+
+
+class ModeContractViolationError(SecurityViolationError):
+    """Raised when an action or tool breaches the explicit task execution mode contract."""
+    pass
+
+
+class UnauthorizedToolError(SecurityViolationError):
+    """Raised when an unauthorized, unregistered, or safety-violated tool is invoked."""
+    pass
+
+
+class TaskCancellationError(ANCOSError):
+    """Raised when task cancellation or attempt invalidation encounters an error."""
+    pass
+
+
+class DeadlineExceededError(ANCOSError):
+    """Raised when task, worker, or broker request deadline is exceeded."""
+    pass
+
 
 
 

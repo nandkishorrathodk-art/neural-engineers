@@ -54,9 +54,17 @@ async def renew_workstation_lease(
 ) -> Optional[dict[str, Any]]:
     lease = await lease_repo.get_by_session_id(docker_id)
     if lease is None:
-        return await claim_workstation_lease(lease_repo, employee_id, docker_id, resource_pool_id)
+        if hasattr(lease_repo, "list_blocking_for_employee"):
+            blocking = await lease_repo.list_blocking_for_employee(employee_id)
+            active = [b for b in blocking if b.get("status") == "active"]
+            if active:
+                lease = active[0]
+        if lease is None:
+            return await claim_workstation_lease(lease_repo, employee_id, docker_id, resource_pool_id)
     if lease["employee_id"] != employee_id or lease["status"] != "active":
         return None
+    if not hasattr(lease_repo, "heartbeat"):
+        return lease
     expires_at = await lease_repo.heartbeat(
         lease_id=lease["lease_id"],
         fencing_token=lease["fencing_token"],

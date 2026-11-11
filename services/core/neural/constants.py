@@ -3,9 +3,52 @@ from enum import Enum
 
 class ExecutionMode(str, Enum):
     GUI = "gui"
+    GUI_ONLY = "gui_only"
     TERMINAL = "terminal"
+    TERMINAL_ONLY = "terminal_only"
     HYBRID = "hybrid"
     AUTHORIZED_TOOLS = "authorized_tools"
+    RESEARCH_REASONING = "research_reasoning"
+
+    @classmethod
+    def is_terminal(cls, mode: object) -> bool:
+        if mode is None:
+            return False
+        val = getattr(mode, "value", mode)
+        return val in {cls.TERMINAL.value, cls.TERMINAL_ONLY.value}
+
+    @classmethod
+    def is_gui(cls, mode: object) -> bool:
+        if mode is None:
+            return False
+        val = getattr(mode, "value", mode)
+        return val in {cls.GUI.value, cls.GUI_ONLY.value}
+
+    @classmethod
+    def normalize(cls, mode: object) -> "ExecutionMode":
+        if mode is None:
+            return cls.TERMINAL_ONLY
+        val = str(getattr(mode, "value", mode)).lower()
+        if val in {"terminal", "terminal_only"}:
+            return cls.TERMINAL_ONLY
+        if val in {"gui", "gui_only"}:
+            return cls.GUI_ONLY
+        if val == "hybrid":
+            return cls.HYBRID
+        if val in {"authorized_tools", "tools"}:
+            return cls.AUTHORIZED_TOOLS
+        if val in {"research_reasoning", "research", "reasoning"}:
+            return cls.RESEARCH_REASONING
+        return cls(val)
+
+
+ALL_EXECUTION_MODES: list[ExecutionMode] = [
+    ExecutionMode.TERMINAL_ONLY,
+    ExecutionMode.GUI_ONLY,
+    ExecutionMode.HYBRID,
+    ExecutionMode.AUTHORIZED_TOOLS,
+    ExecutionMode.RESEARCH_REASONING,
+]
 
 
 class ProjectStatus(str, Enum):
@@ -158,6 +201,14 @@ class VoteChoice(str, Enum):
     ABSTAIN = "abstain"
 
 
+class SecurityRole(str, Enum):
+    OWNER = "owner"
+    BOSS = "boss"
+    WORKER = "worker"
+    VERIFIER = "verifier"
+    SECURITY_REVIEWER = "security_reviewer"
+
+
 class CommitteeRole(str, Enum):
     CHAIR = "chair"
     HEAD_OF_ENGINEERING = "head_of_engineering"
@@ -175,6 +226,8 @@ class DestructiveOperationType(str, Enum):
     DATABASE_MIGRATION = "database_migration"
     CREDENTIAL_ROTATION = "credential_rotation"
     INFRASTRUCTURE_DESTROY = "infrastructure_destroy"
+    BRANCH_MERGE = "branch_merge"
+    SELF_EVOLUTION_PROMOTION = "self_evolution_promotion"
 
 
 class DecisionType(str, Enum):

@@ -138,6 +138,9 @@ class PixelOCREngine:
         Locates occurrences of a text query in the raster pixels of the frame.
         Uses exact substring and fuzzy string distance matching.
         """
+        if not query or not query.strip():
+            return []
+
         all_regions = self.extract_text_regions(frame)
         query_norm = query.strip().lower()
         matched: list[OCRResult] = []
@@ -152,13 +155,18 @@ class PixelOCREngine:
                         confidence=reg.confidence,
                     )
                 )
-            elif query_norm in reg_norm or reg_norm in query_norm:
-                len_ratio = min(len(query_norm), len(reg_norm)) / max(len(query_norm), len(reg_norm))
+            elif query_norm in reg_norm:
+                words = reg_norm.split()
+                if query_norm in words:
+                    confidence = reg.confidence
+                else:
+                    len_ratio = min(len(query_norm), len(reg_norm)) / max(len(query_norm), len(reg_norm))
+                    confidence = reg.confidence * max(0.75, len_ratio)
                 matched.append(
                     OCRResult(
                         text=reg.text,
                         bounding_box=reg.bounding_box,
-                        confidence=reg.confidence * len_ratio,
+                        confidence=confidence,
                     )
                 )
             elif fuzzy and len(query_norm) > 2:
@@ -186,8 +194,10 @@ class PixelOCREngine:
         Never queries host OS or window manager APIs.
         """
         xmin, ymin, xmax, ymax = window_bounds
+        if xmin > xmax or ymin > ymax:
+            return "Application Window"
         tb_ymin = ymin
-        tb_ymax = min(ymax, ymin + titlebar_height)
+        tb_ymax = min(ymax, ymin + max(1, titlebar_height))
 
         # Find any OCR result inside this titlebar rectangle
         all_regions = self.extract_text_regions(frame)

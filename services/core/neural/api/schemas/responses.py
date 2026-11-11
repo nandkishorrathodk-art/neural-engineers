@@ -76,6 +76,14 @@ class BossProjectReport(BaseModel):
     generated_at: datetime
     task_counts: dict[str, int]
     tasks: list[BossTaskReport]
+    verified_deliverables: list[dict[str, Any]] = Field(default_factory=list)
+    unverified_deliverables: list[dict[str, Any]] = Field(default_factory=list)
+    failed_attempts_summary: list[dict[str, Any]] = Field(default_factory=list)
+    report_signature: Optional[str] = None
+    reporting_authority: Optional[str] = None
+
+
+ProjectCompletionReport = BossProjectReport
 
 
 class TaskResponse(BaseModel):
@@ -104,6 +112,22 @@ class EmployeeResponse(BaseModel):
     container_id: Optional[str] = None
     desktop_url: Optional[str] = None
     desk_id: Optional[str] = None
+    avatar_config: Optional[dict[str, Any]] = None
+
+
+class EmployeePromotionEligibilityResponse(BaseModel):
+    employee_id: str
+    current_title: str
+    eligible: bool
+    verified_tasks_count: int
+    tasks_since_last_promotion: int = 0
+    verified_skills_count: int
+    verified_skills: list[str] = []
+    pass_rate: float
+    suggested_title: Optional[str] = None
+    suggested_model_tier: Optional[str] = None
+    suggested_tools: list[str] = []
+    criteria: dict[str, Any] = {}
 
 
 class WorkstationResponse(BaseModel):
@@ -140,6 +164,17 @@ class VncCredentialResponse(BaseModel):
     vnc_password: str = Field(repr=False)
 
 
+class VncTokenResponse(BaseModel):
+    employee_id: str
+    docker_id: str
+    token: str
+    ws_path: str
+    desktop_url: str
+    read_only_desktop_url: str
+    view_only: bool = True
+    interactive_allowed: bool = False
+
+
 
 class ActionItemResponse(BaseModel):
     id: str
@@ -150,6 +185,8 @@ class ActionItemResponse(BaseModel):
     status: ActionItemStatus
     created_at: datetime
     is_overdue: bool = False
+    linked_task_id: Optional[str] = None
+    acceptance_criteria: Optional[str] = None
 
 
 class MeetingResponse(BaseModel):
@@ -163,6 +200,7 @@ class MeetingResponse(BaseModel):
     agenda: list[str]
     minutes: dict[str, Any]
     active_speaker_id: Optional[str] = None
+    current_stage: Optional[str] = None
 
 
 class MeetingDetailResponse(BaseModel):
@@ -181,6 +219,7 @@ class MeetingDetailResponse(BaseModel):
     action_items: list[ActionItemResponse] = []
     active_speaker_id: Optional[str] = None
     activity_log: list[dict[str, Any]] = []
+    current_stage: Optional[str] = None
 
 
 class ExecutiveBriefingResponse(BaseModel):
@@ -532,6 +571,94 @@ class MemoryEntryResponse(BaseModel):
     metadata_json: dict[str, Any] = {}
     confidence: float
     created_at: datetime
+
+
+class EvolutionProposalResponse(BaseModel):
+    proposal_id: str
+    title: str
+    description: str
+    category: str
+    target_files: list[str]
+    root_cause_rationale: str
+    baseline_metrics: dict[str, Any]
+    target_goals: dict[str, Any]
+    status: str
+    proposer_id: str
+    created_at: str
+    signature: str
+
+
+class EvolutionCandidateStagingResponse(BaseModel):
+    proposal_id: str
+    branch: str
+    path: str
+    base_commit: str
+    receipt_sha256: str
+    head_commit: Optional[str] = None
+
+
+class EvolutionVerificationResponse(BaseModel):
+    receipt_id: str
+    proposal_id: str
+    candidate_branch: str
+    verifier_id: str
+    passed: bool
+    regression_passed: bool
+    static_analysis_passed: bool
+    ast_security_passed: bool
+    benchmark_passed: bool
+    benchmark_comparison: dict[str, Any]
+    artifact_digests: dict[str, str]
+    diff_stat: str
+    timestamp: str
+    signature: str
+    head_commit: Optional[str] = None
+    notes: str = ""
+
+
+class EvolutionPromotionResponse(BaseModel):
+    receipt_id: Optional[str] = None
+    proposal_id: str
+    candidate_branch: Optional[str] = None
+    target_branch: str
+    pre_evolution_commit: Optional[str] = None
+    promoted_commit: Optional[str] = None
+    approval_id: Optional[str] = None
+    approved_by: Optional[str] = None
+    verification_receipt_id: Optional[str] = None
+    activation_status: str
+    eligible_for_promotion: bool
+    auto_promote_blocked: bool = False
+    timestamp: Optional[str] = None
+    signature: Optional[str] = None
+    message: str = ""
+
+
+class EvolutionRollbackResponse(BaseModel):
+    receipt_id: str
+    proposal_id: str
+    target_branch: str
+    pre_evolution_commit: str
+    rolled_back_commit: str
+    restored_commit: str
+    anomaly_detected: dict[str, Any]
+    timestamp: str
+    signature: str
+
+
+class BossChatResponse(BaseModel):
+    reply: str = Field(..., description="Boss AI executive conversational response")
+    action: Optional[dict[str, Any]] = Field(
+        None, description="Optional suggested action (e.g. launch project DAG)"
+    )
+    plan_proposal: Optional[dict[str, Any]] = Field(
+        None, description="Optional structured mission plan proposal"
+    )
+    conversation_history: list[dict[str, Any]] = Field(
+        default_factory=list, description="Updated conversation history"
+    )
+
+
 
 
 

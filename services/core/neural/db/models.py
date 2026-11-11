@@ -161,6 +161,7 @@ class Employee(Base):
     performance_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     hired_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     desk_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    avatar_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     container_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("containers.id"), nullable=True
@@ -431,6 +432,7 @@ class Meeting(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     concluded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     active_speaker_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    current_stage: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     action_items: Mapped[list["ActionItem"]] = relationship(
         "ActionItem", back_populates="meeting", cascade="all, delete-orphan"
@@ -451,6 +453,8 @@ class ActionItem(Base):
         SQLEnum(ActionItemStatus), default=ActionItemStatus.OPEN, nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
+    linked_task_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    acceptance_criteria: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     meeting: Mapped["Meeting"] = relationship("Meeting", back_populates="action_items")
 

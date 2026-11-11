@@ -79,6 +79,8 @@ class GlobalEmergencyKillSwitch:
         audit_repo: Optional[Any] = None,
         message_bus: Optional[Any] = None,
         state_repo: Optional[Any] = None,
+        task_repo: Optional[Any] = None,
+        resource_lease_repo: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
         Instantly halts all autonomous operations, cancelling active tasks and freezing workstations.
@@ -98,6 +100,22 @@ class GlobalEmergencyKillSwitch:
         self.halted_by = actor
 
         halted_subsystems: list[str] = []
+
+        # Cancel running task attempts and supersede leases
+        if task_repo is not None and hasattr(task_repo, "halt_running_attempts"):
+            try:
+                cancelled = await task_repo.halt_running_attempts(reason=reason)
+                halted_subsystems.append(f"TaskAttempts(cancelled={cancelled})")
+            except Exception as e:
+                logger.error("Error cancelling task attempts during emergency halt", error=str(e))
+
+        # Reconcile expired resource leases
+        if resource_lease_repo is not None and hasattr(resource_lease_repo, "reconcile_expired"):
+            try:
+                reconciled = await resource_lease_repo.reconcile_expired()
+                halted_subsystems.append(f"ResourceLeases(reconciled={reconciled})")
+            except Exception as e:
+                logger.error("Error reconciling resource leases during emergency halt", error=str(e))
 
         # 1. Halt Task Schedulers and cancel active task workers
         for scheduler in self._schedulers:
@@ -196,6 +214,7 @@ class GlobalEmergencyKillSwitch:
         audit_repo: Optional[Any] = None,
         message_bus: Optional[Any] = None,
         state_repo: Optional[Any] = None,
+        resource_lease_repo: Optional[Any] = None,
     ) -> dict[str, Any]:
         """
         Resumes the system from an emergency halt.
@@ -226,6 +245,10 @@ class GlobalEmergencyKillSwitch:
                 for t in running_tasks:
                     await task_repo.update_status(t.task_id, TaskStatus.PENDING)
                     recovered_tasks_count += 1
+
+        # Release expired and quarantined resource leases during recovery
+        if resource_lease_repo is not None and hasattr(resource_lease_repo, "release_expired_leases"):
+            await resource_lease_repo.release_expired_leases()
 
         # Unpause Boss AI and schedulers
         for brain in self._boss_brains:

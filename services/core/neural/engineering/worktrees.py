@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+}
 
 
 class WorktreeProvisionError(RuntimeError):
@@ -56,6 +61,8 @@ class EngineeringWorktreeManager:
     def create(self, task_id: str, base_ref: str = "HEAD") -> WorktreeReceipt:
         if not _TASK_ID_RE.fullmatch(task_id):
             raise WorktreeProvisionError("task_id contains unsupported characters")
+        if task_id.upper() in _WINDOWS_RESERVED:
+            raise WorktreeProvisionError(f"task_id '{task_id}' is a reserved device name")
         if not base_ref or base_ref.startswith("-") or "\x00" in base_ref:
             raise WorktreeProvisionError("base_ref is invalid")
         if self._is_within(self.managed_root, self.repository):
@@ -150,6 +157,72 @@ class EngineeringWorktreeManager:
         if branch != raw["branch"] or top_level != worktree_path or not re.fullmatch(r"[0-9a-f]{40,64}", head):
             raise WorktreeProvisionError("recorded task worktree no longer matches its provenance")
         return WorktreeReceipt(task_id, branch, worktree_path, base_commit, self.repository, digest)
+
+    def get_diff(self, task_id: str) -> str:
+        """Get git diff between base commit and HEAD of the task worktree."""
+        receipt = self.verify_receipt(task_id)
+        return self._git_at(receipt.path, "diff", f"{receipt.base_commit}..HEAD")
+
+    def list_changed_files(self, task_id: str) -> list[str]:
+        """List files changed between base commit and HEAD in the task worktree."""
+        receipt = self.verify_receipt(task_id)
+        out = self._git_at(receipt.path, "diff", "--name-only", f"{receipt.base_commit}..HEAD").strip()
+        if not out:
+            return []
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
+    def commit_changes(
+        self,
+        task_id: str,
+        message: str,
+        author_name: str = "ANCOS Worker",
+        author_email: str = "worker@ancos.corp",
+    ) -> str:
+        """Stage all changes in the task worktree and commit with the specified author."""
+        receipt = self.verify_receipt(task_id)
+        self._git_at(receipt.path, "add", "-A")
+        status = self._git_at(receipt.path, "status", "--porcelain").strip()
+        if not status:
+            return self._git_at(receipt.path, "rev-parse", "HEAD").strip().lower()
+        self._git_at(
+            receipt.path,
+            "-c",
+            f"user.name={author_name}",
+            "-c",
+            f"user.email={author_email}",
+            "commit",
+            "-m",
+            message,
+        )
+        return self._git_at(receipt.path, "rev-parse", "HEAD").strip().lower()
+
+    def get_head_commit(self, task_id: str) -> str:
+        """Get current HEAD commit hash of the task worktree."""
+        receipt = self.verify_receipt(task_id)
+        return self._git_at(receipt.path, "rev-parse", "HEAD").strip().lower()
+
+    def remove_worktree(self, task_id: str, force: bool = True) -> None:
+        """Safely remove the task worktree directory and prune worktree references."""
+        if not _TASK_ID_RE.fullmatch(task_id):
+            raise WorktreeProvisionError("task_id contains unsupported characters")
+        root = self.managed_root.resolve()
+        target = (root / task_id).resolve()
+        if target.exists():
+            args = ["worktree", "remove"]
+            if force:
+                args.append("--force")
+            args.append(str(target))
+            try:
+                self._git(*args)
+            except Exception:
+                pass
+            if target.exists():
+                import shutil
+                shutil.rmtree(target, ignore_errors=True)
+        try:
+            self._git("worktree", "prune")
+        except Exception:
+            pass
 
     @staticmethod
     def _receipt_digest(record: dict[str, Any]) -> str:

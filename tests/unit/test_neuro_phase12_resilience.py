@@ -229,3 +229,50 @@ def test_backup_restore_uncompressed_tarbomb_disk_exhaustion_guard(tmp_path):
         assert "Insufficient disk space" in str(exc_info.value)
         assert "uncompressed payload" in str(exc_info.value)
         assert "55000 bytes" in str(exc_info.value)
+
+
+def test_pairwise_credential_separation_across_all_roles(monkeypatch):
+    """
+    NEURO-12 verification:
+    Validates that validate_all_role_credentials strictly rejects any credential overlap
+    between Owner, Boss, Worker, Verifier, Security Reviewer, and Approver roles with HTTP 503.
+    """
+    from fastapi import HTTPException
+    from neural.api.deps import validate_all_role_credentials
+
+    shared_token = "shared-secret-overlap-token-32bytes"
+    unique_base = "unique-secret-distinct-token-32bytes"
+
+    # 1. Boss overlaps with Worker
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("OWNER_API_TOKEN", unique_base + "-owner")
+    monkeypatch.setenv("BOSS_API_TOKEN", shared_token)
+    monkeypatch.setenv("WORKER_API_TOKENS", f'{{"worker-1":"{shared_token}"}}')
+    monkeypatch.setenv("VERIFIER_API_TOKEN", unique_base + "-verifier")
+    monkeypatch.setenv("SECURITY_REVIEWER_API_TOKEN", unique_base + "-sec")
+    get_settings.cache_clear()
+
+    with pytest.raises(HTTPException) as exc_info:
+        validate_all_role_credentials(get_settings())
+    assert exc_info.value.status_code == 503
+    assert "Role credentials must be pairwise distinct" in exc_info.value.detail
+    assert "boss" in exc_info.value.detail
+    assert "worker" in exc_info.value.detail
+
+    # 2. Security Reviewer overlaps with Verifier
+    monkeypatch.setenv("BOSS_API_TOKEN", unique_base + "-boss")
+    monkeypatch.setenv("WORKER_API_TOKENS", f'{{"worker-1":"{unique_base}-w1"}}')
+    monkeypatch.setenv("VERIFIER_API_TOKEN", shared_token)
+    monkeypatch.setenv("SECURITY_REVIEWER_API_TOKEN", shared_token)
+    get_settings.cache_clear()
+
+    with pytest.raises(HTTPException) as exc_info:
+        validate_all_role_credentials(get_settings())
+    assert exc_info.value.status_code == 503
+    assert "Role credentials must be pairwise distinct" in exc_info.value.detail
+
+    # 3. All tokens strictly distinct -> succeeds without error
+    monkeypatch.setenv("VERIFIER_API_TOKEN", unique_base + "-verifier")
+    monkeypatch.setenv("SECURITY_REVIEWER_API_TOKEN", unique_base + "-sec")
+    get_settings.cache_clear()
+    validate_all_role_credentials(get_settings())

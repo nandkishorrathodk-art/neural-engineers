@@ -42,6 +42,11 @@ MODEL_PRICING_PER_1M = {
     "gemini-1.5-pro": {"input": 1.25, "output": 5.00},
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},
 
+    # NVIDIA NIM
+    "nemotron-3.5-lightning-30b-a3b": {"input": 0.30, "output": 0.90},
+    "nemotron-3.5-bolt-e4b": {"input": 0.20, "output": 0.60},
+    "gpt-oss-20b": {"input": 0.20, "output": 0.60},
+
     # Local / Open Weights (zero token API cost)
     "qwen-2.5-coder-32b": {"input": 0.0, "output": 0.0},
     "ollama": {"input": 0.0, "output": 0.0},
@@ -149,6 +154,8 @@ class CostTracker:
         return round(cost_in + cost_out, 6)
 
     def _pricing_for_model(self, model: str) -> dict[str, float]:
+        if not model or not isinstance(model, str):
+            return DEFAULT_FALLBACK_PRICING
         pricing = DEFAULT_FALLBACK_PRICING
         model_lower = model.lower()
         if model_lower in self.pricing_table:

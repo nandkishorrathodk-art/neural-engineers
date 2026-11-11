@@ -74,6 +74,8 @@ class SixTierMemoryStore:
                 meta["verified_at"] = record.verified_at.isoformat() if record.verified_at else None
                 meta["related_record_ids"] = record.related_record_ids
                 meta["embedding"] = record.embedding
+                if record.metadata.get("task_id"):
+                    meta["task_id"] = record.metadata["task_id"]
 
                 await self.memory_repo.create_entry(
                     category=cat_map.get(record.layer, MemoryCategory.KNOWLEDGE),
@@ -112,11 +114,20 @@ class SixTierMemoryStore:
                 if not isinstance(provenance, dict):
                     provenance = {}
                 receipt = provenance.get("independent_verification_receipt")
-                if verification_status == RecordVerificationStatus.VERIFIED and not valid_independent_verification_receipt(
+                task_id = meta.get("task_id") or meta.get("record_metadata", {}).get("task_id")
+                approved_by = provenance.get("approved_by")
+
+                is_valid_task_receipt = valid_independent_verification_receipt(
                     receipt,
                     employee_id=meta.get("owner_employee_id"),
-                    task_id=meta.get("task_id"),
-                ):
+                    task_id=task_id,
+                )
+                is_valid_board_approval = (
+                    layer == MemoryLayer.ORGANIZATIONAL
+                    and isinstance(approved_by, str)
+                    and approved_by.strip() in ("Boardroom", "BossAI", "Executive", "Governance")
+                )
+                if verification_status == RecordVerificationStatus.VERIFIED and not (is_valid_task_receipt or is_valid_board_approval):
                     verification_status = RecordVerificationStatus.UNVERIFIED
                     verified_at = None
                 record = MemoryRecord(
@@ -214,12 +225,14 @@ class SixTierMemoryStore:
         access_level: MemoryAccessLevel = MemoryAccessLevel.INTERNAL,
         allowed_departments: Optional[list[str]] = None,
         allowed_projects: Optional[list[str]] = None,
+        owner_employee_id: Optional[str] = None,
     ) -> MemoryRecord:
         expected_task_id = source.removeprefix("task:") if source.startswith("task:") else None
         is_v = bool(
             verified_by
             and valid_independent_verification_receipt(
                 verification_receipt,
+                employee_id=owner_employee_id,
                 task_id=expected_task_id,
             )
             and verification_receipt.get("verifier_id") == verified_by
@@ -233,6 +246,7 @@ class SixTierMemoryStore:
             verification_status=RecordVerificationStatus.VERIFIED if is_v else RecordVerificationStatus.UNVERIFIED,
             verified_at=utc_now() if is_v else None,
             access_level=access_level,
+            owner_employee_id=owner_employee_id,
             allowed_departments=allowed_departments or [],
             allowed_projects=allowed_projects or [],
             metadata={
@@ -256,24 +270,37 @@ class SixTierMemoryStore:
         verified_by: Optional[str] = None,
         verification_receipt: Optional[dict[str, Any]] = None,
         task_id: Optional[str] = None,
+        owner_employee_id: Optional[str] = None,
+        access_level: MemoryAccessLevel = MemoryAccessLevel.INTERNAL,
+        allowed_departments: Optional[list[str]] = None,
+        allowed_projects: Optional[list[str]] = None,
     ) -> MemoryRecord:
+        if task_id is None and isinstance(verification_receipt, dict):
+            task_id = verification_receipt.get("task_id")
         is_v = bool(
             verified_by
             and valid_independent_verification_receipt(
                 verification_receipt,
+                employee_id=owner_employee_id,
                 task_id=task_id,
             )
             and verification_receipt.get("verifier_id") == verified_by
         )
+        content_lines = [f"Standard Operating Procedure for {procedure_name}", f"Steps: {len(steps)}"]
+        if code_recipe:
+            content_lines.append(f"Recipe code:\n{code_recipe}")
         record = MemoryRecord(
             layer=MemoryLayer.PROCEDURAL,
             category="reusable_procedure",
             source=f"procedure:{procedure_name}",
-            content=f"Standard Operating Procedure for {procedure_name}\nSteps: {len(steps)}",
+            content="\n".join(content_lines),
             confidence=1.0 if is_v else 0.8,
             verification_status=RecordVerificationStatus.VERIFIED if is_v else RecordVerificationStatus.UNVERIFIED,
             verified_at=utc_now() if is_v else None,
-            access_level=MemoryAccessLevel.INTERNAL,
+            access_level=access_level,
+            owner_employee_id=owner_employee_id,
+            allowed_departments=allowed_departments or [],
+            allowed_projects=allowed_projects or [],
             metadata={
                 "procedure_name": procedure_name,
                 "steps": steps,
@@ -317,6 +344,9 @@ class SixTierMemoryStore:
         statement: str,
         enforcement_level: str = "mandatory",
         approved_by: str = "Boardroom",
+        access_level: MemoryAccessLevel = MemoryAccessLevel.INTERNAL,
+        allowed_departments: Optional[list[str]] = None,
+        allowed_projects: Optional[list[str]] = None,
     ) -> MemoryRecord:
         record = MemoryRecord(
             layer=MemoryLayer.ORGANIZATIONAL,
@@ -326,7 +356,9 @@ class SixTierMemoryStore:
             confidence=1.0,
             verification_status=RecordVerificationStatus.VERIFIED,
             verified_at=utc_now(),
-            access_level=MemoryAccessLevel.INTERNAL,
+            access_level=access_level,
+            allowed_departments=allowed_departments or [],
+            allowed_projects=allowed_projects or [],
             metadata={"policy_name": policy_name, "enforcement_level": enforcement_level},
             provenance={"approved_by": approved_by},
         )
@@ -385,17 +417,27 @@ class SixTierMemoryStore:
         """Query only records carrying verified status and confidence evidence."""
         kwargs["verified_only"] = True
         records = self.query_records(**kwargs)
-        return [
-            record
-            for record in records
-            if valid_independent_verification_receipt(
-                record.provenance.get("independent_verification_receipt"),
-                employee_id=record.owner_employee_id,
-                task_id=record.metadata.get("task_id"),
-            )
-            and record.provenance.get("verified_by")
-            == record.provenance["independent_verification_receipt"].get("verifier_id")
-        ]
+        trusted = []
+        for record in records:
+            if not record.is_verified:
+                continue
+            receipt = record.provenance.get("independent_verification_receipt")
+            if (
+                receipt
+                and valid_independent_verification_receipt(
+                    receipt,
+                    employee_id=record.owner_employee_id,
+                    task_id=record.metadata.get("task_id"),
+                )
+                and record.provenance.get("verified_by") == receipt.get("verifier_id")
+            ):
+                trusted.append(record)
+            elif (
+                record.layer == MemoryLayer.ORGANIZATIONAL
+                and record.provenance.get("approved_by") in ("Boardroom", "BossAI", "Executive", "Governance")
+            ):
+                trusted.append(record)
+        return trusted
 
     def dispute_record(self, record_id: str, reason: str, disputer_id: str) -> bool:
         rec = self.get_record(record_id)

@@ -228,21 +228,6 @@ export const WORKSTATIONS: WorkstationDef[] = [
     monitorCount: 2,
     occupantId: null,
   },
-  {
-    id: 'WS-RES-03',
-    name: 'Research Desk 03',
-    dept: 'research',
-    deskGridX: 17,
-    deskGridY: 19,
-    seatGridX: 17,
-    seatGridY: 19.9,
-    approachGridX: 17,
-    approachGridY: 20.7,
-    facing: 'down',
-    deskType: 'single',
-    monitorCount: 2,
-    occupantId: null,
-  },
   // Creative Desks
   {
     id: 'WS-CRE-01',

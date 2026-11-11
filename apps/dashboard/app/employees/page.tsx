@@ -10,6 +10,7 @@ import {
   provisionWorkstation,
   terminateWorkstation,
 } from '@/lib/api';
+import { BossChatInterface } from '@/components/boss/BossChatInterface';
 import { Employee, Workstation } from '@/types';
 
 export default function EmployeesPage() {
@@ -20,6 +21,7 @@ export default function EmployeesPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Objective submission state
+  const [bossInteractionTab, setBossInteractionTab] = useState<'chat' | 'quick'>('chat');
   const [objectiveInput, setObjectiveInput] = useState('');
   const [objectiveScheduledAt, setObjectiveScheduledAt] = useState('');
   const [submittingObjective, setSubmittingObjective] = useState(false);
@@ -166,60 +168,100 @@ export default function EmployeesPage() {
           </div>
         </div>
 
-        {/* Objective Submission Form */}
-        <form onSubmit={handleLaunchObjective} className="mt-5 space-y-2">
-          <label className="block text-xs font-semibold text-slate-300">
-            Submit Objective to CEO Brain (Auto-Decompose & Auto-Assign to Workforce)
-          </label>
-          <div className="flex flex-col sm:flex-row gap-3">
-            <input
-              type="text"
-              value={objectiveInput}
-              onChange={(e) => setObjectiveInput(e.target.value)}
-              placeholder="e.g. Build an API backend with authentication and automated test suite"
-              disabled={submittingObjective}
-              className="flex-1 bg-[#060b14] border border-[#1b2b4a] focus:border-sky-500 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none transition-colors"
+        {/* Tab Switcher: Chat vs Quick Launch */}
+        <div className="flex items-center space-x-2 mt-4 border-b border-[#141f36] pb-3">
+          <button
+            type="button"
+            onClick={() => setBossInteractionTab('chat')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 ${
+              bossInteractionTab === 'chat'
+                ? 'bg-gradient-to-r from-sky-600 to-blue-600 text-white shadow-[0_0_15px_rgba(56,189,248,0.3)]'
+                : 'bg-[#0e172a] border border-[#1e2d4a] text-slate-400 hover:text-white'
+            }`}
+          >
+            <span>💬</span>
+            <span>Conversational Executive Chat</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setBossInteractionTab('quick')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 ${
+              bossInteractionTab === 'quick'
+                ? 'bg-gradient-to-r from-sky-600 to-blue-600 text-white shadow-[0_0_15px_rgba(56,189,248,0.3)]'
+                : 'bg-[#0e172a] border border-[#1e2d4a] text-slate-400 hover:text-white'
+            }`}
+          >
+            <span>⚡</span>
+            <span>Quick Objective Launch</span>
+          </button>
+        </div>
+
+        {bossInteractionTab === 'chat' ? (
+          <div className="mt-4">
+            <BossChatInterface
+              onMissionLaunched={(name) => {
+                loadData();
+                setObjectiveSuccess(`Mission planned and launched: ${name}`);
+              }}
             />
-            <button
-              type="submit"
-              disabled={submittingObjective || !objectiveInput.trim()}
-              className="px-5 py-2.5 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-[0_0_15px_rgba(56,189,248,0.25)] transition-all flex items-center justify-center space-x-2 whitespace-nowrap"
-            >
-              {submittingObjective ? (
-                <span>Planning DAG...</span>
-              ) : (
-                <>
-                  <span>🚀</span>
-                  <span>Launch Objective</span>
-                </>
-              )}
-            </button>
           </div>
-          <div className="flex flex-col gap-1 pt-1">
-            <label htmlFor="objective-scheduled-at" className="text-[11px] font-medium text-slate-400">
-              Start later (optional)
+        ) : (
+          /* Objective Submission Form */
+          <form onSubmit={handleLaunchObjective} className="mt-5 space-y-2">
+            <label className="block text-xs font-semibold text-slate-300">
+              Submit Objective to CEO Brain (Auto-Decompose & Auto-Assign to Workforce)
             </label>
-            <input
-              id="objective-scheduled-at"
-              type="datetime-local"
-              value={objectiveScheduledAt}
-              onChange={(e) => setObjectiveScheduledAt(e.target.value)}
-              disabled={submittingObjective}
-              className="w-full sm:w-72 bg-[#060b14] border border-[#1b2b4a] focus:border-sky-500 rounded-xl px-3 py-2 text-xs text-white focus:outline-none transition-colors"
-            />
-            <p className="text-[10px] text-slate-500">Time uses this device’s local timezone; ANCOS stores and dispatches it in UTC.</p>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input
+                type="text"
+                value={objectiveInput}
+                onChange={(e) => setObjectiveInput(e.target.value)}
+                placeholder="e.g. Build an API backend with authentication and automated test suite"
+                disabled={submittingObjective}
+                className="flex-1 bg-[#060b14] border border-[#1b2b4a] focus:border-sky-500 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none transition-colors"
+              />
+              <button
+                type="submit"
+                disabled={submittingObjective || !objectiveInput.trim()}
+                className="px-5 py-2.5 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-[0_0_15px_rgba(56,189,248,0.25)] transition-all flex items-center justify-center space-x-2 whitespace-nowrap"
+              >
+                {submittingObjective ? (
+                  <span>Planning DAG...</span>
+                ) : (
+                  <>
+                    <span>🚀</span>
+                    <span>Launch Objective</span>
+                  </>
+                )}
+              </button>
+            </div>
+            <div className="flex flex-col gap-1 pt-1">
+              <label htmlFor="objective-scheduled-at" className="text-[11px] font-medium text-slate-400">
+                Start later (optional)
+              </label>
+              <input
+                id="objective-scheduled-at"
+                type="datetime-local"
+                value={objectiveScheduledAt}
+                onChange={(e) => setObjectiveScheduledAt(e.target.value)}
+                disabled={submittingObjective}
+                className="w-full sm:w-72 bg-[#060b14] border border-[#1b2b4a] focus:border-sky-500 rounded-xl px-3 py-2 text-xs text-white focus:outline-none transition-colors"
+              />
+              <p className="text-[10px] text-slate-500">Time uses this device’s local timezone; ANCOS stores and dispatches it in UTC.</p>
+            </div>
+          </form>
+        )}
+
+        {objectiveSuccess && (
+          <div className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 rounded-lg p-2.5 mt-3">
+            ✓ {objectiveSuccess}
           </div>
-          {objectiveSuccess && (
-            <div className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 rounded-lg p-2.5 mt-2">
-              ✓ {objectiveSuccess}
-            </div>
-          )}
-          {error && (
-            <div className="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/60 rounded-lg p-2.5 mt-2">
-              ⚠️ {error}
-            </div>
-          )}
-        </form>
+        )}
+        {error && (
+          <div className="text-xs text-rose-400 bg-rose-950/40 border border-rose-800/60 rounded-lg p-2.5 mt-3">
+            ⚠️ {error}
+          </div>
+        )}
       </div>
 
       {/* ─────────────────────────────────────────────────────────────────────────────

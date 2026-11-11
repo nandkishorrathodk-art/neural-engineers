@@ -14,6 +14,31 @@ def utc_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+class StructuredProgressClaim(BaseModel):
+    """
+    Structured Progress Claim presented during a meeting.
+    Must be validated against independent test runs, repository commit, and artifact digests.
+    """
+    task_id: str = Field(..., min_length=1, description="Unique task identifier in TaskRepository")
+    claim: str = Field(..., min_length=3, description="Descriptive progress accomplishment claim")
+    commit_sha: str = Field(..., min_length=7, description="Repository commit SHA where changes reside")
+    artifact_hash: str = Field(..., min_length=64, description="SHA-256 digest of deliverable artifact")
+    test_run_id: str = Field(..., min_length=1, description="Independent test run / verification receipt ID")
+    verification_status: str = Field(..., description="Must be 'PASSED'")
+    verified_at: str = Field(..., min_length=1, description="ISO timestamp when verification passed")
+
+    @field_validator("verification_status")
+    @classmethod
+    def validate_verification_status(cls, v: str) -> str:
+        clean = str(v).strip().upper()
+        if clean != "PASSED":
+            raise FabricatedProgressError(
+                f"Claim verification_status must be 'PASSED' (received: '{v}'). "
+                "Unverified claims or failed tests cannot be reported as progress."
+            )
+        return clean
+
+
 class FactGroundedProgressReport(BaseModel):
     """
     Fact-Grounded Progress Report for an Employee.
@@ -66,6 +91,12 @@ def validate_report_data(data: dict[str, Any]) -> None:
     Validates raw progress report dictionary against anti-fabrication rules.
     Rejects fabricated progress percentages, ungrounded completion claims, and empty receipts.
     """
+    # 0. Validate structured progress claim if present
+    claim_payload = data.get("progress_claim") or (
+        data.get("claim") if isinstance(data.get("claim"), dict) else None
+    )
+    if claim_payload:
+        StructuredProgressClaim(**claim_payload)
     # 1. Check verification receipt substance
     receipt = data.get("verification_receipt")
     if not receipt or not isinstance(receipt, dict):

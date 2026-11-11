@@ -96,9 +96,9 @@ class SharedInferenceQueue:
         return req
 
     def complete_request(self, employee_id: str) -> None:
-        if employee_id in self._in_flight:
-            self._in_flight[employee_id] = max(0, self._in_flight[employee_id] - 1)
-        self._total_in_flight = max(0, self._total_in_flight - 1)
+        if employee_id in self._in_flight and self._in_flight[employee_id] > 0:
+            self._in_flight[employee_id] -= 1
+            self._total_in_flight = max(0, self._total_in_flight - 1)
 
     def size(self) -> int:
         return len(self._queue)

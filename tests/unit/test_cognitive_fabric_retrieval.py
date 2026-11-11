@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from neural.cognitive_fabric.memory.six_tier_store import SixTierMemoryStore
 from neural.cognitive_fabric.retrieval.agentic_rag import AgenticRAGEngine
@@ -306,4 +308,144 @@ async def test_unverified_episode_cannot_enter_trusted_hybrid_index():
     assert retriever.index_record(verified)
     results = retriever.retrieve("database performance migration", requester_id="BossAI")
     assert [result["id"] for result in results] == [verified.id]
+
+
+def test_rrf_reranker_temporal_decay_favors_recent_verified_knowledge():
+    from datetime import datetime
+    ref_now = datetime(2026, 11, 10, 12, 0, 0)
+    reranker = ReciprocalRankFusionReranker(
+        k=60,
+        verification_boost=0.15,
+        temporal_decay=True,
+        decay_half_life_days=30.0,
+        now=ref_now,
+    )
+
+    # doc_fresh was verified 1 day ago
+    doc_fresh = {
+        "id": "doc-fresh",
+        "text": "FastAPI async connection pooling guidelines v2",
+        "metadata": {
+            "is_verified": True,
+            "verification_status": "verified",
+            "verified_at": "2026-11-09T12:00:00",
+        },
+    }
+    # doc_stale was verified 90 days ago (3 half-lives)
+    doc_stale = {
+        "id": "doc-stale",
+        "text": "FastAPI async connection pooling guidelines v1",
+        "metadata": {
+            "is_verified": True,
+            "verification_status": "verified",
+            "verified_at": "2026-08-12T12:00:00",
+        },
+    }
+
+    # Both have tied ranking in dense and BM25
+    dense_candidates = [
+        ("doc-fresh", 0.90, doc_fresh),
+        ("doc-stale", 0.90, doc_stale),
+    ]
+    bm25_candidates = [
+        ("doc-fresh", 5.0, doc_fresh),
+        ("doc-stale", 5.0, doc_stale),
+    ]
+
+    fused = reranker.fuse(dense_candidates, bm25_candidates, top_k=2)
+    assert len(fused) == 2
+    assert fused[0]["id"] == "doc-fresh"
+    assert fused[1]["id"] == "doc-stale"
+    assert fused[0]["rrf_score"] > fused[1]["rrf_score"]
+
+
+def test_hybrid_retrieval_restricted_memory_leak_prevention():
+    engine = HybridRetrievalEngine()
+
+    # Restricted document with NO individual employee owner (executive/boardroom restricted)
+    engine.index_document(
+        "restricted-executive-memo",
+        "Executive board deliberation on acquisition and confidential runway.",
+        metadata={"access_level": "restricted", "owner_employee_id": None},
+    )
+
+    # Restricted document owned by employee Alice
+    engine.index_document(
+        "restricted-alice-notes",
+        "Alice personal debugging scratchpad for memory leaks.",
+        metadata={"access_level": "restricted", "owner_employee_id": "ANC-EMP-ALICE"},
+    )
+
+    # Bob MUST NOT retrieve either restricted document
+    bob_results = engine.retrieve("deliberation scratchpad", requester_id="ANC-EMP-BOB", include_unverified=True)
+    assert not any(r["id"] in ("restricted-executive-memo", "restricted-alice-notes") for r in bob_results)
+
+    # Alice can only retrieve her own notes, NOT the unowned executive memo
+    alice_results = engine.retrieve("deliberation scratchpad", requester_id="ANC-EMP-ALICE", include_unverified=True)
+    assert any(r["id"] == "restricted-alice-notes" for r in alice_results)
+    assert not any(r["id"] == "restricted-executive-memo" for r in alice_results)
+
+    # BossAI has executive clearance for all
+    boss_results = engine.retrieve("deliberation scratchpad", requester_id="BossAI", include_unverified=True)
+    assert any(r["id"] == "restricted-executive-memo" for r in boss_results)
+    assert any(r["id"] == "restricted-alice-notes" for r in boss_results)
+
+
+def test_empty_query_handling_in_retrieval_and_vector_store():
+    store = DenseVectorStore()
+    store.add_document("doc-1", "Some arbitrary text about databases.")
+    assert store.search("") == []
+    assert store.search("   ") == []
+
+    engine = HybridRetrievalEngine()
+    engine.index_document("doc-1", "Some arbitrary text about databases.")
+    assert engine.retrieve("", requester_id="BossAI") == []
+    assert engine.retrieve("   ", requester_id="BossAI") == []
+
+
+def test_rrf_reranker_deduplication_and_timezone_aware_now():
+    now_aware = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    reranker = ReciprocalRankFusionReranker(
+        k=60,
+        temporal_decay=True,
+        decay_half_life_days=30.0,
+        now=now_aware,
+    )
+    doc_a = {
+        "id": "doc-a",
+        "text": "Guideline A",
+        "metadata": {"is_verified": True, "verified_at": "2026-11-09T12:00:00"},
+    }
+
+    # Duplicate entries in candidate list
+    dense = [("doc-a", 0.95, doc_a), ("doc-a", 0.50, doc_a)]
+    bm25 = [("doc-a", 4.0, doc_a), ("doc-a", 1.0, doc_a)]
+
+    fused = reranker.fuse(dense, bm25, top_k=5)
+    assert len(fused) == 1
+    assert fused[0]["dense_rank"] == 1
+    assert fused[0]["bm25_rank"] == 1
+
+
+def test_hybrid_retrieval_case_insensitive_department_rbac():
+    engine = HybridRetrievalEngine()
+    engine.index_document(
+        "dept-eng-doc",
+        "Engineering specification for high performance distributed caching.",
+        metadata={
+            "access_level": "confidential",
+            "allowed_departments": ["Engineering"],
+            "owner_employee_id": None,
+        },
+    )
+
+    # Department casing lowercase 'engineering' matches 'Engineering'
+    matched = engine.retrieve("distributed caching", requester_id="ANC-EMP-01", department="engineering", include_unverified=True)
+    assert any(r["id"] == "dept-eng-doc" for r in matched)
+
+    # Mismatched department 'marketing' is blocked
+    blocked = engine.retrieve("distributed caching", requester_id="ANC-EMP-02", department="marketing", include_unverified=True)
+    assert not any(r["id"] == "dept-eng-doc" for r in blocked)
+
+
 

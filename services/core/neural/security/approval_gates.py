@@ -40,6 +40,12 @@ class HumanApprovalGate:
         "credential_rotation",
         "infrastructure_destroy",
         "recover_orphaned_task",
+        "branch_merge",
+        "code_merge",
+        "merge_worktree",
+        "git_merge",
+        "self_evolution_promotion",
+        "codebase_modification",
     }
 
     @classmethod
@@ -65,6 +71,8 @@ class HumanApprovalGate:
         if "delete" in norm_action and any(w in norm_action for w in ["file", "database", "table", "disk", "all"]):
             return True
         if "deploy" in norm_action and any(w in norm_action for w in ["prod", "production", "live"]):
+            return True
+        if "merge" in norm_action and any(w in norm_action for w in ["branch", "code", "worktree", "git"]):
             return True
 
         # 4. Check details for destructive flags
@@ -207,13 +215,17 @@ class HumanApprovalGate:
                 )
 
             # Validate pre-provided approval
-            if approval_repo:
-                is_auth = await cls.check_authorized(approval_id, approval_repo)
-                if not is_auth:
-                    raise HumanApprovalRequiredError(
-                        action_type,
-                        f"Approval request '{approval_id}' is not approved. Execution blocked.",
-                    )
+            if not approval_repo:
+                raise HumanApprovalRequiredError(
+                    action_type,
+                    f"Destructive operation cannot verify approval '{approval_id}' without an approval repository.",
+                )
+            is_auth = await cls.check_authorized(approval_id, approval_repo)
+            if not is_auth:
+                raise HumanApprovalRequiredError(
+                    action_type,
+                    f"Approval request '{approval_id}' is not approved. Execution blocked.",
+                )
 
         # Execute the authorized operation
         logger.info("Executing authorized gated operation", action_type=action_type, actor=requested_by)

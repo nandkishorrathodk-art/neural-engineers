@@ -30,8 +30,12 @@ dependencies = [
     "chromadb>=0.5.10",
     "numpy>=1.26.0",
     "Pillow>=10.4.0",
-    "networkx>=3.3"
+    "networkx>=3.3",
+    "rich>=13.8.0"
 ]
+
+[project.scripts]
+ancos = "neural.cli.main:entrypoint"
 
 [project.optional-dependencies]
 dev = [

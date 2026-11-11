@@ -1,7 +1,11 @@
+import asyncio
+import hashlib
+import json
 import math
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from neural.boss.delegator import TaskDelegator
@@ -10,6 +14,7 @@ from neural.boss.recovery import FailureRecoveryManager
 from neural.constants import EmployeeStatus, ExecutionMode, TaskPriority, TaskStatus
 from neural.db.models import Project, Task
 from neural.db.repositories import (
+    BudgetRepository,
     EmployeeRepository,
     ProjectRepository,
     ServiceHeartbeatRepository,
@@ -52,6 +57,7 @@ class BossBrain:
         llm_gateway: Optional[LLMGateway] = None,
         message_bus: Optional[Any] = None,
         service_heartbeat_repo: Optional[ServiceHeartbeatRepository] = None,
+        audit_repo: Optional[Any] = None,
     ):
         self.llm_gateway = llm_gateway or LLMGateway()
         self.planner = planner or TaskPlanner(llm_gateway=self.llm_gateway)
@@ -59,6 +65,7 @@ class BossBrain:
         self.task_repo = task_repo
         self.employee_repo = employee_repo
         self.service_heartbeat_repo = service_heartbeat_repo
+        self.audit_repo = audit_repo
         self.message_bus = message_bus
         self.delegator = delegator or TaskDelegator()
         self.verifier = verifier
@@ -114,6 +121,8 @@ class BossBrain:
         db_session: Optional[Any] = None,
         project_id: Optional[str] = None,
         budget_usd: Optional[float] = None,
+        project_budget_usd: Optional[float] = None,
+        clarifications: Optional[dict[str, str]] = None,
     ) -> dict[str, Any]:
         from neural.exceptions import ClarificationRequiredError, EmergencyStopTriggered
         from neural.security.kill_switch import get_kill_switch
@@ -122,9 +131,18 @@ class BossBrain:
         if self._is_paused:
             raise EmergencyStopTriggered("BossBrain is currently paused due to emergency halt.")
 
+        if project_budget_usd is not None and budget_usd is None:
+            budget_usd = project_budget_usd
+        elif budget_usd is not None and project_budget_usd is None:
+            project_budget_usd = budget_usd
+        elif project_budget_usd is not None and budget_usd is not None:
+            if project_budget_usd != budget_usd:
+                raise ValueError("project_budget_usd and budget_usd must match if both are provided")
+
         logger.info("Boss AI analyzing incoming objective", objective=objective)
         plan = await self.planner.decompose_objective(
             objective,
+            clarifications=clarifications,
             db_session=db_session,
             project_id=project_id,
             budget_usd=budget_usd,
@@ -149,6 +167,8 @@ class BossBrain:
         deadline_days: Optional[int] = None,
         scheduled_at: Optional[datetime] = None,
         budget_usd: Optional[float] = None,
+        project_budget_usd: Optional[float] = None,
+        clarifications: Optional[dict[str, str]] = None,
     ) -> tuple[Project, list[Task]]:
         """
         Analyzes objective, produces structured execution plan,
@@ -162,19 +182,73 @@ class BossBrain:
         if not p_repo:
             raise ValueError("ProjectRepository is required to persist project")
 
+        if project_budget_usd is not None and budget_usd is None:
+            budget_usd = project_budget_usd
+        elif budget_usd is not None and project_budget_usd is None:
+            project_budget_usd = budget_usd
+        elif project_budget_usd is not None and budget_usd is not None:
+            if project_budget_usd != budget_usd:
+                raise ValueError("project_budget_usd and budget_usd must match if both are provided")
+
         if budget_usd is not None and (
             not math.isfinite(budget_usd) or budget_usd <= 0 or budget_usd > 1_000_000
         ):
-            raise ValueError("budget_usd must be greater than 0 and at most 1000000")
+            raise ValueError("project_budget_usd must be greater than 0 and at most 1000000")
+
         project_id = str(uuid.uuid4())
-        plan = await self.analyze_and_plan(
-            objective,
-            db_session=getattr(p_repo, "session", None),
-            project_id=project_id,
-            budget_usd=budget_usd,
-        )
+        reservation = None
+        budget_repo = None
+        db_session = getattr(p_repo, "session", None)
+        if db_session is not None and budget_usd is not None:
+            budget_repo = BudgetRepository(db_session)
+            month_scope = f"organization-month:{datetime.now(timezone.utc):%Y-%m}"
+            account = await budget_repo.get_account(month_scope)
+            month_cap = account.cap_usd if account is not None else Decimal("10000.00")
+            scope_caps = {
+                month_scope: month_cap,
+                f"project:{project_id}": Decimal(str(budget_usd)),
+            }
+            reserve_amount = min(Decimal(str(budget_usd)), Decimal("1.00"))
+            reservation = await budget_repo.reserve(
+                idempotency_key=f"plan-pre-reserve:{project_id}",
+                reserved_usd=reserve_amount,
+                scope_caps=scope_caps,
+            )
+
+        try:
+            plan = await self.analyze_and_plan(
+                objective,
+                db_session=db_session,
+                project_id=project_id,
+                budget_usd=budget_usd,
+                project_budget_usd=project_budget_usd,
+                clarifications=clarifications,
+            )
+        except (Exception, asyncio.CancelledError) as exc:
+            if reservation is not None and budget_repo is not None:
+                try:
+                    await budget_repo.release_after_confirmed_no_charge(
+                        reservation.id,
+                        provider_confirmed_unbilled=True,
+                        reason=f"Planning cancelled or unbilled failure: {exc}",
+                    )
+                except Exception as release_exc:
+                    logger.warning("Failed to release planning budget reservation", error=str(release_exc))
+            raise
+
+        if reservation is not None and budget_repo is not None:
+            try:
+                await budget_repo.settle(
+                    reservation.id,
+                    actual_usd=Decimal("0.00"),
+                    usage_receipt={"plan_source": plan.get("plan_source", "unknown")},
+                )
+            except Exception as settle_exc:
+                logger.warning("Failed to settle planning budget reservation", error=str(settle_exc))
+
         if budget_usd is not None:
             plan["budget_usd"] = budget_usd
+            plan["project_budget_usd"] = budget_usd
         project_deadline: Optional[datetime] = None
         if deadline_days is not None:
             if deadline_days < 1 or deadline_days > 3650:
@@ -617,6 +691,84 @@ class BossBrain:
                 "attempts": task_attempts,
             })
 
+        tasks_sorted = sorted(tasks, key=lambda row: row.task_id)
+        verified_deliverables = [
+            {
+                "task_id": tr["task_id"],
+                "title": tr["title"],
+                "assigned_employee_id": tr["assigned_employee_id"],
+                "completed_at": tr["completed_at"].isoformat() if tr["completed_at"] else None,
+                "receipt_id": _json_object(task.verification_result).get("receipt_id"),
+                "artifacts": _json_object(task.verification_result).get("artifacts", []),
+                "artifact_digests": _json_object(task.verification_result).get("artifact_digests", {}),
+                "evidence_refs": tr["evidence_refs"],
+            }
+            for tr, task in zip(task_reports, tasks_sorted)
+            if tr["verified"]
+        ]
+
+        unverified_deliverables = [
+            {
+                "task_id": tr["task_id"],
+                "title": tr["title"],
+                "status": tr["status"].value if hasattr(tr["status"], "value") else str(tr["status"]),
+                "assigned_employee_id": tr["assigned_employee_id"],
+                "reason": "missing_or_failed_verification",
+            }
+            for tr in task_reports
+            if not tr["verified"] and (tr["completed_at"] is not None or tr["status"] in {TaskStatus.COMPLETED, TaskStatus.FAILED})
+        ]
+
+        tasks_by_id = {task.id: task.task_id for task in tasks}
+        failed_attempts_summary = [
+            {
+                "attempt_id": att.get("attempt_id"),
+                "task_id": tasks_by_id.get(task_id, task_id),
+                "attempt_number": att.get("attempt_number"),
+                "worker_id": att.get("worker_id"),
+                "status": att.get("status"),
+                "error_message": att.get("error_message"),
+                "finished_at": att.get("finished_at").isoformat() if att.get("finished_at") else None,
+            }
+            for task_id, att_list in attempts_by_task.items()
+            for att in att_list
+            if att.get("status") in {"failed", "rejected", "expired"}
+        ]
+
+        reporting_authority = "BossBrain-Reporting-Authority-v1"
+        report_signing_payload = {
+            "project_id": project.id,
+            "project_name": project.name,
+            "objective": project.objective,
+            "project_status": project.status.value if hasattr(project.status, "value") else str(project.status),
+            "generated_at": now.isoformat(),
+            "task_counts": counts,
+            "verified_deliverables_count": len(verified_deliverables),
+            "unverified_deliverables_count": len(unverified_deliverables),
+            "failed_attempts_count": len(failed_attempts_summary),
+            "reporting_authority": reporting_authority,
+        }
+        canonical_signing_bytes = json.dumps(report_signing_payload, sort_keys=True).encode("utf-8")
+        report_signature = hashlib.sha256(canonical_signing_bytes).hexdigest()
+
+        if self.audit_repo:
+            try:
+                await self.audit_repo.log(
+                    actor="BossAI",
+                    action="GENERATE_PROJECT_REPORT",
+                    resource_type="Project",
+                    resource_id=project.id,
+                    details={
+                        "report_signature": report_signature,
+                        "reporting_authority": reporting_authority,
+                        "verified_count": len(verified_deliverables),
+                        "unverified_count": len(unverified_deliverables),
+                        "failed_attempts_count": len(failed_attempts_summary),
+                    },
+                )
+            except Exception as audit_exc:
+                logger.warning("Could not log audit event for project report", error=str(audit_exc))
+
         return {
             "project_id": project.id,
             "project_name": project.name,
@@ -625,6 +777,11 @@ class BossBrain:
             "generated_at": now,
             "task_counts": counts,
             "tasks": task_reports,
+            "verified_deliverables": verified_deliverables,
+            "unverified_deliverables": unverified_deliverables,
+            "failed_attempts_summary": failed_attempts_summary,
+            "report_signature": report_signature,
+            "reporting_authority": reporting_authority,
         }
 
     async def recruit_workforce_for_plan(self, plan: dict[str, Any]) -> list[Any]:
@@ -741,3 +898,491 @@ class BossBrain:
                 else "degraded"
             ),
         }
+
+    async def chat(
+        self,
+        message: str,
+        conversation_history: Optional[list[dict[str, Any]]] = None,
+        project_id: Optional[str] = None,
+        db_session: Optional[Any] = None,
+    ) -> dict[str, Any]:
+        """
+        NEURO: Executive conversational chat with Boss AI (CEO).
+        Answers strategic inquiries, assesses blockers, reports financial and workforce status,
+        and dynamically drafts/proposes executable Task DAG plans.
+        """
+        clean_msg = (message or "").strip()
+        if not clean_msg:
+            raise ValueError("Message cannot be empty")
+
+        now_utc = datetime.now(timezone.utc)
+
+        # 0. Sanitize input conversation history
+        clean_history: list[dict[str, Any]] = []
+        for h in (conversation_history or []):
+            if isinstance(h, dict) and "role" in h and "content" in h:
+                clean_history.append({
+                    "role": str(h["role"]),
+                    "content": str(h["content"]),
+                    "timestamp": h.get("timestamp"),
+                    "plan_proposal": h.get("plan_proposal"),
+                    "action": h.get("action"),
+                })
+
+        # 1. Gather live company ground-truth context
+        employees = []
+        if self.employee_repo:
+            try:
+                employees = await self.employee_repo.list_all()
+            except Exception as e:
+                logger.debug("Failed listing employees for chat context: %s", e)
+
+        projects = []
+        if self.project_repo:
+            try:
+                projects = await self.project_repo.list_all()
+            except Exception as e:
+                logger.debug("Failed listing projects for chat context: %s", e)
+
+        target_project = None
+        if project_id and self.project_repo:
+            try:
+                target_project = await self.project_repo.get_by_id(project_id)
+            except Exception as e:
+                logger.debug("Failed getting project %s for chat context: %s", project_id, e)
+
+        tasks = []
+        if target_project and self.task_repo:
+            try:
+                tasks = await self.task_repo.list_by_project(target_project.id)
+            except Exception as e:
+                logger.debug("Failed listing project tasks for chat context: %s", e)
+        elif self.task_repo:
+            try:
+                tasks = await self.task_repo.list_all()
+            except Exception as e:
+                logger.debug("Failed listing tasks for chat context: %s", e)
+
+        active_tasks = [
+            t for t in tasks
+            if getattr(t.status, "value", str(t.status)).lower() in {"running", "assigned"}
+        ]
+        blocked_tasks = [
+            t for t in tasks
+            if getattr(t.status, "value", str(t.status)).lower() == "blocked"
+        ]
+        completed_tasks = [
+            t for t in tasks
+            if getattr(t.status, "value", str(t.status)).lower() == "completed"
+        ]
+        verified_deliverables = [
+            t for t in completed_tasks
+            if isinstance(t.verification_result, dict) and t.verification_result.get("passed") is True
+        ]
+
+        # Emergency Stop State telemetry
+        is_emergency_halted = False
+        halt_reason = None
+        halt_by = None
+        try:
+            from neural.security.kill_switch import get_kill_switch
+            kill_sw = get_kill_switch()
+            if kill_sw.is_halted:
+                is_emergency_halted = True
+                halt_reason = kill_sw.halt_reason
+                halt_by = kill_sw.halted_by
+        except Exception as e:
+            logger.debug("Failed checking kill switch: %s", e)
+
+        session = db_session or getattr(self.project_repo, "session", None)
+        if not is_emergency_halted and session:
+            try:
+                from neural.db.repositories import EmergencyStopRepository
+                state_repo = EmergencyStopRepository(session)
+                state = await state_repo.get_state()
+                if state.get("active"):
+                    is_emergency_halted = True
+                    halt_reason = state.get("reason")
+                    halt_by = state.get("changed_by")
+            except Exception as e:
+                logger.debug("Failed checking emergency stop state in chat context: %s", e)
+
+        # Budget telemetry
+        budget_info: dict[str, Any] = {
+            "month_cap_usd": 10000.0,
+            "reserved_usd": 0.0,
+            "spent_usd": 0.0,
+            "available_quota_usd": 10000.0,
+        }
+        if session:
+            try:
+                b_repo = BudgetRepository(session)
+                month_scope = f"organization-month:{now_utc:%Y-%m}"
+                account = await b_repo.get_account(month_scope)
+                avail_quota = await b_repo.get_available_quota(month_scope)
+                if account:
+                    budget_info = {
+                        "month_cap_usd": float(account.cap_usd),
+                        "reserved_usd": float(account.reserved_usd),
+                        "spent_usd": float(account.spent_usd),
+                        "available_quota_usd": float(avail_quota),
+                    }
+                else:
+                    budget_info["available_quota_usd"] = float(avail_quota)
+            except Exception as e:
+                logger.debug("Could not query budget for chat context: %s", e)
+
+        # 2. Detect planning intent
+        msg_lower = clean_msg.lower()
+        plan_trigger_keywords = [
+            "plan", "build", "create", "propose", "mission", "feature",
+            "project", "implement", "launch", "develop", "dag", "decompose"
+        ]
+        has_plan_intent = any(kw in msg_lower for kw in plan_trigger_keywords) and len(clean_msg.split()) >= 3
+
+        # 3. Formulate response via LLM if available, else deterministic grounded reasoning
+        plan_proposal: Optional[dict[str, Any]] = None
+        action: Optional[dict[str, Any]] = None
+        reply: str = ""
+
+        llm_ready = self.planner._has_configured_provider(self.llm_gateway) if hasattr(self.planner, "_has_configured_provider") else False
+
+        if llm_ready:
+            from neural.llm.gateway import extract_json_from_text
+
+            employees_summary = ", ".join(
+                f"{getattr(e, 'name', e.employee_id)} ({getattr(e, 'title', 'Engineer')}, {getattr(e, 'status', 'IDLE')})"
+                for e in employees[:8]
+            ) or "None recruited yet"
+            active_tasks_summary = ", ".join(
+                f"[{t.task_id}] {t.title} ({t.assigned_to or 'unassigned'})"
+                for t in active_tasks[:6]
+            ) or "No active tasks"
+            blocked_tasks_summary = ", ".join(
+                f"[{t.task_id}] {t.title} (retry={t.retry_count})"
+                for t in blocked_tasks[:4]
+            ) or "No active blockers"
+            deliverables_summary = ", ".join(
+                f"[{t.task_id}] {t.title}"
+                for t in verified_deliverables[:5]
+            ) or "No verified deliverables yet"
+
+            emergency_summary = (
+                f"🚨 ACTIVE (Operations Halted: {halt_reason or 'Manual kill-switch'})"
+                if is_emergency_halted
+                else "INACTIVE (Normal Operations)"
+            )
+            project_focus_line = (
+                f"- Focused Target Project: {target_project.name} ({target_project.id})\n"
+                if target_project
+                else ""
+            )
+
+            sys_prompt = (
+                "You are Boss AI, Chief Executive Officer and Lead Architect of ANCOS "
+                "(Autonomous Neural Company Operating System). You speak with authoritative clarity, "
+                "strategic focus, and precision. You ground all observations in verified live company telemetry.\n\n"
+                f"LIVE COMPANY STATE:\n"
+                f"- Emergency Stop Latch: {emergency_summary}\n"
+                f"{project_focus_line}"
+                f"- Active Projects: {len(projects)} ({', '.join(p.name for p in projects[:5]) or 'None'})\n"
+                f"- Workforce ({len(employees)} total): {employees_summary}\n"
+                f"- Active / Running Tasks ({len(active_tasks)}): {active_tasks_summary}\n"
+                f"- Blocked Tasks ({len(blocked_tasks)}): {blocked_tasks_summary}\n"
+                f"- Verified Deliverables ({len(verified_deliverables)}): {deliverables_summary}\n"
+                f"- Budget: Cap ${budget_info.get('month_cap_usd', 10000.0):.2f}, "
+                f"Spent ${budget_info.get('spent_usd', 0.0):.2f}, "
+                f"Available Quota ${budget_info.get('available_quota_usd', 10000.0):.2f}\n\n"
+                "INSTRUCTIONS:\n"
+                "1. If asked about status, health, tasks, blockers, employees, deliverables, or budget, "
+                "provide a direct, factual markdown briefing.\n"
+                "2. If asked to plan or design a project, feature, or mission, provide your executive analysis "
+                "AND append a JSON code block with this exact schema at the end of your response:\n"
+                "```json\n"
+                "{\n"
+                '  "plan_proposal": {\n'
+                '    "title": "Short Descriptive Title",\n'
+                '    "objective": "Complete objective text",\n'
+                '    "estimated_cost_usd": 15.0,\n'
+                '    "phases": [\n'
+                '      {"name": "Phase 1: Architecture", "tasks": ["Task 1", "Task 2"]}\n'
+                '    ],\n'
+                '    "required_skills": ["python", "fastapi"],\n'
+                '    "deadline_days": 5\n'
+                "  },\n"
+                '  "action": {\n'
+                '    "type": "launch_project_dag",\n'
+                '    "objective": "Complete objective text",\n'
+                '    "project_name": "Short Descriptive Title"\n'
+                "  }\n"
+                "}\n"
+                "```\n"
+                "3. If no project planning is requested, do NOT include the json block."
+            )
+
+            history_lines = []
+            for h in clean_history[-8:]:
+                role = "Operator" if h.get("role") == "user" else "Boss AI"
+                history_lines.append(f"{role}: {h.get('content', '')}")
+            history_lines.append(f"Operator: {clean_msg}")
+            user_prompt = "\n".join(history_lines)
+
+            try:
+                resp = await self.llm_gateway.generate(
+                    prompt=user_prompt,
+                    system_prompt=sys_prompt,
+                    route="boss_brain",
+                    tier="reasoning",
+                    db_session=session,
+                )
+                raw_text = resp.content.strip()
+                try:
+                    parsed_json = extract_json_from_text(raw_text)
+                    if isinstance(parsed_json, dict) and "plan_proposal" in parsed_json:
+                        plan_proposal = parsed_json["plan_proposal"]
+                        action = parsed_json.get("action")
+                        # Strip ONLY the JSON code block that contains the plan_proposal, preserving other code blocks
+                        def _strip_plan_json_block(text: str) -> str:
+                            cb_pattern = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+                            for m in cb_pattern.finditer(text):
+                                if "plan_proposal" in m.group(1):
+                                    text = text[:m.start()] + text[m.end():]
+                                    break
+                            return text.strip()
+
+                        clean_reply = _strip_plan_json_block(raw_text)
+                        reply = clean_reply if clean_reply else "I have prepared the project execution DAG proposal."
+                    else:
+                        reply = raw_text
+                except Exception:
+                    reply = raw_text
+            except Exception as e:
+                logger.warning("Boss LLM generation failed, switching to grounded reasoning: %s", e)
+                reply = ""
+
+        # Normalize plan proposal if generated
+        if plan_proposal and isinstance(plan_proposal, dict):
+            p_title = str(plan_proposal.get("title") or f"Mission: {clean_msg[:45].strip()}")
+            p_obj = str(plan_proposal.get("objective") or clean_msg)
+            try:
+                p_cost = float(plan_proposal.get("estimated_cost_usd") or 15.0)
+            except (ValueError, TypeError):
+                p_cost = 15.0
+
+            raw_phases = plan_proposal.get("phases")
+            norm_phases = []
+            if isinstance(raw_phases, list) and raw_phases:
+                for p in raw_phases:
+                    if isinstance(p, dict):
+                        raw_tasks = p.get("tasks", [])
+                        t_list = [str(t) for t in raw_tasks if t] if isinstance(raw_tasks, list) else []
+                        norm_phases.append({
+                            "name": str(p.get("name") or "Project Phase"),
+                            "tasks": t_list or ["Execute Phase Tasks"],
+                        })
+            if not norm_phases:
+                norm_phases = [
+                    {"name": "Phase 1: Architecture & Design", "tasks": ["System blueprint & contracts", "API interface specifications"]},
+                    {"name": "Phase 2: Implementation & Verification", "tasks": ["Core logic implementation", "Automated test suite & verification receipt"]},
+                ]
+
+            raw_skills = plan_proposal.get("required_skills")
+            norm_skills = []
+            if isinstance(raw_skills, list) and raw_skills:
+                norm_skills = [str(s) for s in raw_skills if s]
+            if not norm_skills:
+                norm_skills = ["python", "architecture", "testing"]
+
+            try:
+                p_deadline = int(plan_proposal.get("deadline_days") or 7)
+            except (ValueError, TypeError):
+                p_deadline = 7
+
+            plan_proposal = {
+                "title": p_title,
+                "objective": p_obj,
+                "estimated_cost_usd": p_cost,
+                "phases": norm_phases,
+                "required_skills": norm_skills,
+                "deadline_days": p_deadline,
+            }
+            if not action or not isinstance(action, dict):
+                action = {
+                    "type": "launch_project_dag",
+                    "objective": p_obj,
+                    "project_name": p_title,
+                }
+
+        # Deterministic / Grounded fallback reasoning when LLM is unavailable or empty
+        if not reply:
+            if is_emergency_halted and any(w in msg_lower for w in ["blocker", "blocked", "issue", "status", "health", "halt", "stop", "emergency"]):
+                reply = (
+                    f"### 🚨 CRITICAL ALERT: Emergency Stop Active\n\n"
+                    f"Company operations are currently **HALTED** under a durable emergency stop latch.\n\n"
+                    f"- **Halt Reason:** {halt_reason or 'Manual operator kill-switch activated'}\n"
+                    f"- **Halted By:** `{halt_by or 'Owner/System'}`\n\n"
+                    f"All autonomous worker execution, container workstations, and DAG schedulers are suspended. "
+                    f"To restore operations, issue an authorized `/boss/resume` command."
+                )
+            elif has_plan_intent:
+                plan = await self.planner.decompose_objective(
+                    objective=clean_msg,
+                    db_session=session,
+                )
+                plan_phases = []
+                skills_set = set()
+                for p in plan.get("phases", []):
+                    phase_tasks = []
+                    for t in p.get("tasks", []):
+                        phase_tasks.append(t.get("title", "Execute Task"))
+                        for s in t.get("skills_required", []):
+                            skills_set.add(s)
+                    plan_phases.append({
+                        "name": p.get("title", "Project Phase"),
+                        "tasks": phase_tasks,
+                    })
+
+                project_title = plan.get("code_name") or f"Mission: {clean_msg[:45].strip()}"
+                plan_proposal = {
+                    "title": project_title,
+                    "objective": clean_msg,
+                    "estimated_cost_usd": 15.0,
+                    "phases": plan_phases or [
+                        {"name": "Phase 1: Architecture & Design", "tasks": ["System blueprint & contracts", "API interface specifications"]},
+                        {"name": "Phase 2: Implementation & Verification", "tasks": ["Core logic implementation", "Automated test suite & verification receipt"]},
+                    ],
+                    "required_skills": sorted(list(skills_set)) if skills_set else ["python", "architecture", "testing"],
+                    "deadline_days": 7,
+                }
+                action = {
+                    "type": "launch_project_dag",
+                    "objective": clean_msg,
+                    "project_name": project_title,
+                }
+                phases_summary = "\n".join(
+                    f"- **{p['name']}**: {len(p['tasks'])} task(s) ({', '.join(p['tasks'][:3])})"
+                    for p in plan_proposal["phases"]
+                )
+                reply = (
+                    f"### Strategic Mission Proposal: {project_title}\n\n"
+                    f"I have analyzed the objective and drafted a structured execution plan. "
+                    f"This mission consists of **{len(plan_proposal['phases'])} phases** with an estimated budget of "
+                    f"**${plan_proposal['estimated_cost_usd']:.2f} USD** and target completion within **{plan_proposal['deadline_days']} days**.\n\n"
+                    f"**Execution DAG Blueprint:**\n{phases_summary}\n\n"
+                    f"**Required Capabilities:** {', '.join(plan_proposal['required_skills'])}\n\n"
+                    f"Review the proposal card below and click **🚀 Launch Project DAG** to allocate container workstations and commence autonomous execution."
+                )
+            elif any(w in msg_lower for w in ["blocker", "blocked", "issue", "stuck", "error", "fail"]):
+                if blocked_tasks:
+                    blocker_lines = "\n".join(
+                        f"- 🔴 **[{t.task_id}]** `{t.title}` — Assigned to: **{t.assigned_to or 'Unassigned'}** (Retry #{t.retry_count})"
+                        for t in blocked_tasks
+                    )
+                    reply = (
+                        f"### Active Blockers Assessment\n\n"
+                        f"There are currently **{len(blocked_tasks)} blocked task(s)** requiring review:\n\n"
+                        f"{blocker_lines}\n\n"
+                        f"I recommend scheduling an emergency blocker meeting or reviewing employee workstation diagnostics."
+                    )
+                else:
+                    reply = (
+                        "### Operational Status: Zero Active Blockers\n\n"
+                        "All operational pipelines are flowing smoothly. No tasks are currently blocked or stalled. "
+                        f"Active tasks: **{len(active_tasks)}**, Verified deliverables: **{len(verified_deliverables)}**."
+                    )
+            elif any(w in msg_lower for w in ["employee", "workforce", "team", "who", "staff", "roster"]):
+                if employees:
+                    emp_lines = "\n".join(
+                        f"- **{getattr(e, 'name', e.employee_id)}** (`{getattr(e, 'title', 'Engineer')}` • {getattr(e, 'department', 'Engineering')}): **{getattr(e, 'status', 'IDLE')}**"
+                        for e in employees[:10]
+                    )
+                    reply = (
+                        f"### Workforce Intelligence Roster\n\n"
+                        f"Current active workforce count: **{len(employees)} AI employee(s)**.\n\n"
+                        f"{emp_lines}\n\n"
+                        f"Dynamic recruitment is enabled for newly launched project DAGs whenever verified skill gaps arise."
+                    )
+                else:
+                    reply = (
+                        "### Workforce Status: Zero Active Employees\n\n"
+                        "No AI employees are currently provisioned in the roster. "
+                        "When you submit a new project objective, the autonomous `EmployeeFactory` will dynamically recruit "
+                        "and provision dedicated container workstations matching the required skill profiles."
+                    )
+            elif any(w in msg_lower for w in ["budget", "cost", "burn", "spend", "dollar", "quota"]):
+                cap = budget_info.get("month_cap_usd", 10000.0)
+                spent = budget_info.get("spent_usd", 0.0)
+                avail = budget_info.get("available_quota_usd", cap - spent)
+                reserved = budget_info.get("reserved_usd", 0.0)
+                burn_pct = (spent / cap * 100) if cap > 0 else 0.0
+                reply = (
+                    f"### Financial & Resource Allocation Telemetry\n\n"
+                    f"- **Monthly Spending Ceiling:** `${cap:,.2f} USD`\n"
+                    f"- **Settled Expenditure:** `${spent:,.2f} USD` ({burn_pct:.1f}%)\n"
+                    f"- **Active In-Flight Reservations:** `${reserved:,.2f} USD`\n"
+                    f"- **Available Remaining Quota:** `${avail:,.2f} USD`\n\n"
+                    f"Hard budget limits remain enforced across all multi-tier LLM routing operations."
+                )
+            elif any(w in msg_lower for w in ["deliverable", "deliverables", "completed", "done", "receipt"]):
+                if verified_deliverables:
+                    deliv_lines = "\n".join(
+                        f"- 🟢 **[{t.task_id}]** `{t.title}` — Completed by: **{t.assigned_to or 'System'}**"
+                        for t in verified_deliverables[:8]
+                    )
+                    reply = (
+                        f"### Verified Deliverables Archive\n\n"
+                        f"ANCOS has verified **{len(verified_deliverables)} deliverable(s)** with empirical test receipts:\n\n"
+                        f"{deliv_lines}\n\n"
+                        f"Each deliverable has passed independent verification before milestone acceptance."
+                    )
+                else:
+                    reply = (
+                        "### Deliverables Status\n\n"
+                        f"Completed tasks: **{len(completed_tasks)}**, with **{len(verified_deliverables)}** carrying verified test receipts. "
+                        "Currently, no tasks have completed the independent verification pipeline."
+                    )
+            else:
+                active_count = len(active_tasks)
+                blocker_count = len(blocked_tasks)
+                deliv_count = len(verified_deliverables)
+                emp_count = len(employees)
+                proj_count = len(projects)
+                emergency_notice = (
+                    f"- **🚨 EMERGENCY STOP:** `ACTIVE` ({halt_reason or 'Halted'})\n"
+                    if is_emergency_halted
+                    else ""
+                )
+                reply = (
+                    f"### Executive Briefing from Boss AI\n\n"
+                    f"Good day, Operator. Here is the operational state of ANCOS:\n\n"
+                    f"{emergency_notice}"
+                    f"- **Active Projects:** `{proj_count}` project DAG(s)\n"
+                    f"- **Workforce Strength:** `{emp_count}` AI employee(s) deployed\n"
+                    f"- **Live Tasks:** `{active_count}` running/assigned, `{blocker_count}` blocked\n"
+                    f"- **Verified Deliverables:** `{deliv_count}` passed QA receipts\n\n"
+                    f"How can I assist you? You can ask me to **plan a new mission**, investigate **blockers**, "
+                    f"inspect **workforce skills**, or review **budget burn**."
+                )
+
+        # 4. Maintain conversation history
+        clean_history.append({
+            "role": "user",
+            "content": clean_msg,
+            "timestamp": now_utc.isoformat(),
+        })
+        clean_history.append({
+            "role": "assistant",
+            "content": reply,
+            "timestamp": now_utc.isoformat(),
+            "plan_proposal": plan_proposal,
+            "action": action,
+        })
+        history = clean_history[-30:]
+
+        return {
+            "reply": reply,
+            "action": action,
+            "plan_proposal": plan_proposal,
+            "conversation_history": history,
+        }
+

@@ -19,6 +19,7 @@ export interface Employee {
   container_id?: string | null;
   desktop_url?: string | null;
   desk_id?: string | null;
+  avatar_config?: any;
 }
 
 export interface Workstation {
@@ -169,3 +170,46 @@ export interface ExecutiveBriefing {
     overdue_count: number;
   };
 }
+
+export interface BossPlanPhase {
+  name: string;
+  tasks: string[];
+}
+
+export interface BossPlanProposal {
+  title: string;
+  objective: string;
+  estimated_cost_usd?: number;
+  phases: BossPlanPhase[];
+  required_skills: string[];
+  deadline_days?: number;
+}
+
+export interface BossChatAction {
+  type: string;
+  objective?: string;
+  project_name?: string;
+  [key: string]: any;
+}
+
+export interface BossChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp?: string;
+  plan_proposal?: BossPlanProposal | null;
+  action?: BossChatAction | null;
+}
+
+export interface BossChatRequest {
+  message: string;
+  conversation_history?: BossChatMessage[];
+  project_id?: string | null;
+}
+
+export interface BossChatResponse {
+  reply: string;
+  action?: BossChatAction | null;
+  plan_proposal?: BossPlanProposal | null;
+  conversation_history: BossChatMessage[];
+}
+

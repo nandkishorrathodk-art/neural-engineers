@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
+import math
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 
 class ReciprocalRankFusionReranker:
     """
     Reranks and fuses search candidates from multiple retrieval strategies
     (Dense Semantic Vector + BM25 Lexical Keyword).
-    Incorporates verification status and evidence provenance into final ranking.
+    Incorporates verification status, temporal decay, and evidence provenance into final ranking.
     """
 
     def __init__(
@@ -16,11 +18,17 @@ class ReciprocalRankFusionReranker:
         weight_dense: float = 0.5,
         weight_bm25: float = 0.5,
         verification_boost: float = 0.15,
+        temporal_decay: bool = True,
+        decay_half_life_days: float = 30.0,
+        now: Optional[datetime] = None,
     ) -> None:
         self.k = k
         self.weight_dense = weight_dense
         self.weight_bm25 = weight_bm25
         self.verification_boost = verification_boost
+        self.temporal_decay = temporal_decay
+        self.decay_half_life_days = decay_half_life_days
+        self._now = now
 
     def fuse(
         self,
@@ -33,20 +41,47 @@ class ReciprocalRankFusionReranker:
         dense_ranks: dict[str, int] = {}
         bm25_ranks: dict[str, int] = {}
 
+        seen_dense: set[str] = set()
         for rank, (doc_id, score, doc) in enumerate(dense_results, start=1):
+            if doc_id in seen_dense:
+                continue
+            seen_dense.add(doc_id)
             dense_ranks[doc_id] = rank
             docs[doc_id] = doc
             scores[doc_id] = scores.get(doc_id, 0.0) + self.weight_dense / (self.k + rank)
 
+        seen_bm25: set[str] = set()
         for rank, (doc_id, score, doc) in enumerate(bm25_results, start=1):
+            if doc_id in seen_bm25:
+                continue
+            seen_bm25.add(doc_id)
             bm25_ranks[doc_id] = rank
             if doc_id not in docs:
                 docs[doc_id] = doc
             scores[doc_id] = scores.get(doc_id, 0.0) + self.weight_bm25 / (self.k + rank)
 
-        # Apply empirical verification boost and dispute penalty
+        ref_now = self._now.replace(tzinfo=None) if self._now else datetime.now(timezone.utc).replace(tzinfo=None)
+
+        # Apply temporal decay and empirical verification boost and dispute penalty
         for doc_id, doc in docs.items():
-            meta = doc.get("metadata", {})
+            meta = doc.get("metadata") or {}
+
+            # Temporal decay: recent verified knowledge retains higher score
+            if self.temporal_decay and self.decay_half_life_days > 0:
+                raw_ts = meta.get("verified_at") or meta.get("created_at")
+                if raw_ts:
+                    try:
+                        if isinstance(raw_ts, datetime):
+                            ts_dt = raw_ts.replace(tzinfo=None)
+                        else:
+                            ts_str = str(raw_ts).replace("Z", "+00:00")
+                            ts_dt = datetime.fromisoformat(ts_str).replace(tzinfo=None)
+                        age_days = max(0.0, (ref_now - ts_dt).total_seconds() / 86400.0)
+                        decay_factor = math.pow(0.5, age_days / self.decay_half_life_days)
+                        scores[doc_id] = scores[doc_id] * decay_factor
+                    except (ValueError, TypeError):
+                        pass
+
             v_status = meta.get("verification_status", "")
             is_verified = (
                 meta.get("is_verified") is True

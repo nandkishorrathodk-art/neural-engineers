@@ -8,6 +8,7 @@ import {
   fetchMessages,
   fetchEmployeeTasks,
   triggerDailyStandup,
+  fetchWorkstationVncToken,
 } from '@/lib/api';
 import {
   GameCharacter,
@@ -55,10 +56,14 @@ import {
   MeetingSession,
 } from './MeetingVisualizer';
 import { syncEmployeesToCharacters } from './EmployeeCharacterManager';
+import { BossChatDrawer } from '../boss/BossChatDrawer';
 
 export const IsometricCompanyWorld: React.FC = () => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Boss Executive Chat Drawer state
+  const [showBossChat, setShowBossChat] = useState(false);
 
   // Core World State
   const [workstations, setWorkstations] = useState<WorkstationDef[]>(() =>
@@ -91,6 +96,37 @@ export const IsometricCompanyWorld: React.FC = () => {
     employeeCount: null as number | null,
     activeProjects: null as number | null,
   });
+
+  const [sseStatus, setSseStatus] = useState<'connecting' | 'connected' | 'reconnecting' | 'unavailable'>('connecting');
+  const [lastEventId, setLastEventId] = useState<string | null>(null);
+  const [showVncModal, setShowVncModal] = useState(false);
+  const [vncViewOnly, setVncViewOnly] = useState(true);
+  const [verifiedDeliverable, setVerifiedDeliverable] = useState<{
+    taskId: string;
+    sha256Digest: string;
+    verifiedAt: string;
+    receiptSignature?: string;
+  } | null>(null);
+  const processedEventIdsRef = useRef(new Set<string>());
+
+  const [vncTokenUrl, setVncTokenUrl] = useState<string | null>(null);
+  const [vncLoading, setVncLoading] = useState(false);
+  const [vncError, setVncError] = useState<string | null>(null);
+
+  const loadVncToken = useCallback(async (employeeId: string, interactive: boolean) => {
+    setVncLoading(true);
+    setVncError(null);
+    try {
+      const data = await fetchWorkstationVncToken(employeeId, interactive);
+      const url = interactive ? data.desktop_url : (data.read_only_desktop_url || data.desktop_url);
+      setVncTokenUrl(url);
+    } catch {
+      setVncTokenUrl(null);
+      setVncError('Workstation container offline or token unavailable.');
+    } finally {
+      setVncLoading(false);
+    }
+  }, []);
 
   const isInitialSyncRef = useRef(true);
   const processedMessageIdsRef = useRef(new Set<string>());
@@ -308,6 +344,154 @@ export const IsometricCompanyWorld: React.FC = () => {
     syncBackendData();
     const interval = setInterval(syncBackendData, 4000);
     return () => clearInterval(interval);
+  }, [syncBackendData]);
+
+  // Live SSE stream connection with monotonic replay & Last-Event-ID handling
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+    let isMounted = true;
+    let currentLastEventId: string | null = null;
+
+    const handleIncomingEvent = (eventData: any) => {
+      if (!eventData || !eventData.event_id) return;
+      if (processedEventIdsRef.current.has(eventData.event_id)) return;
+      processedEventIdsRef.current.add(eventData.event_id);
+      currentLastEventId = eventData.event_id;
+      setLastEventId(eventData.event_id);
+
+      const type = eventData.event_type;
+      const data = eventData.data || {};
+
+      if (type === 'employee_recruited') {
+        syncBackendData();
+      } else if (type === 'task_started' || type === 'task_assigned') {
+        const empId = data.employee_id || data.assigned_to;
+        if (empId) {
+          setCharacters((prev) => {
+            const next = new Map(prev);
+            const char = next.get(empId);
+            if (char) {
+              char.currentTask = data.task_title || data.title || char.currentTask;
+              char.currentTaskStatus = 'running';
+              char.animState = 'working';
+            }
+            return next;
+          });
+        }
+      } else if (type === 'deliverable_verified' || type === 'task_completed') {
+        if (data.sha256_deliverable_digest || data.artifact_hash) {
+          setVerifiedDeliverable({
+            taskId: data.task_id || 'TASK-DELIVERABLE',
+            sha256Digest: data.sha256_deliverable_digest || data.artifact_hash,
+            verifiedAt: data.verified_at || new Date().toISOString(),
+            receiptSignature: data.receipt_signature || data.signature,
+          });
+        }
+        const empId = data.employee_id || data.assigned_to;
+        if (empId) {
+          setCharacters((prev) => {
+            const next = new Map(prev);
+            const char = next.get(empId);
+            if (char) {
+              char.currentTaskStatus = 'completed';
+              char.animState = 'idle';
+            }
+            return next;
+          });
+        }
+      } else if (type === 'meeting_started' || type === 'meeting_concluded') {
+        syncBackendData();
+      } else if (type === 'meeting_speaker_changed') {
+        const speakerId = data.active_speaker_id || data.speaker_id;
+        if (speakerId) {
+          setCharacters((prev) => {
+            const next = new Map(prev);
+            for (const [id, c] of next.entries()) {
+              if (id === speakerId) {
+                c.animState = 'speaking';
+                c.speechText = data.statement || c.speechText;
+                c.speechRemainingMs = 4000;
+              } else if (c.currentMeetingSeatIndex !== null) {
+                c.animState = 'listening';
+              }
+            }
+            return next;
+          });
+        }
+      }
+    };
+
+    const connectSSE = () => {
+      if (!isMounted) return;
+      try {
+        const streamUrl = `/api/ancos/api/v1/events/stream${currentLastEventId ? `?last_event_id=${encodeURIComponent(currentLastEventId)}` : ''}`;
+        eventSource = new EventSource(streamUrl);
+
+        eventSource.onopen = () => {
+          if (!isMounted) return;
+          setSseStatus('connected');
+        };
+
+        eventSource.onmessage = (event) => {
+          if (!isMounted || !event.data) return;
+          try {
+            if (event.lastEventId) {
+              currentLastEventId = event.lastEventId;
+              setLastEventId(event.lastEventId);
+            }
+            const payload = JSON.parse(event.data);
+            handleIncomingEvent(payload);
+          } catch {
+            // Keepalive comment / parse skip
+          }
+        };
+
+        const eventNames = [
+          'employee_recruited',
+          'task_assigned',
+          'task_started',
+          'task_completed',
+          'deliverable_verified',
+          'meeting_started',
+          'meeting_speaker_changed',
+          'meeting_concluded',
+          'workstation_status',
+          'system_status',
+        ];
+
+        eventNames.forEach((name) => {
+          eventSource?.addEventListener(name, (e: any) => {
+            if (!isMounted || !e.data) return;
+            try {
+              if (e.lastEventId) {
+                currentLastEventId = e.lastEventId;
+                setLastEventId(e.lastEventId);
+              }
+              const payload = JSON.parse(e.data);
+              handleIncomingEvent(payload);
+            } catch {
+              // Parse error skip
+            }
+          });
+        });
+
+        eventSource.onerror = () => {
+          if (!isMounted) return;
+          setSseStatus('reconnecting');
+          eventSource?.close();
+          setTimeout(connectSSE, 4000);
+        };
+      } catch {
+        setSseStatus('unavailable');
+      }
+    };
+
+    connectSSE();
+
+    return () => {
+      isMounted = false;
+      eventSource?.close();
+    };
   }, [syncBackendData]);
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -665,8 +849,23 @@ export const IsometricCompanyWorld: React.FC = () => {
       className="relative h-[620px] w-full bg-[radial-gradient(ellipse_at_50%_45%,#f2ede2_0%,#ddd8cc_58%,#c7c6bf_100%)] sm:h-[680px] lg:h-[700px] overflow-hidden select-none"
     >
       {/* ─────────────────────────────────────────────────────────────────────────────
-          1. TOP-LEFT OVERLAY: COMPANY OVERVIEW & LIVE ACTIVITY ECG
+          1. TOP-LEFT OVERLAY: COMPANY OVERVIEW, SSE LIVE STATUS & VERIFIED RECEIPTS
       ───────────────────────────────────────────────────────────────────────────── */}
+      <div className="absolute top-4 left-4 z-20 flex flex-col gap-2 pointer-events-auto">
+        <div className="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-[#091122]/90 border border-[#162540] text-xs font-mono shadow-lg">
+          <span className={`w-2 h-2 rounded-full ${sseStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : sseStatus === 'reconnecting' ? 'bg-amber-400 animate-ping' : 'bg-rose-400'}`} />
+          <span className="text-slate-300 uppercase">{sseStatus === 'connected' ? 'SSE LIVE' : sseStatus === 'reconnecting' ? 'RECONNECTING' : 'OFFLINE'}</span>
+          {lastEventId && <span className="text-slate-500 text-[10px]">({lastEventId})</span>}
+        </div>
+        {verifiedDeliverable && (
+          <div className="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-emerald-950/90 border border-emerald-500/40 text-xs font-mono shadow-lg text-emerald-200">
+            <span className="text-emerald-400 font-bold">✓ VERIFIED:</span>
+            <span>{verifiedDeliverable.taskId}</span>
+            <span className="text-emerald-300 text-[10px]">[{verifiedDeliverable.sha256Digest.slice(0, 10)}...]</span>
+          </div>
+        )}
+      </div>
+
       {showOverviewCard && (
         <div className="absolute left-4 top-4 z-20 w-56 pointer-events-auto">
           {/* Company Overview Card */}
@@ -823,21 +1022,17 @@ export const IsometricCompanyWorld: React.FC = () => {
             {selectedCharacter.skills.length === 0 && <p className="text-[10px] text-slate-500">No skills recorded.</p>}
           </div>
 
-          {selectedCharacter.desktopUrl ? (
-            <a
-              href={selectedCharacter.desktopUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="w-full py-2 bg-gradient-to-r from-blue-600 to-sky-600 hover:from-blue-500 hover:to-sky-500 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-[0_0_15px_rgba(14,165,233,0.35)] transition-all cursor-pointer"
-            >
-              <span>Open recorded workstation</span>
-              <span>↗</span>
-            </a>
-          ) : (
-            <div className="w-full rounded-xl border border-slate-700 bg-slate-900/70 py-2 text-center text-xs text-slate-400">
-              No active workstation URL recorded
-            </div>
-          )}
+          <button
+            onClick={() => {
+              setShowVncModal(true);
+              setVncViewOnly(true);
+              loadVncToken(selectedCharacter.id, false);
+            }}
+            className="w-full py-2 bg-gradient-to-r from-blue-600 to-sky-600 hover:from-blue-500 hover:to-sky-500 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-1.5 shadow-[0_0_15px_rgba(14,165,233,0.35)] transition-all cursor-pointer"
+          >
+            <span>{selectedCharacter.desktopUrl ? 'Launch Workstation Stream' : 'Workstation Status'}</span>
+            <span>📺</span>
+          </button>
         </div>
       )}
 
@@ -889,6 +1084,16 @@ export const IsometricCompanyWorld: React.FC = () => {
               <span className="text-white">{selectedWorkstationOccupant?.animState || '—'}</span>
             </div>
           </div>
+
+          {selectedWorkstation.id === 'WS-BOSS' && (
+            <button
+              onClick={() => setShowBossChat(true)}
+              className="w-full py-2.5 mb-2.5 bg-gradient-to-r from-amber-600 via-indigo-600 to-sky-600 hover:from-amber-500 hover:to-sky-500 text-white font-bold rounded-xl text-xs shadow-[0_0_15px_rgba(245,158,11,0.3)] flex items-center justify-center space-x-2 transition-all"
+            >
+              <span>👑</span>
+              <span>Chat with Boss AI (CEO)</span>
+            </button>
+          )}
 
           {selectedWorkstation.occupantId ? (
             <button
@@ -1106,6 +1311,112 @@ export const IsometricCompanyWorld: React.FC = () => {
           <span className="text-[#5e685f]">{activeMeeting ? 'Meeting in progress' : 'Company floor'}</span>
         </div>
       </div>
+
+      {/* ─────────────────────────────────────────────────────────────────────────────
+          5. EMBEDDED TOKENIZED noVNC WORKSTATION DESKTOP STREAM MODAL
+      ───────────────────────────────────────────────────────────────────────────── */}
+      {showVncModal && selectedCharacter && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 pointer-events-auto">
+          <div className="bg-[#090f1d] border border-sky-500/40 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col shadow-[0_0_40px_rgba(56,189,248,0.2)] overflow-hidden">
+            <div className="bg-[#0c1527] border-b border-[#1b2b4a] px-5 py-3.5 flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <span className={`w-3 h-3 rounded-full ${vncTokenUrl ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center space-x-2">
+                    <span>{selectedCharacter.name}&apos;s Workstation</span>
+                    <span className="text-[10px] font-mono text-sky-400 bg-sky-950/80 px-2 py-0.5 rounded border border-sky-800">
+                      Xfce4 + TigerVNC + noVNC
+                    </span>
+                  </h3>
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    ID: {selectedCharacter.id} • Desk: {selectedCharacter.assignedDeskId || 'WS-UNASSIGNED'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-3">
+                <button
+                  disabled={vncLoading}
+                  onClick={() => {
+                    const nextInteractive = vncViewOnly;
+                    setVncViewOnly(!vncViewOnly);
+                    loadVncToken(selectedCharacter.id, nextInteractive);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium border transition-colors ${
+                    vncViewOnly
+                      ? 'bg-amber-950/80 border-amber-600 text-amber-300'
+                      : 'bg-emerald-950/80 border-emerald-600 text-emerald-300'
+                  } ${vncLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  Mode: {vncViewOnly ? 'Read-Only' : 'Interactive'}
+                </button>
+                {vncTokenUrl && (
+                  <a
+                    href={vncTokenUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-1.5 rounded-lg bg-sky-600/20 text-sky-400 border border-sky-500/40 hover:bg-sky-600/30 text-xs font-medium flex items-center space-x-1.5"
+                  >
+                    <span>↗</span>
+                    <span>Popout</span>
+                  </a>
+                )}
+                <button
+                  onClick={() => setShowVncModal(false)}
+                  className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-sm"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 bg-black relative">
+              {vncLoading ? (
+                <div className="flex flex-col items-center justify-center h-full text-slate-400 font-mono text-sm space-y-2">
+                  <span className="text-sky-400 animate-pulse font-bold">ACQUIRING WORKSTATION TOKEN...</span>
+                  <span className="text-xs text-slate-500">Negotiating authenticated WebSocket ticket via Broker.</span>
+                </div>
+              ) : vncTokenUrl ? (
+                <iframe
+                  src={vncTokenUrl}
+                  title={`${selectedCharacter.name} Workstation`}
+                  className="w-full h-full border-0"
+                  allow="clipboard-read; clipboard-write; fullscreen"
+                />
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-slate-400 font-mono text-sm space-y-2">
+                  <span className="text-rose-400 font-bold">WORKSTATION UNAVAILABLE</span>
+                  <span className="text-xs text-slate-500">{vncError || 'Container offline or unprovisioned. Visual telemetry suppressed.'}</span>
+                </div>
+              )}
+            </div>
+            <div className="bg-[#080e1c] border-t border-[#141f36] px-5 py-2.5 flex items-center justify-between text-xs font-mono text-slate-400">
+              <span>Display: <strong className="text-slate-200">:1 (1280x800)</strong></span>
+              <span>Mode: <strong className={vncViewOnly ? 'text-amber-400' : 'text-emerald-400'}>{vncViewOnly ? 'Read-Only (View Only)' : 'Interactive (Gated Input)'}</strong></span>
+              <span>Security: <strong className="text-emerald-400">Tokenized Least-Privilege</strong></span>
+              <span>Audit: <strong className="text-sky-300">Active Logging</strong></span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Executive Chat with Boss AI Button */}
+      <button
+        onClick={() => setShowBossChat(true)}
+        aria-label="Open Boss AI Executive Chat"
+        className="absolute bottom-6 right-6 z-20 px-4 py-2.5 bg-gradient-to-r from-amber-500 via-indigo-600 to-blue-700 hover:from-amber-400 hover:to-blue-600 text-white font-bold text-xs rounded-2xl shadow-[0_0_25px_rgba(245,158,11,0.4)] flex items-center space-x-2 transition-transform hover:scale-105 active:scale-95 border border-amber-300/40 pointer-events-auto"
+      >
+        <span className="text-base">👑</span>
+        <span className="tracking-wide">Chat with Boss AI</span>
+        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+      </button>
+
+      {/* Slide-In Boss AI Chat Drawer */}
+      <BossChatDrawer
+        isOpen={showBossChat}
+        onClose={() => setShowBossChat(false)}
+        onMissionLaunched={() => {
+          syncBackendData();
+        }}
+      />
 
     </div>
   );

@@ -14,6 +14,129 @@ from neural.workstations.assignment import WorkstationAssignmentService
 logger = get_logger("ancos.employees.factory")
 
 
+def generate_default_avatar_config(
+    role: str,
+    seed: str,
+    title: str = "",
+    department: str = "",
+) -> dict[str, Any]:
+    """
+    Derives deterministic visual identity matching dashboard isometric world theme.
+    """
+    normalized_role = role.lower()
+    t_lower = title.lower()
+    d_lower = department.lower()
+
+    if not normalized_role:
+        if "boss" in t_lower or "ceo" in t_lower or "executive" in d_lower:
+            normalized_role = "boss"
+        elif "qa" in t_lower or "test" in t_lower or "quality" in d_lower:
+            normalized_role = "qa"
+        elif "devops" in t_lower or "infra" in t_lower or "sre" in d_lower:
+            normalized_role = "devops"
+        elif "research" in t_lower or "scientist" in t_lower:
+            normalized_role = "research"
+        elif "creative" in t_lower or "design" in t_lower:
+            normalized_role = "creative"
+        elif "frontend" in t_lower or "ui" in t_lower:
+            normalized_role = "frontend"
+        else:
+            normalized_role = "swe"
+
+    h = sum(ord(c) for c in seed)
+    skin_tones = ["#f1c79f", "#c98f6d", "#e8b995", "#a9684b", "#f2d5b9"]
+    skin_tone = skin_tones[h % len(skin_tones)]
+
+    if normalized_role == "boss":
+        return {
+            "hairColor": "#4d5c70",
+            "suitColor": "#394e47",
+            "accentColor": "#efcc87",
+            "skinTone": "#e8b995",
+            "hairStyle": "spiky",
+            "hasVisor": True,
+            "hasHeadphones": False,
+            "hasGlasses": False,
+        }
+    elif normalized_role == "swe":
+        return {
+            "hairColor": "#72533f" if (h % 2 == 0) else "#46566c",
+            "suitColor": "#384d4a",
+            "accentColor": "#d8b974",
+            "skinTone": skin_tone,
+            "hairStyle": "spiky",
+            "hasVisor": False,
+            "hasHeadphones": True,
+            "hasGlasses": False,
+        }
+    elif normalized_role == "frontend":
+        return {
+            "hairColor": "#6c4e41",
+            "suitColor": "#465b65",
+            "accentColor": "#e1b273",
+            "skinTone": skin_tone,
+            "hairStyle": "bob",
+            "hasVisor": False,
+            "hasHeadphones": True,
+            "hasGlasses": False,
+        }
+    elif normalized_role == "research":
+        return {
+            "hairColor": "#55443b",
+            "suitColor": "#63576a",
+            "accentColor": "#c4a5d5",
+            "skinTone": skin_tone,
+            "hairStyle": "long",
+            "hasVisor": False,
+            "hasHeadphones": False,
+            "hasGlasses": True,
+        }
+    elif normalized_role == "creative":
+        return {
+            "hairColor": "#80543c",
+            "suitColor": "#76604e",
+            "accentColor": "#e1b273",
+            "skinTone": skin_tone,
+            "hairStyle": "bob",
+            "hasVisor": False,
+            "hasHeadphones": False,
+            "hasGlasses": False,
+        }
+    elif normalized_role == "qa":
+        return {
+            "hairColor": "#544134",
+            "suitColor": "#4d515b",
+            "accentColor": "#e4bc70",
+            "skinTone": skin_tone,
+            "hairStyle": "spiky",
+            "hasVisor": True,
+            "hasHeadphones": False,
+            "hasGlasses": False,
+        }
+    elif normalized_role == "devops":
+        return {
+            "hairColor": "#3c4c50",
+            "suitColor": "#39545d",
+            "accentColor": "#8bc5c3",
+            "skinTone": skin_tone,
+            "hairStyle": "spiky",
+            "hasVisor": False,
+            "hasHeadphones": True,
+            "hasGlasses": False,
+        }
+    else:
+        return {
+            "hairColor": "#5d493c",
+            "suitColor": "#435358",
+            "accentColor": "#d7b57b",
+            "skinTone": skin_tone,
+            "hairStyle": "bob",
+            "hasVisor": False,
+            "hasHeadphones": False,
+            "hasGlasses": False,
+        }
+
+
 class EmployeeFactory:
     """
     Dynamic Employee Factory.
@@ -67,6 +190,7 @@ class EmployeeFactory:
         initial_skills: Optional[list[str]] = None,
         recruitment_origin: Optional[str] = None,
         desk_id: Optional[str] = None,
+        avatar_config: Optional[dict[str, Any]] = None,
     ) -> Employee:
         role_cfg = self._load_role_config(role_id) if role_id else None
 
@@ -119,6 +243,13 @@ class EmployeeFactory:
                     employee_id=employee_id,
                 )
 
+        effective_avatar = avatar_config or generate_default_avatar_config(
+            role=role_id or "",
+            seed=f"{employee_id}{name}",
+            title=effective_title,
+            department=effective_dept,
+        )
+
         employee = await self.repo.create(
             employee_id=employee_id,
             name=name,
@@ -131,6 +262,7 @@ class EmployeeFactory:
             model_config_data=model_config_data,
             performance_summary={"completed_tasks": 0, "verified_skills": []},
             desk_id=assigned_desk,
+            avatar_config=effective_avatar,
         )
 
         # Resolve skill levels from role configuration if available

@@ -32,7 +32,13 @@ from neural.db.repositories import (
     ServiceHeartbeatRepository,
     TaskRepository,
 )
-from neural.exceptions import ContainerError, ModelProviderError, QuotaExceededError
+from neural.exceptions import (
+    ContainerError,
+    ModelProviderError,
+    QuotaExceededError,
+    SecurityViolationError,
+)
+from neural.execution.contracts import CapabilityPolicyEnforcer
 from neural.llm.gateway import LLMGateway
 from neural.logger import get_logger
 from neural.security.kill_switch import get_kill_switch
@@ -106,16 +112,17 @@ async def start_task_attempt(
     if not await task_repo.worker_claim_is_current(task_id, worker_id, request.fencing_token):
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     task = await task_repo.get_by_task_id(task_id)
-    if task and task.execution_mode != ExecutionMode.TERMINAL:
+    if task and not ExecutionMode.is_terminal(task.execution_mode):
+        mode_str = getattr(task.execution_mode, "value", str(task.execution_mode))
         await task_repo.release_task_claim(
             task_id,
             worker_id,
             request.fencing_token,
-            f"Terminal worker cannot execute {task.execution_mode.value}-mode tasks.",
+            f"Terminal worker cannot execute {mode_str}-mode tasks.",
         )
         raise HTTPException(
             status_code=409,
-            detail=f"Terminal worker cannot execute {task.execution_mode.value}-mode tasks.",
+            detail=f"Terminal worker cannot execute {mode_str}-mode tasks.",
         )
     employee = await employee_repo.get_by_employee_id(task.assigned_to) if task and task.assigned_to else None
     workstation = (
@@ -197,7 +204,7 @@ async def plan_terminal_task(
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if task.execution_mode != ExecutionMode.TERMINAL:
+    if not ExecutionMode.is_terminal(task.execution_mode):
         raise HTTPException(status_code=409, detail="This endpoint accepts terminal-mode tasks only.")
     if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
@@ -314,11 +321,26 @@ async def execute_terminal_command(
     container_manager: ContainerManager = Depends(get_container_manager),
 ):
     get_kill_switch().guard_active()
+    from neural.boss.recovery import WorkerFaultInjector
+    fault = WorkerFaultInjector.check_and_trigger(task_id)
+    if fault:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Injected worker fault: {fault.get('error_message', 'Worker fault')}",
+        )
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if task.execution_mode != ExecutionMode.TERMINAL:
+    if not ExecutionMode.is_terminal(task.execution_mode):
         raise HTTPException(status_code=409, detail="This worker execution endpoint accepts terminal-mode tasks only.")
+    try:
+        CapabilityPolicyEnforcer.validate_action(
+            task.execution_mode,
+            "terminal_command",
+            {"command": request.command},
+        )
+    except SecurityViolationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None

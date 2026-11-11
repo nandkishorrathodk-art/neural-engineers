@@ -113,6 +113,11 @@ def classify_failure(
         or "temporarily unavailable" in err_lower
         or "503" in err_lower
         or "504" in err_lower
+        or "crash" in err_lower
+        or "sigsegv" in err_lower
+        or "sigterm" in err_lower
+        or "worker" in err_lower
+        or "killed" in err_lower
     ):
         return FailureClassification(
             category=FailureCategory.TRANSIENT,
@@ -272,3 +277,40 @@ class FailureRecoveryManager:
         if boss_brain and hasattr(boss_brain, "record_incident"):
             await boss_brain.record_incident(task.task_id, escalation_report)
         return decision
+
+
+class WorkerFaultInjector:
+    """
+    Test-only fault injection hook at the worker boundary.
+    Can only be activated in testing/development environments (APP_ENV != 'production').
+    In production, all fault injection attempts are strictly prohibited.
+    """
+    _injected_faults: dict[str, Any] = {}
+
+    @classmethod
+    def inject_fault(
+        cls,
+        task_id: str,
+        fault_type: str = "worker_crash",
+        error_message: str = "Simulated worker process crash",
+    ) -> None:
+        from neural.config import get_settings
+        settings = get_settings()
+        if getattr(settings, "APP_ENV", "development") == "production":
+            raise RuntimeError("Worker fault injection is strictly prohibited in production environments.")
+        cls._injected_faults[task_id] = {
+            "fault_type": fault_type,
+            "error_message": error_message,
+        }
+
+    @classmethod
+    def clear_faults(cls) -> None:
+        cls._injected_faults.clear()
+
+    @classmethod
+    def check_and_trigger(cls, task_id: str) -> Optional[dict[str, Any]]:
+        return cls._injected_faults.pop(task_id, None)
+
+    @classmethod
+    def has_fault(cls, task_id: str) -> bool:
+        return task_id in cls._injected_faults

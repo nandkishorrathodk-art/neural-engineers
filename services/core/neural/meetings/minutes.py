@@ -1,3 +1,5 @@
+import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -32,12 +34,14 @@ class MeetingMinutesGenerator:
         progress_reports: list[dict[str, Any]] | None = None,
         decisions: list[dict[str, Any]] | None = None,
         action_items: list[dict[str, Any] | ActionItem] | None = None,
-        summary: str | None = None
+        summary: str | None = None,
+        verified_claims: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """
         Compiles a comprehensive minutes dictionary with explicit decisions and rationales.
         """
         reports = progress_reports or []
+        claims = verified_claims or []
         m_type_val = meeting_type.value if hasattr(meeting_type, "value") else str(meeting_type)
 
         # Extract blockers from progress reports
@@ -73,7 +77,9 @@ class MeetingMinutesGenerator:
                     "description": ai.description,
                     "assigned_to": ai.assigned_to,
                     "deadline": ai.deadline.isoformat() if ai.deadline else None,
-                    "status": ai.status.value if hasattr(ai.status, "value") else str(ai.status)
+                    "status": ai.status.value if hasattr(ai.status, "value") else str(ai.status),
+                    "linked_task_id": getattr(ai, "linked_task_id", None),
+                    "acceptance_criteria": getattr(ai, "acceptance_criteria", None),
                 })
             elif isinstance(ai, dict):
                 formatted_action_items.append({
@@ -81,7 +87,9 @@ class MeetingMinutesGenerator:
                     "description": ai.get("description", ""),
                     "assigned_to": ai.get("assigned_to", "BossAI"),
                     "deadline": ai.get("deadline"),
-                    "status": ai.get("status", "open")
+                    "status": ai.get("status", "open"),
+                    "linked_task_id": ai.get("linked_task_id"),
+                    "acceptance_criteria": ai.get("acceptance_criteria"),
                 })
 
         default_summary = (
@@ -104,19 +112,70 @@ class MeetingMinutesGenerator:
             "blockers_identified": blockers,
             "decisions": formatted_decisions,
             "action_items": formatted_action_items,
+            "verified_claims": claims,
             "total_reports": len(reports),
             "total_blockers": len(blockers),
             "total_decisions": len(formatted_decisions),
-            "total_action_items": len(formatted_action_items)
+            "total_action_items": len(formatted_action_items),
+            "total_verified_claims": len(claims),
         }
+
+        # Compute immutable SHA-256 minutes hash
+        hashable_data = {
+            "meeting_id": minutes["meeting_id"],
+            "title": minutes["title"],
+            "meeting_type": minutes["meeting_type"],
+            "started_at": minutes["started_at"],
+            "concluded_at": minutes["concluded_at"],
+            "participants": sorted(minutes["participants"]),
+            "agenda": minutes["agenda"],
+            "summary": minutes["summary"],
+            "progress_reports": minutes["progress_reports"],
+            "verified_claims": minutes["verified_claims"],
+            "decisions": minutes["decisions"],
+            "action_items": minutes["action_items"],
+            "blockers_identified": minutes["blockers_identified"],
+        }
+        canonical = json.dumps(hashable_data, sort_keys=True, default=str)
+        minutes["minutes_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
         logger.info(
             "Generated meeting minutes",
             meeting_id=meeting_id,
             decisions_count=len(formatted_decisions),
-            action_items_count=len(formatted_action_items)
+            action_items_count=len(formatted_action_items),
+            minutes_hash=minutes["minutes_hash"][:16],
         )
         return minutes
+
+    @classmethod
+    def verify_minutes_integrity(cls, minutes: dict[str, Any]) -> tuple[bool, str | None]:
+        """
+        Cryptographically validates that meeting minutes have not been tampered with.
+        """
+        expected_hash = minutes.get("minutes_hash")
+        if not expected_hash:
+            return False, "Missing minutes_hash"
+        hashable_data = {
+            "meeting_id": minutes.get("meeting_id"),
+            "title": minutes.get("title"),
+            "meeting_type": minutes.get("meeting_type"),
+            "started_at": minutes.get("started_at"),
+            "concluded_at": minutes.get("concluded_at"),
+            "participants": sorted(minutes.get("participants", [])),
+            "agenda": minutes.get("agenda", []),
+            "summary": minutes.get("summary", ""),
+            "progress_reports": minutes.get("progress_reports", []),
+            "verified_claims": minutes.get("verified_claims", []),
+            "decisions": minutes.get("decisions", []),
+            "action_items": minutes.get("action_items", []),
+            "blockers_identified": minutes.get("blockers_identified", []),
+        }
+        canonical = json.dumps(hashable_data, sort_keys=True, default=str)
+        actual_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if actual_hash != expected_hash:
+            return False, f"Hash mismatch: expected {expected_hash}, calculated {actual_hash}"
+        return True, None
 
     @classmethod
     def format_as_markdown(cls, minutes: dict[str, Any]) -> str:

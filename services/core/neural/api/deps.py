@@ -1,12 +1,15 @@
 import secrets
+from typing import Any
 
 from fastapi import Depends, Header, HTTPException
 from neural.config import get_settings
+from neural.constants import SecurityRole
 from neural.db.engine import AsyncSessionLocal, get_db_session
 from neural.db.repositories import (
     ActionItemRepository,
     ApprovalRepository,
     AuditRepository,
+    BudgetRepository,
     ContainerRepository,
     DecisionLedgerRepository,
     DecisionRecordRepository,
@@ -45,6 +48,10 @@ async def get_resource_lease_repo(
     return ResourceLeaseRepository(session)
 
 
+async def get_budget_repo(session: AsyncSession = Depends(get_db_session)) -> BudgetRepository:
+    return BudgetRepository(session)
+
+
 async def require_execution_not_halted(
     session: AsyncSession = Depends(get_db_session),
 ) -> None:
@@ -64,8 +71,46 @@ async def require_execution_not_halted(
         )
 
 
+def validate_all_role_credentials(settings: Any) -> None:
+    """
+    Validates pairwise credential distinctness and format across all operational roles:
+    Owner, Boss, Worker, Verifier, Security Reviewer (+ Approver).
+    Raises HTTPException(status_code=503) if any credentials overlap.
+    """
+    role_tokens: dict[str, list[str]] = {
+        SecurityRole.OWNER.value: [settings.OWNER_API_TOKEN] if settings.OWNER_API_TOKEN else [],
+        SecurityRole.BOSS.value: [settings.BOSS_API_TOKEN] if settings.BOSS_API_TOKEN else [],
+        SecurityRole.VERIFIER.value: [settings.VERIFIER_API_TOKEN] if settings.VERIFIER_API_TOKEN else [],
+        SecurityRole.SECURITY_REVIEWER.value: [settings.SECURITY_REVIEWER_API_TOKEN] if settings.SECURITY_REVIEWER_API_TOKEN else [],
+        "approver": [settings.APPROVER_API_TOKEN] if settings.APPROVER_API_TOKEN else [],
+        SecurityRole.WORKER.value: [t for t in settings.WORKER_API_TOKENS.values() if t],
+    }
+    if settings.WORKER_API_TOKEN:
+        role_tokens[SecurityRole.WORKER.value].append(settings.WORKER_API_TOKEN)
+
+    worker_tokens = role_tokens[SecurityRole.WORKER.value]
+    if len(worker_tokens) > len(set(worker_tokens)):
+        raise HTTPException(status_code=503, detail="Worker identities must use distinct bearer credentials.")
+
+    roles = list(role_tokens.keys())
+    for i, role_a in enumerate(roles):
+        for token_a in role_tokens[role_a]:
+            if not token_a:
+                continue
+            for role_b in roles[i + 1:]:
+                for token_b in role_tokens[role_b]:
+                    if not token_b:
+                        continue
+                    if secrets.compare_digest(token_a, token_b):
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"Role credentials must be pairwise distinct: '{role_a}' and '{role_b}' share credentials.",
+                        )
+
+
 async def require_worker_token(authorization: str | None = Header(default=None)) -> str:
     settings = get_settings()
+    validate_all_role_credentials(settings)
     if any(
         not worker_id.strip() or len(worker_id) > 128 or not token or len(token) < 32
         for worker_id, token in settings.WORKER_API_TOKENS.items()
@@ -82,17 +127,6 @@ async def require_worker_token(authorization: str | None = Header(default=None))
         configured.setdefault("worker-service", settings.WORKER_API_TOKEN)
     if not configured:
         raise HTTPException(status_code=503, detail="Worker API credentials are not configured.")
-    if len(set(configured.values())) != len(configured):
-        raise HTTPException(status_code=503, detail="Worker identities must use distinct bearer credentials.")
-    if settings.OWNER_API_TOKEN and any(
-        secrets.compare_digest(token, settings.OWNER_API_TOKEN) for token in configured.values()
-    ):
-        raise HTTPException(status_code=503, detail="Owner and worker credentials must be different.")
-    if any(
-        settings.VERIFIER_API_TOKEN and secrets.compare_digest(token, settings.VERIFIER_API_TOKEN)
-        for token in configured.values()
-    ):
-        raise HTTPException(status_code=503, detail="Worker and verifier credentials must be different.")
     scheme, _, supplied = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not supplied:
         raise HTTPException(status_code=401, detail="Valid worker bearer token required.")
@@ -104,32 +138,92 @@ async def require_worker_token(authorization: str | None = Header(default=None))
 
 async def require_owner_identity(authorization: str | None = Header(default=None)) -> str:
     settings = get_settings()
+    validate_all_role_credentials(settings)
     if settings.APP_ENV != "production":
         return "local-owner"
     expected = settings.OWNER_API_TOKEN
     if not expected or len(expected) < 32:
         raise HTTPException(status_code=503, detail="Owner API credentials are not configured.")
-    service_tokens = [settings.WORKER_API_TOKEN, settings.VERIFIER_API_TOKEN, settings.APPROVER_API_TOKEN]
-    service_tokens.extend(settings.WORKER_API_TOKENS.values())
-    if any(token and secrets.compare_digest(expected, token) for token in service_tokens):
-        raise HTTPException(status_code=503, detail="Owner and service credentials must be different.")
     scheme, _, supplied = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Valid owner bearer token required.")
     return "human-owner"
 
 
+async def require_boss_identity(authorization: str | None = Header(default=None)) -> str:
+    settings = get_settings()
+    validate_all_role_credentials(settings)
+    if settings.APP_ENV != "production" and not authorization:
+        return "local-boss"
+    expected = settings.BOSS_API_TOKEN
+    if not expected or len(expected) < 32:
+        raise HTTPException(status_code=503, detail="Boss API credentials are not configured.")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Valid boss bearer token required.")
+    return "boss-ai"
+
+
+async def require_boss_or_owner_identity(authorization: str | None = Header(default=None)) -> str:
+    settings = get_settings()
+    validate_all_role_credentials(settings)
+    if settings.APP_ENV != "production" and not authorization:
+        return "local-boss"
+    boss_token = settings.BOSS_API_TOKEN
+    owner_token = settings.OWNER_API_TOKEN
+    if (not boss_token or len(boss_token) < 32) and (not owner_token or len(owner_token) < 32):
+        raise HTTPException(status_code=503, detail="Boss or Owner API credentials are not configured.")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied:
+        raise HTTPException(status_code=401, detail="Valid boss or owner bearer token required.")
+    if boss_token and len(boss_token) >= 32 and secrets.compare_digest(supplied, boss_token):
+        return "boss-ai"
+    if owner_token and len(owner_token) >= 32 and secrets.compare_digest(supplied, owner_token):
+        return "human-owner"
+    raise HTTPException(status_code=401, detail="Valid boss or owner bearer token required.")
+
+
+async def require_security_reviewer_token(authorization: str | None = Header(default=None)) -> str:
+    settings = get_settings()
+    validate_all_role_credentials(settings)
+    if settings.APP_ENV != "production" and not authorization:
+        return "local-security-reviewer"
+    expected = settings.SECURITY_REVIEWER_API_TOKEN
+    if not expected or len(expected) < 32:
+        raise HTTPException(status_code=503, detail="Security Reviewer API credentials are not configured.")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Valid security reviewer bearer token required.")
+    return "security-reviewer"
+
+
+async def require_owner_or_security_reviewer_identity(authorization: str | None = Header(default=None)) -> str:
+    settings = get_settings()
+    validate_all_role_credentials(settings)
+    if settings.APP_ENV != "production" and not authorization:
+        return "local-owner"
+    owner_token = settings.OWNER_API_TOKEN
+    sec_token = settings.SECURITY_REVIEWER_API_TOKEN
+    if (not owner_token or len(owner_token) < 32) and (not sec_token or len(sec_token) < 32):
+        raise HTTPException(status_code=503, detail="Owner or Security Reviewer API credentials are not configured.")
+    scheme, _, supplied = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not supplied:
+        raise HTTPException(status_code=401, detail="Valid owner or security reviewer bearer token required.")
+    if owner_token and len(owner_token) >= 32 and secrets.compare_digest(supplied, owner_token):
+        return "human-owner"
+    if sec_token and len(sec_token) >= 32 and secrets.compare_digest(supplied, sec_token):
+        return "security-reviewer"
+    raise HTTPException(status_code=401, detail="Valid owner or security reviewer bearer token required.")
+
+
 async def require_approver_identity(authorization: str | None = Header(default=None)) -> str:
     settings = get_settings()
-    if settings.APP_ENV != "production":
+    validate_all_role_credentials(settings)
+    if settings.APP_ENV != "production" and not authorization:
         return "local-approver"
     expected = settings.APPROVER_API_TOKEN
     if not expected or len(expected) < 32:
         raise HTTPException(status_code=503, detail="Independent approver credentials are not configured.")
-    other_tokens = [settings.OWNER_API_TOKEN, settings.WORKER_API_TOKEN, settings.VERIFIER_API_TOKEN]
-    other_tokens.extend(settings.WORKER_API_TOKENS.values())
-    if any(token and secrets.compare_digest(expected, token) for token in other_tokens):
-        raise HTTPException(status_code=503, detail="Approver credentials must differ from all other service credentials.")
     scheme, _, supplied = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Valid approver bearer token required.")
@@ -138,14 +232,10 @@ async def require_approver_identity(authorization: str | None = Header(default=N
 
 async def require_verifier_token(authorization: str | None = Header(default=None)) -> str:
     settings = get_settings()
+    validate_all_role_credentials(settings)
     expected = settings.VERIFIER_API_TOKEN
     if not expected or len(expected) < 32:
         raise HTTPException(status_code=503, detail="Verifier API credentials are not configured.")
-    worker_tokens = list(settings.WORKER_API_TOKENS.values())
-    if settings.WORKER_API_TOKEN:
-        worker_tokens.append(settings.WORKER_API_TOKEN)
-    if any(other and secrets.compare_digest(expected, other) for other in [*worker_tokens, settings.OWNER_API_TOKEN]):
-        raise HTTPException(status_code=503, detail="Owner, worker, and verifier credentials must be different.")
     scheme, _, supplied = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not supplied or not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Valid verifier bearer token required.")

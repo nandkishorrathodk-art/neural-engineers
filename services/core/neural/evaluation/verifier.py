@@ -202,7 +202,10 @@ class IndependentVerifier:
         acceptance_criteria: Optional[str] = None,
         file_contents: Optional[dict[str, str]] = None,
         task_repo: Optional[TaskRepository] = None,
-        test_output: Optional[dict[str, Any]] = None
+        test_output: Optional[dict[str, Any]] = None,
+        execution_mode: Optional[Any] = None,
+        workspace_delta: Optional[dict[str, Any]] = None,
+        commit_sha: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Conducts independent QA verification runner executing:
@@ -264,19 +267,43 @@ class IndependentVerifier:
 
         # Build cryptographic verification receipt
         receipt_id = f"RECEIPT-{uuid.uuid4().hex[:8].upper()}"
+        artifact_digests: dict[str, str] = {}
+        in_memory_artifacts: list[str] = []
+        for art_path in artifacts:
+            if file_contents and art_path in file_contents:
+                digest = hashlib.sha256(file_contents[art_path].encode("utf-8")).hexdigest()
+                artifact_digests[art_path] = digest
+                in_memory_artifacts.append(art_path)
+            elif os.path.exists(art_path) and os.path.isfile(art_path):
+                try:
+                    with open(art_path, "rb") as f:
+                        digest = hashlib.sha256(f.read()).hexdigest()
+                    artifact_digests[art_path] = digest
+                except Exception:
+                    pass
+
+        mode_val = str(getattr(execution_mode, "value", execution_mode)) if execution_mode else "terminal"
         receipt_payload = {
             "receipt_id": receipt_id,
+            "verifier_id": "IndependentDeliverableVerifier",
+            "attempt_id": receipt_id,
+            "evidence_refs": list(artifact_digests.keys()) if artifact_digests else [f"receipt:{receipt_id}:verified"],
             "task_id": task_id,
             "employee_id": employee_id,
+            "execution_mode": mode_val,
             "verification_status": status.value,
             "passed": passed,
             "timestamp": utc_now().isoformat(),
             "artifacts": artifacts,
+            "artifact_digests": artifact_digests,
+            "in_memory_artifacts": in_memory_artifacts,
+            "workspace_delta": workspace_delta,
             "test_summary": test_summary,
             "code_quality": code_quality,
             "acceptance_criteria": criteria_res,
             "verified_skills": tested_skills if passed else [],
-            "notes": notes
+            "notes": notes,
+            "commit_sha": commit_sha or "",
         }
         signature = self.generate_receipt_signature(receipt_payload)
         receipt_payload["signature"] = signature
@@ -338,19 +365,60 @@ class IndependentVerifier:
         if not self.task_repo:
             raise ValueError("TaskRepository is required to gate task completion")
 
-        if not verification_receipt or not verification_receipt.get("passed"):
+        target_receipt = (
+            verification_receipt.get("receipt")
+            if isinstance(verification_receipt, dict)
+            and isinstance(verification_receipt.get("receipt"), dict)
+            and "signature" in verification_receipt["receipt"]
+            else verification_receipt
+        )
+        if not target_receipt or not target_receipt.get("passed"):
             raise UnverifiedTaskError(
                 f"Strict gate blocked completion of task {task_id}: independent verification receipt indicates failure or is missing."
             )
 
-        # Verify signature integrity
-        raw_receipt = dict(verification_receipt)
-        sig = raw_receipt.pop("signature", None)
-        if sig:
-            expected_sig = self.generate_receipt_signature(raw_receipt)
-            if sig != expected_sig:
-                raise UnverifiedTaskError(
-                    f"Strict gate blocked task {task_id}: verification receipt signature mismatch (tampering detected)."
-                )
+        # Enforce task linkage
+        receipt_task_id = target_receipt.get("task_id")
+        if receipt_task_id and receipt_task_id != task_id:
+            raise UnverifiedTaskError(
+                f"Strict gate blocked task {task_id}: verification receipt is linked to task {receipt_task_id}, not {task_id}."
+            )
+
+        # Verify cryptographic signature integrity
+        sig = target_receipt.get("signature")
+        if not sig or not isinstance(sig, str) or not sig.strip():
+            raise UnverifiedTaskError(
+                f"Strict gate blocked task {task_id}: verification receipt is missing required cryptographic signature."
+            )
+
+        raw_receipt = {k: v for k, v in target_receipt.items() if k != "signature"}
+        expected_sig = self.generate_receipt_signature(raw_receipt)
+        if sig != expected_sig:
+            raise UnverifiedTaskError(
+                f"Strict gate blocked task {task_id}: verification receipt signature mismatch (tampering detected)."
+            )
+
+        # Verify artifact SHA-256 digests if present
+        artifact_digests = target_receipt.get("artifact_digests")
+        in_memory = set(target_receipt.get("in_memory_artifacts") or [])
+        if isinstance(artifact_digests, dict):
+            for art_path, expected_digest in artifact_digests.items():
+                if art_path in in_memory or (art_path.startswith("/workspace") and not os.path.exists(art_path)):
+                    continue
+                if not os.path.exists(art_path) or not os.path.isfile(art_path):
+                    raise UnverifiedTaskError(
+                        f"Strict gate blocked task {task_id}: verified artifact {art_path} missing from disk."
+                    )
+                with open(art_path, "rb") as f:
+                    actual_digest = hashlib.sha256(f.read()).hexdigest()
+                if actual_digest != expected_digest:
+                    raise UnverifiedTaskError(
+                        f"Strict gate blocked task {task_id}: artifact {art_path} SHA-256 digest mismatch "
+                        f"(expected {expected_digest}, got {actual_digest})."
+                    )
 
         return await self.task_repo.complete_with_receipt(task_id, verification_receipt)
+
+
+# Canonical alias for independent verification authority
+IndependentDeliverableVerifier = IndependentVerifier

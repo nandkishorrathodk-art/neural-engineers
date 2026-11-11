@@ -48,7 +48,8 @@ class System1FastPolicy:
 
         # 1. Ground target descriptor from screen pixels
         query = self._extract_clean_query(step.target_descriptor)
-        grounded = self.grounder.ground_query(frame, query)
+        elem_type = self._extract_element_type(step.target_descriptor)
+        grounded = self.grounder.ground_query(frame, query, expected_element_type=elem_type)
 
         if not grounded.is_confident:
             raise VisualUncertaintyError(
@@ -134,18 +135,29 @@ class System1FastPolicy:
 
     @staticmethod
     def _extract_clean_query(descriptor: str) -> str:
-        """Extracts text query from descriptors like 'button[text=\\'Submit\\']'."""
-        if "text='" in descriptor:
-            start_idx = descriptor.find("text='") + 6
-            end_idx = descriptor.find("'", start_idx)
-            if end_idx != -1:
-                return descriptor[start_idx:end_idx]
-        elif 'text="' in descriptor:
-            start_idx = descriptor.find('text="') + 6
-            end_idx = descriptor.find('"', start_idx)
-            if end_idx != -1:
-                return descriptor[start_idx:end_idx]
-        elif "[" in descriptor:
+        """Extracts text query from descriptors like 'button[text=\\'Submit\\']' or 'text_input[label=\\'Username\\']'."""
+        for key in ("text='", 'text="', "label='", 'label="'):
+            if key in descriptor:
+                quote_char = key[-1]
+                start_idx = descriptor.find(key) + len(key)
+                end_idx = descriptor.find(quote_char, start_idx)
+                if end_idx != -1:
+                    return descriptor[start_idx:end_idx]
+        if "[" in descriptor:
+            inside = descriptor[descriptor.find("[") + 1 : descriptor.rfind("]")]
+            if "=" in inside:
+                val = inside.split("=", 1)[1].strip("'\"")
+                if val:
+                    return val
             return descriptor.split("[")[0]
         return descriptor
+
+    @staticmethod
+    def _extract_element_type(descriptor: str) -> Optional[str]:
+        """Extracts expected element type from descriptors like 'button[text=\\'Submit\\']'."""
+        if "[" in descriptor:
+            prefix = descriptor.split("[")[0].strip()
+            if prefix in ("button", "text_input", "menu", "menu_item", "icon", "dialog", "scrollbar"):
+                return prefix
+        return None
 

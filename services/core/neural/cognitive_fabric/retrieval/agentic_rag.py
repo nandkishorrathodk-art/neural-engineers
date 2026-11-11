@@ -164,7 +164,7 @@ class AgenticRAGEngine:
 
         lines = [f"Synthesized Answer for query: '{query}'"]
         for idx, item in enumerate(evidence[:5], start=1):
-            source = item.get("metadata", {}).get("source", item.get("id"))
+            source = (item.get("metadata") or {}).get("source", item.get("id"))
             status = "VERIFIED" if item.get("is_verified") else "UNVERIFIED"
             text_snippet = item.get("text", "")[:160].replace("\n", " ")
             lines.append(f"[{idx}] ({status}) [Source: {source}]: {text_snippet}")

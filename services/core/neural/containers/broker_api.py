@@ -213,8 +213,16 @@ def write_vnc_token(container_name: str) -> str:
         current.append(f"{token}: {target}")
         temporary = token_path.with_name(f"tokens.{uuid.uuid4().hex}.tmp")
         temporary.write_text("\n".join(current) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o444)
+        if token_path.exists():
+            try:
+                os.chmod(token_path, 0o666)
+            except OSError:
+                pass
         os.replace(temporary, token_path)
+        try:
+            os.chmod(token_path, 0o444)
+        except OSError:
+            pass
     return token
 
 
@@ -240,8 +248,16 @@ def revoke_vnc_token(container_name: str) -> None:
         remaining = [line for line in current if line.rpartition(": ")[2] != target]
         temporary = token_path.with_name(f"tokens.{uuid.uuid4().hex}.tmp")
         temporary.write_text("\n".join(remaining) + ("\n" if remaining else ""), encoding="utf-8")
-        os.chmod(temporary, 0o444)
+        if token_path.exists():
+            try:
+                os.chmod(token_path, 0o666)
+            except OSError:
+                pass
         os.replace(temporary, token_path)
+        try:
+            os.chmod(token_path, 0o444)
+        except OSError:
+            pass
 
 
 def list_used_ports(client: Any) -> set[int]:
@@ -665,6 +681,24 @@ def remove_verification_sandbox(verifier_container: Any) -> None:
         verifier_container.remove(force=True)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Verifier sandbox cleanup failed.") from exc
+
+
+@app.get("/v1/containers/{container_id}/vnc-token")
+@app.post("/v1/containers/{container_id}/vnc-token")
+def issue_or_get_vnc_token(container_id: str) -> dict[str, Any]:
+    validate_container_id(container_id)
+    container = get_managed_container(container_id)
+    token = read_vnc_token(container.name)
+    if not token:
+        token = write_vnc_token(container.name)
+    novnc_port = 12003
+    return {
+        "docker_id": container_id,
+        "token": token,
+        "ws_path": f"websockify?token={token}",
+        "desktop_url": f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&path=websockify%3Ftoken%3D{token}",
+        "read_only_desktop_url": f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&view_only=true&path=websockify%3Ftoken%3D{token}",
+    }
 
 
 @app.post("/v1/containers/{container_id}/vnc-password")

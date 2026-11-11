@@ -125,11 +125,14 @@ class SkillValidator:
                 coords = None
                 # Try grounding relative visual anchor if possible
                 anchor_target = None
-                if "text='" in action.relative_anchor:
-                    s_idx = action.relative_anchor.find("text='") + 6
-                    e_idx = action.relative_anchor.find("'", s_idx)
-                    if e_idx != -1:
-                        anchor_target = action.relative_anchor[s_idx:e_idx]
+                for key in ("text='", 'text="', "label='", 'label="'):
+                    if key in action.relative_anchor:
+                        quote_char = key[-1]
+                        s_idx = action.relative_anchor.find(key) + len(key)
+                        e_idx = action.relative_anchor.find(quote_char, s_idx)
+                        if e_idx != -1:
+                            anchor_target = action.relative_anchor[s_idx:e_idx]
+                            break
 
                 if anchor_target:
                     grounded = grounder.ground_query(frame, anchor_target)

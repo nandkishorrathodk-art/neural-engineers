@@ -4,7 +4,7 @@ import math
 import time
 from typing import Any, Optional
 
-from neural.exceptions import VisualUncertaintyError
+from neural.exceptions import StrictGUIContractViolation, VisualUncertaintyError
 from neural.gui_intelligence.action.execution_loop import GUIExecutionLoop
 from neural.gui_intelligence.brain.fast_policy import System1FastPolicy
 from neural.gui_intelligence.brain.task_planner import CompiledExecutionPlan, System2TaskPlanner
@@ -17,6 +17,7 @@ from neural.gui_intelligence.perception.screen_capture import ScreenCaptureEngin
 from neural.gui_intelligence.recovery.failure_detector import GUIFailureDetector
 from neural.gui_intelligence.recovery.state_recovery import GUIStateRecovery
 from neural.gui_intelligence.recovery.visibility_recovery import VisibilityRecoveryEngine
+from neural.gui_intelligence.safety.gui_action_policy import GUIActionPolicy
 from neural.gui_intelligence.skills.experience_recorder import ExperienceRecorder
 from neural.gui_intelligence.verification.visual_verifier import (
     IndependentVisualVerifier,
@@ -102,9 +103,16 @@ class DualBrainCognitiveController:
         escalations = 0
         verification_receipts: list[dict[str, Any]] = []
 
-        target_steps = plan.steps[:max_steps]
+        effective_max_steps = max(0, max_steps)
+        target_steps = plan.steps[:effective_max_steps]
         plan_truncated = len(target_steps) < len(plan.steps)
         for step in target_steps:
+            # Enforce strict GUI-only anti-cheating contract on each planned step
+            policy = getattr(getattr(self.execution_loop, "risk_guard", None), "policy", None) or GUIActionPolicy()
+            policy.validate_gui_contract(
+                f"{step.action_intent} {step.target_descriptor} {step.input_value or ''}"
+            )
+
             current_frame = self.capture_engine.capture_frame()
 
             # Dynamic perception update: detect elements, update windows and belief
@@ -188,6 +196,14 @@ class DualBrainCognitiveController:
             # Check if any receipt halted due to anomaly
             failed_receipts = [r for r in chunk_receipts if r.status != "SUCCESS"]
             if failed_receipts:
+                for fr in failed_receipts:
+                    if fr.status == "BLOCKED_BY_SAFETY" and "Strict GUI-Only Contract" in (fr.error_message or ""):
+                        logger.error(
+                            "Strict GUI-Only contract violation detected during execution; failing closed",
+                            error=fr.error_message,
+                        )
+                        raise StrictGUIContractViolation(fr.error_message or "Strict GUI contract violated.")
+
                 self.escalation_count += 1
                 escalations += 1
                 logger.warning(
@@ -217,11 +233,22 @@ class DualBrainCognitiveController:
             post_frame = self.capture_engine.capture_frame()
             expected_text = step.input_value if step.action_intent.upper() in {"TYPE", "KEY_TYPE"} else None
             try:
+                import inspect
+
+                verify_kwargs: dict[str, Any] = {
+                    "frame_initial": current_frame,
+                    "frame_final": post_frame,
+                    "expected_text": expected_text,
+                    "min_delta_magnitude": MIN_POSTCONDITION_DELTA,
+                }
+                sig = inspect.signature(self.visual_verifier.verify_postcondition)
+                if "expected_postcondition" in sig.parameters or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                ):
+                    verify_kwargs["expected_postcondition"] = step.expected_postcondition
+
                 verification: VisualVerificationResult | None = self.visual_verifier.verify_postcondition(
-                    frame_initial=current_frame,
-                    frame_final=post_frame,
-                    expected_text=expected_text,
-                    min_delta_magnitude=MIN_POSTCONDITION_DELTA,
+                    **verify_kwargs
                 )
             except Exception as exc:
                 verification = None

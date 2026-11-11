@@ -295,7 +295,7 @@ class ToolsmithEngine:
         tool_name_or_id: str,
         function_name: str,
         arguments: dict[str, Any],
-        timeout: float = 5.0,
+        timeout: float = 15.0,
     ) -> dict[str, Any]:
         """
         Securely executes a verified tool function inside the workstation sandbox.

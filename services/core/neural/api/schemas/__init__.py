@@ -1,16 +1,19 @@
 from neural.api.schemas.common import PaginationParams, StatusResponse
 from neural.api.schemas.requests import (
+    AdvanceAgendaStageRequest,
     ApprovalDecisionRequest,
     ConductMeetingRequest,
     CreateActionItemRequest,
     CreateEmployeeRequest,
     ObjectiveSubmissionRequest,
     RecordDecisionRequest,
+    ReopenActionItemRequest,
     ScheduleMeetingRequest,
     SubmitProgressReportRequest,
     TriggerBlockerMeetingRequest,
     TriggerPhaseMeetingRequest,
     UpdateActionItemRequest,
+    ValidateClaimRequest,
 )
 from neural.api.schemas.responses import (
     ActionItemResponse,
@@ -33,6 +36,9 @@ __all__ = [
     "SubmitProgressReportRequest",
     "CreateActionItemRequest",
     "UpdateActionItemRequest",
+    "ReopenActionItemRequest",
+    "AdvanceAgendaStageRequest",
+    "ValidateClaimRequest",
     "RecordDecisionRequest",
     "TriggerBlockerMeetingRequest",
     "TriggerPhaseMeetingRequest",

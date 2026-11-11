@@ -39,21 +39,32 @@ class MemoryAccessController:
                 # Disallow any other employee
                 return False
 
+        # Any restricted record where requester is not the owner or an executive must be blocked
+        if record.access_level == MemoryAccessLevel.RESTRICTED:
+            return False
+
         # Department clearance check
         if record.allowed_departments:
-            if not department or department not in record.allowed_departments:
+            dept_set = {d.strip().casefold() for d in record.allowed_departments if d}
+            req_dept = department.strip().casefold() if department else None
+            if not req_dept or req_dept not in dept_set:
                 return False
 
         # Project clearance check
         if record.allowed_projects:
-            active_projects = set(projects or [])
-            if not active_projects.intersection(set(record.allowed_projects)):
+            proj_set = {p.strip().casefold() for p in record.allowed_projects if p}
+            active_projects = {p.strip().casefold() for p in (projects or []) if p}
+            if not active_projects.intersection(proj_set):
                 return False
 
         # Confidential records require explicit department or project assignment
         if record.access_level == MemoryAccessLevel.CONFIDENTIAL:
-            has_dept = bool(department and record.allowed_departments and department in record.allowed_departments)
-            has_proj = bool(projects and record.allowed_projects and set(projects).intersection(set(record.allowed_projects)))
+            dept_set = {d.strip().casefold() for d in record.allowed_departments if d}
+            req_dept = department.strip().casefold() if department else None
+            has_dept = bool(req_dept and dept_set and req_dept in dept_set)
+            proj_set = {p.strip().casefold() for p in record.allowed_projects if p}
+            active_projects = {p.strip().casefold() for p in (projects or []) if p}
+            has_proj = bool(active_projects and proj_set and active_projects.intersection(proj_set))
             if not (has_dept or has_proj or (record.owner_employee_id == requester_id)):
                 return False
 

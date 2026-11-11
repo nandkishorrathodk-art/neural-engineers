@@ -64,7 +64,7 @@ from neural.db.models import (
     ToolRecord,
     Vote,
 )
-from neural.exceptions import UnverifiedTaskError, VerificationFailedError
+from neural.exceptions import ActionItemConflictError, UnverifiedTaskError, VerificationFailedError
 
 
 def _task_dispatch_order() -> tuple[Any, ...]:
@@ -368,6 +368,24 @@ class BudgetRepository:
         await self.session.refresh(reservation)
         return reservation
 
+    async def get_account(self, scope_key: str) -> Optional[BudgetAccount]:
+        """Fetch a budget account by scope key."""
+        if not scope_key or len(scope_key) > 192:
+            raise ValueError("budget scope key must contain 1-192 characters")
+        return await self.session.get(BudgetAccount, scope_key)
+
+    async def get_available_quota(
+        self,
+        scope_key: str,
+        default_cap: Decimal = Decimal("10000.00"),
+    ) -> Decimal:
+        """Return available quota headroom for the scope, or default_cap if not found."""
+        account = await self.get_account(scope_key)
+        if account is None:
+            return Decimal(str(default_cap))
+        headroom = account.cap_usd - (account.reserved_usd + account.spent_usd)
+        return max(Decimal("0"), headroom)
+
 
 
 class TaskRepository:
@@ -409,7 +427,18 @@ class TaskRepository:
             or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
         )
         if execution_modes is not None:
-            mode_values = [getattr(mode, "value", mode) for mode in execution_modes]
+            mode_values = []
+            for mode in execution_modes:
+                val = getattr(mode, "value", mode)
+                mode_values.append(val)
+                if val == "terminal":
+                    mode_values.append("terminal_only")
+                elif val == "terminal_only":
+                    mode_values.append("terminal")
+                elif val == "gui":
+                    mode_values.append("gui_only")
+                elif val == "gui_only":
+                    mode_values.append("gui")
             candidate_query = candidate_query.where(Task.execution_mode.in_(mode_values))
         candidates = (
             await self.session.execute(
@@ -474,7 +503,7 @@ class TaskRepository:
                 continue
             employee = await self.session.scalar(
                 select(Employee)
-                .options(selectinload(Employee.container))
+                .options(selectinload(Employee.container), selectinload(Employee.skills))
                 .execution_options(populate_existing=True)
                 .where(
                     Employee.id == task.assigned_to,
@@ -482,6 +511,15 @@ class TaskRepository:
             )
             if not employee or not employee.container or employee.container.status != ContainerStatus.RUNNING:
                 continue
+            if task.required_capabilities:
+                req_skills = {c.strip().lower() for c in task.required_capabilities if c.strip()}
+                if req_skills:
+                    emp_skills = {
+                        s.skill_name.strip().lower()
+                        for s in (employee.skills or [])
+                    }
+                    if not req_skills.intersection(emp_skills):
+                        continue
             retrying_same_assignment = bool(
                 latest_attempt and latest_attempt.status in {"failed", "rejected", "expired"}
             )
@@ -543,7 +581,11 @@ class TaskRepository:
                     lease_expires_at=lease_expires_at,
                 )
                 self.session.add(attempt)
-                await self.session.commit()
+                try:
+                    await self.session.commit()
+                except IntegrityError:
+                    await self.session.rollback()
+                    continue
 
             return {
                 "task_id": task.task_id,
@@ -574,7 +616,18 @@ class TaskRepository:
             or_(Task.scheduled_at.is_(None), Task.scheduled_at <= now),
         )
         if execution_modes is not None:
-            mode_values = [getattr(mode, "value", mode) for mode in execution_modes]
+            mode_values = []
+            for mode in execution_modes:
+                val = getattr(mode, "value", mode)
+                mode_values.append(val)
+                if val == "terminal":
+                    mode_values.append("terminal_only")
+                elif val == "terminal_only":
+                    mode_values.append("terminal")
+                elif val == "gui":
+                    mode_values.append("gui_only")
+                elif val == "gui_only":
+                    mode_values.append("gui")
             ready_query = ready_query.where(Task.execution_mode.in_(mode_values))
         ready_tasks = (
             await self.session.execute(
@@ -618,6 +671,12 @@ class TaskRepository:
                 assignee = delegator.select_best_assignee(ready_task, eligible_employees)
                 if not assignee:
                     continue
+                if ready_task.required_capabilities:
+                    req_skills = {c.strip().lower() for c in ready_task.required_capabilities if c.strip()}
+                    if req_skills:
+                        emp_skills = {s.skill_name.strip().lower() for s in (assignee.skills or [])}
+                        if not req_skills.intersection(emp_skills):
+                            continue
                 assigned = await self.session.execute(
                     update(Task)
                     .where(
@@ -1095,9 +1154,44 @@ class TaskRepository:
                 summary["verification_attempts"] = int(summary.get("verification_attempts", 0)) + 1
                 counter = "verified_tasks" if passed else "verification_rejections"
                 summary[counter] = int(summary.get(counter, 0)) + 1
+                if passed:
+                    summary["completed_tasks"] = int(summary.get("completed_tasks", 0)) + 1
                 summary["last_verified_task_id"] = task.task_id
                 summary["last_verifier_id"] = verifier_id
                 summary["last_verification_passed"] = passed
+                if passed:
+                    skills_to_verify = list(verification_receipt.get("verified_skills") or task.required_capabilities or [])
+                    v_skills = list(summary.get("verified_skills", []))
+                    for sk in skills_to_verify:
+                        sk_clean = str(sk).strip()
+                        if not sk_clean:
+                            continue
+                        if not any(existing.lower() == sk_clean.lower() for existing in v_skills):
+                            v_skills.append(sk_clean)
+                        stmt_sk = select(EmployeeSkill).where(
+                            EmployeeSkill.employee_id == employee.id,
+                            func.lower(EmployeeSkill.skill_name) == sk_clean.lower(),
+                        )
+                        sk_row = (await self.session.execute(stmt_sk)).scalar_one_or_none()
+                        if sk_row:
+                            sk_row.verified = True
+                            sk_row.verified_at = now
+                            ev = list(sk_row.evidence_task_ids or [])
+                            if task.task_id not in ev:
+                                ev.append(task.task_id)
+                            sk_row.evidence_task_ids = ev
+                        else:
+                            sk_row = EmployeeSkill(
+                                id=str(uuid.uuid4()),
+                                employee_id=employee.id,
+                                skill_name=sk_clean,
+                                level=SkillLevel.INTERMEDIATE,
+                                verified=True,
+                                verified_at=now,
+                                evidence_task_ids=[task.task_id],
+                            )
+                            self.session.add(sk_row)
+                    summary["verified_skills"] = v_skills
                 employee.performance_summary = summary
             if passed:
                 task.status = TaskStatus.COMPLETED
@@ -1207,6 +1301,7 @@ class TaskRepository:
                 selectinload(Task.results),
                 selectinload(Task.subtasks)
             )
+            .execution_options(populate_existing=True)
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -1443,20 +1538,181 @@ class TaskRepository:
             await self.session.execute(stmt)
             await self.session.commit()
 
+    async def cancel_task(
+        self,
+        task_id: str,
+        reason: str,
+        requeue: bool = False,
+        standby_employee_id: Optional[str] = None,
+        actor: str = "BossAI",
+    ) -> dict[str, Any]:
+        """
+        NEURO-3: Task Cancellation and Failure Recovery Engine.
+        1. Clean attempt invalidation (leased, running, submitted attempts -> cancelled).
+        2. Lease expiry/quarantine (lease_expires_at = now).
+        3. Monotonic task fencing token increment (task.fencing_token += 1).
+        4. Requeue / standby reassignment.
+        5. Immutable audit log chain entry.
+        """
+        now = utc_now()
+        async with get_session_lock(self.session):
+            task = await self.session.scalar(
+                select(Task)
+                .where((Task.task_id == task_id) | (Task.id == task_id))
+                .with_for_update()
+            )
+            if not task:
+                raise ValueError(f"Task '{task_id}' not found.")
+            if task.status == TaskStatus.COMPLETED:
+                raise ValueError(f"Cannot cancel task '{task_id}': task is already completed.")
+
+            old_fencing_token = task.fencing_token
+            new_fencing_token = old_fencing_token + 1
+            previous_assignee_id = task.assigned_to
+
+            # 1. Clean attempt invalidation & lease quarantine
+            attempts_updated = await self.session.execute(
+                update(TaskAttempt)
+                .where(
+                    TaskAttempt.task_id == task.id,
+                    TaskAttempt.status.in_(["leased", "running", "submitted"]),
+                )
+                .values(
+                    status="cancelled",
+                    finished_at=now,
+                    lease_expires_at=now,
+                    error_message=reason[:4000],
+                )
+            )
+
+            # 2. Determine target assignment and status
+            new_assignee_id = None
+            if requeue:
+                if standby_employee_id:
+                    standby_emp = await self.session.scalar(
+                        select(Employee)
+                        .where(
+                            (Employee.id == standby_employee_id)
+                            | (Employee.employee_id == standby_employee_id)
+                        )
+                        .with_for_update()
+                    )
+                    if standby_emp and standby_emp.status not in (
+                        EmployeeStatus.SUSPENDED,
+                        EmployeeStatus.TERMINATED,
+                        "suspended",
+                        "terminated",
+                    ):
+                        new_assignee_id = standby_emp.id
+                        standby_emp.status = EmployeeStatus.WORKING
+                        task_status = TaskStatus.ASSIGNED
+                    else:
+                        task_status = TaskStatus.PENDING
+                else:
+                    task_status = TaskStatus.PENDING
+            else:
+                task_status = TaskStatus.CANCELLED
+
+            # 3. Update task with monotonic fencing token increment
+            task.status = task_status
+            task.assigned_to = new_assignee_id
+            task.fencing_token = new_fencing_token
+            if requeue:
+                task.started_at = None
+                task.completed_at = None
+            else:
+                task.completed_at = now
+
+            # 4. Release previous employee if not retained and no other active attempts
+            if previous_assignee_id and previous_assignee_id != new_assignee_id:
+                other_active = await self.session.scalar(
+                    select(TaskAttempt.id)
+                    .join(Task, Task.id == TaskAttempt.task_id)
+                    .where(
+                        Task.assigned_to == previous_assignee_id,
+                        Task.id != task.id,
+                        TaskAttempt.status.in_(["leased", "running"]),
+                        TaskAttempt.lease_expires_at > now,
+                    )
+                    .limit(1)
+                )
+                if not other_active:
+                    prev_emp = await self.session.scalar(
+                        select(Employee).where(
+                            (Employee.id == previous_assignee_id)
+                            | (Employee.employee_id == previous_assignee_id)
+                        )
+                    )
+                    if prev_emp and prev_emp.status == EmployeeStatus.WORKING:
+                        prev_emp.status = EmployeeStatus.IDLE
+
+            # 5. Immutable audit log chain entry
+            audit_repo = AuditRepository(self.session)
+            await audit_repo.create_entry(
+                actor=actor,
+                action="TASK_CANCELLED_AND_REQUEUED" if requeue else "TASK_CANCELLED",
+                resource_type="Task",
+                resource_id=task.task_id,
+                details={
+                    "task_id": task.task_id,
+                    "previous_status": task.status.value,
+                    "new_status": task_status.value,
+                    "reason": reason,
+                    "old_fencing_token": old_fencing_token,
+                    "new_fencing_token": new_fencing_token,
+                    "requeued": requeue,
+                    "previous_assignee": previous_assignee_id,
+                    "new_assignee": new_assignee_id,
+                    "attempts_invalidated": attempts_updated.rowcount,
+                },
+            )
+
+            await self.session.commit()
+
+            return {
+                "task_id": task.task_id,
+                "status": task_status.value,
+                "fencing_token": new_fencing_token,
+                "old_fencing_token": old_fencing_token,
+                "requeued": requeue,
+                "assigned_to": new_assignee_id,
+                "attempts_invalidated": attempts_updated.rowcount,
+                "reason": reason,
+            }
+
+    async def halt_running_attempts(self, reason: str = "Emergency stop triggered") -> int:
+        """Halt and cancel active task attempts on emergency stop."""
+        now = utc_now()
+        async with get_session_lock(self.session):
+            attempts_updated = await self.session.execute(
+                update(TaskAttempt)
+                .where(
+                    TaskAttempt.status.in_(["leased", "running"]),
+                )
+                .values(
+                    status="cancelled",
+                    finished_at=now,
+                    lease_expires_at=now,
+                    error_message=reason[:4000],
+                )
+            )
+            await self.session.commit()
+            return attempts_updated.rowcount or 0
+
     async def recover_running_after_emergency_stop(self) -> int:
         """Requeue running tasks and invalidate their active worker attempts atomically."""
         now = utc_now()
         async with get_session_lock(self.session):
             running = (
                 await self.session.execute(
-                    select(Task.id, Task.fencing_token)
-                    .where(Task.status == TaskStatus.RUNNING)
+                    select(Task.id, Task.fencing_token, Task.assigned_to)
+                    .where(Task.status.in_([TaskStatus.RUNNING, TaskStatus.ASSIGNED]))
                     .with_for_update()
                 )
             ).all()
 
             recovered = 0
-            for task_id, fencing_token in running:
+            for task_id, fencing_token, assigned_to in running:
                 await self.session.execute(
                     update(TaskAttempt)
                     .where(
@@ -1477,7 +1733,7 @@ class TaskRepository:
                     update(Task)
                     .where(
                         Task.id == task_id,
-                        Task.status == TaskStatus.RUNNING,
+                        Task.status.in_([TaskStatus.RUNNING, TaskStatus.ASSIGNED]),
                         Task.fencing_token == fencing_token,
                     )
                     .values(
@@ -1487,6 +1743,14 @@ class TaskRepository:
                     )
                 )
                 recovered += result.rowcount or 0
+                if assigned_to:
+                    emp = await self.session.scalar(
+                        select(Employee).where(
+                            (Employee.id == assigned_to) | (Employee.employee_id == assigned_to)
+                        )
+                    )
+                    if emp and emp.status == EmployeeStatus.WORKING:
+                        emp.status = EmployeeStatus.IDLE
 
             await self.session.commit()
             return recovered
@@ -1500,10 +1764,35 @@ class TaskRepository:
         Completes a task with an independent passing verification receipt.
         Enforces strict gate: raises VerificationFailedError if receipt failed or missing.
         """
-        if not verification_receipt or not verification_receipt.get("passed"):
+        target_receipt = (
+            verification_receipt.get("receipt")
+            if isinstance(verification_receipt, dict)
+            and isinstance(verification_receipt.get("receipt"), dict)
+            and "signature" in verification_receipt["receipt"]
+            else verification_receipt
+        )
+        if not target_receipt or not target_receipt.get("passed"):
             raise VerificationFailedError(
                 f"Task {task_id} cannot be marked completed: verification receipt is invalid or failed."
             )
+        receipt_task_id = target_receipt.get("task_id")
+        if receipt_task_id and receipt_task_id != task_id:
+            raise VerificationFailedError(
+                f"Task {task_id} cannot be completed: verification receipt is linked to task {receipt_task_id}, not {task_id}."
+            )
+        sig = target_receipt.get("signature")
+        if sig:
+            if not isinstance(sig, str) or not sig.strip():
+                raise VerificationFailedError(
+                    f"Task {task_id} cannot be completed: invalid empty signature in verification receipt."
+                )
+            raw = {k: v for k, v in target_receipt.items() if k != "signature"}
+            canonical = json.dumps(raw, sort_keys=True, default=str)
+            expected_sig = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            if sig != expected_sig:
+                raise VerificationFailedError(
+                    f"Task {task_id} cannot be completed: cryptographic signature mismatch (tampering detected)."
+                )
         lock = get_session_lock(self.session)
         async with lock:
             stmt = (
@@ -1512,7 +1801,7 @@ class TaskRepository:
                 .values(
                     status=TaskStatus.COMPLETED,
                     completed_at=utc_now(),
-                    verification_result=verification_receipt,
+                    verification_result=target_receipt,
                     fencing_token=Task.fencing_token + 1,
                 )
             )
@@ -1534,6 +1823,168 @@ class TaskRepository:
                 submitted_at=utc_now()
             )
             self.session.add(task_result)
+            await self.session.execute(
+                update(TaskAttempt)
+                .where(
+                    TaskAttempt.task_id == task.id,
+                    TaskAttempt.status.in_(["running", "submitted", "leased"]),
+                )
+                .values(
+                    status="verified",
+                    finished_at=utc_now(),
+                    verification_receipt=verification_receipt,
+                )
+            )
+            if task.assigned_to:
+                stmt_emp = select(Employee).where(
+                    (Employee.id == task.assigned_to) | (Employee.employee_id == task.assigned_to)
+                )
+                res_emp = await self.session.execute(stmt_emp)
+                emp = res_emp.scalar_one_or_none()
+                if emp:
+                    emp.status = EmployeeStatus.IDLE
+                    summary = dict(emp.performance_summary or {})
+                    summary["verification_attempts"] = int(summary.get("verification_attempts", 0)) + 1
+                    summary["verified_tasks"] = int(summary.get("verified_tasks", 0)) + 1
+                    summary["completed_tasks"] = int(summary.get("completed_tasks", 0)) + 1
+                    summary["last_verified_task_id"] = task.task_id
+                    summary["last_verification_passed"] = True
+
+                    verified_skills = list(summary.get("verified_skills", []))
+                    skills_to_verify = list(verification_receipt.get("verified_skills") or task.required_capabilities or [])
+                    now_ts = utc_now()
+                    for sk in skills_to_verify:
+                        if sk not in verified_skills:
+                            verified_skills.append(sk)
+                        stmt_sk = select(EmployeeSkill).where(
+                            EmployeeSkill.employee_id == emp.id,
+                            EmployeeSkill.skill_name == sk,
+                        )
+                        sk_row = (await self.session.execute(stmt_sk)).scalar_one_or_none()
+                        if sk_row:
+                            sk_row.verified = True
+                            sk_row.verified_at = now_ts
+                            ev = list(sk_row.evidence_task_ids or [])
+                            if task.task_id not in ev:
+                                ev.append(task.task_id)
+                            sk_row.evidence_task_ids = ev
+                        else:
+                            sk_row = EmployeeSkill(
+                                id=str(uuid.uuid4()),
+                                employee_id=emp.id,
+                                skill_name=sk,
+                                level=SkillLevel.INTERMEDIATE,
+                                verified=True,
+                                verified_at=now_ts,
+                                evidence_task_ids=[task.task_id],
+                            )
+                            self.session.add(sk_row)
+                    summary["verified_skills"] = verified_skills
+                    emp.performance_summary = summary
+
+                    # Atomically persist verified episodic memory entry if not present
+                    record_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ancos:verified-task:{task.id}:{task.task_id}"))
+                    existing_mem = await self.session.get(MemoryEntry, record_id)
+                    if not existing_mem:
+                        v_id = str(verification_receipt.get("verifier_id") or "IndependentDeliverableVerifier")
+                        att_id = str(verification_receipt.get("attempt_id") or verification_receipt.get("receipt_id") or task.task_id)
+                        ev_refs = verification_receipt.get("evidence_refs") or list(verification_receipt.get("artifacts") or []) or [f"receipt:{task.task_id}:evidence"]
+                        norm_receipt = {
+                            **verification_receipt,
+                            "verifier_id": v_id,
+                            "attempt_id": att_id,
+                            "evidence_refs": ev_refs,
+                            "task_id": task.task_id,
+                            "passed": True,
+                        }
+                        record_provenance = {
+                            "employee_id": emp.employee_id,
+                            "outcome": "success",
+                            "verified_by": v_id,
+                            "independent_verification_receipt": norm_receipt,
+                        }
+                        self.session.add(
+                            MemoryEntry(
+                                id=record_id,
+                                category=MemoryCategory.EPISODE,
+                                source=f"task:{task.task_id}",
+                                content=str(verification_receipt.get("notes", "Task completed with passing receipt.")),
+                                confidence=1.0,
+                                metadata_json={
+                                    "record_schema_version": 1,
+                                    "record_id": record_id,
+                                    "layer": "episodic",
+                                    "category": "task_receipt",
+                                    "access_level": "internal",
+                                    "verification_status": "verified",
+                                    "owner_employee_id": emp.employee_id,
+                                    "allowed_departments": [],
+                                    "allowed_projects": [],
+                                    "version": 1,
+                                    "provenance": record_provenance,
+                                    "record_metadata": {
+                                        "task_id": task.task_id,
+                                        "outcome": "success",
+                                        "test_summary": verification_receipt.get("test_summary", {}),
+                                    },
+                                    "created_at": now_ts.isoformat(),
+                                    "verified_at": now_ts.isoformat(),
+                                    "related_record_ids": [],
+                                    "embedding": None,
+                                    "task_id": task.task_id,
+                                },
+                            )
+                        )
+                        procedure = verification_receipt.get("reusable_procedure")
+                        if isinstance(procedure, dict):
+                            p_name = procedure.get("name", f"Procedure-{task.task_id}")
+                            p_steps = procedure.get("steps", [])
+                            p_code = procedure.get("code")
+                            proc_rec_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"ancos:verified-proc:{task.id}:{p_name}"))
+                            existing_proc = await self.session.get(MemoryEntry, proc_rec_id)
+                            if not existing_proc:
+                                content_lines = [f"Standard Operating Procedure for {p_name}", f"Steps: {len(p_steps)}"]
+                                if p_code:
+                                    content_lines.append(f"Recipe code:\n{p_code}")
+                                self.session.add(
+                                    MemoryEntry(
+                                        id=proc_rec_id,
+                                        category=MemoryCategory.PROCEDURE,
+                                        source=f"procedure:{p_name}",
+                                        content="\n".join(content_lines),
+                                        confidence=1.0,
+                                        metadata_json={
+                                            "record_schema_version": 1,
+                                            "record_id": proc_rec_id,
+                                            "layer": "procedural",
+                                            "category": "reusable_procedure",
+                                            "access_level": "internal",
+                                            "verification_status": "verified",
+                                            "owner_employee_id": emp.employee_id,
+                                            "allowed_departments": [],
+                                            "allowed_projects": [],
+                                            "version": 1,
+                                            "provenance": record_provenance,
+                                            "record_metadata": {
+                                                "task_id": task.task_id,
+                                                "procedure_name": p_name,
+                                                "steps": p_steps,
+                                                "code_recipe": p_code,
+                                            },
+                                            "created_at": now_ts.isoformat(),
+                                            "verified_at": now_ts.isoformat(),
+                                            "related_record_ids": [record_id],
+                                            "embedding": None,
+                                            "task_id": task.task_id,
+                                        },
+                                    )
+                                )
+                else:
+                    await self.session.execute(
+                        update(Employee)
+                        .where(Employee.id == task.assigned_to)
+                        .values(status=EmployeeStatus.IDLE)
+                    )
             await self.session.commit()
             await self.session.refresh(task)
             return task
@@ -1876,6 +2327,23 @@ class ResourceLeaseRepository:
         )
         return [self._as_dict(lease) for lease in result.scalars().all()]
 
+    async def release_expired_leases(self) -> int:
+        """Release expired or quarantined leases during recovery."""
+        now = utc_now()
+        async with get_session_lock(self.session):
+            result = await self.session.execute(
+                update(ResourceLease)
+                .where(
+                    or_(
+                        ResourceLease.status == "expired",
+                        and_(ResourceLease.status == "active", ResourceLease.lease_expires_at <= now),
+                    )
+                )
+                .values(status="released", released_at=now)
+            )
+            await self.session.commit()
+            return result.rowcount or 0
+
 
 class EmergencyStopRepository:
     """Read/write the single durable ANCOS emergency-stop state."""
@@ -2053,11 +2521,12 @@ class EmployeeRepository:
         emp = await self.get_by_employee_id(employee_id)
         if not emp:
             return
+        clean_name = skill_name.strip()
         stmt = (
             select(EmployeeSkill)
             .where(
                 EmployeeSkill.employee_id == emp.id,
-                EmployeeSkill.skill_name == skill_name
+                func.lower(EmployeeSkill.skill_name) == clean_name.lower(),
             )
         )
         result = await self.session.execute(stmt)
@@ -2074,21 +2543,21 @@ class EmployeeRepository:
             skill = EmployeeSkill(
                 id=str(uuid.uuid4()),
                 employee_id=emp.id,
-                skill_name=skill_name,
+                skill_name=clean_name,
                 level=SkillLevel.INTERMEDIATE,
                 verified=True,
                 verified_at=utc_now(),
                 evidence_task_ids=[task_evidence_id]
             )
             self.session.add(skill)
-            if skill not in emp.skills:
+            if skill not in (emp.skills or []):
                 emp.skills.append(skill)
 
         # Update performance summary verified_skills
         perf = dict(emp.performance_summary or {})
         v_skills = list(perf.get("verified_skills", []))
-        if skill_name not in v_skills:
-            v_skills.append(skill_name)
+        if clean_name not in v_skills:
+            v_skills.append(clean_name)
         perf["verified_skills"] = v_skills
         emp.performance_summary = perf
 
@@ -2268,6 +2737,142 @@ class EmployeeRepository:
         )
         result = await self.session.execute(stmt)
         return {r[0] for r in result.all() if r[0]}
+
+    async def promote_employee(
+        self,
+        employee_id: str,
+        new_title: str,
+        new_model_tier: Optional[str] = None,
+        additional_tools: Optional[list[str]] = None,
+        reason: Optional[str] = None,
+    ) -> Employee:
+        async with get_session_lock(self.session):
+            emp = await self.get_by_employee_id(employee_id)
+            if not emp:
+                raise ValueError(f"Employee '{employee_id}' not found")
+
+            old_title = emp.title
+            if old_title.strip().lower() == new_title.strip().lower():
+                raise ValueError(f"Employee '{employee_id}' already has the title '{new_title}'")
+
+            emp.title = new_title
+
+            if new_model_tier:
+                cfg = dict(emp.model_config_data or {})
+                cfg["preferred_model_tier"] = new_model_tier
+                emp.model_config_data = cfg
+
+            if additional_tools:
+                current_tools = list(emp.approved_tools or [])
+                for tool in additional_tools:
+                    if tool not in current_tools:
+                        current_tools.append(tool)
+                emp.approved_tools = current_tools
+
+            perf = dict(emp.performance_summary or {})
+            promotions = list(perf.get("promotions", []))
+            verified_tasks = int(perf.get("verified_tasks", 0)) or int(perf.get("completed_tasks", 0))
+            promotions.append({
+                "promoted_at": utc_now().isoformat(),
+                "previous_title": old_title,
+                "new_title": new_title,
+                "new_model_tier": new_model_tier,
+                "additional_tools": additional_tools or [],
+                "reason": reason or "Empirical merit and verified task performance",
+                "tasks_at_promotion": verified_tasks,
+            })
+            perf["promotions"] = promotions
+            perf["title"] = new_title
+            emp.performance_summary = perf
+
+            if old_title in emp.system_prompt:
+                emp.system_prompt = emp.system_prompt.replace(old_title, new_title)
+
+            await self.session.commit()
+            refreshed = await self.get_by_employee_id(emp.employee_id)
+            return refreshed or emp
+
+    async def evaluate_promotion_eligibility(
+        self,
+        employee_id: str,
+        min_verified_tasks: int = 1,
+        min_verified_skills: int = 1,
+        min_pass_rate: float = 0.5,
+    ) -> dict[str, Any]:
+        emp = await self.get_by_employee_id(employee_id)
+        if not emp:
+            raise ValueError(f"Employee '{employee_id}' not found")
+
+        perf = emp.performance_summary or {}
+        attempts = int(perf.get("verification_attempts", 0))
+        verified_tasks = int(perf.get("verified_tasks", 0)) or int(perf.get("completed_tasks", 0))
+        verified_skills = [s.skill_name for s in (emp.skills or []) if getattr(s, "verified", False)]
+
+        promotions = perf.get("promotions", [])
+        last_promo_tasks = promotions[-1].get("tasks_at_promotion", 0) if promotions else 0
+        tasks_since_promotion = max(0, verified_tasks - last_promo_tasks)
+
+        pass_rate = (verified_tasks / attempts) if attempts > 0 else (1.0 if verified_tasks > 0 else 0.0)
+
+        eligible = (
+            verified_tasks >= min_verified_tasks
+            and tasks_since_promotion >= min_verified_tasks
+            and len(verified_skills) >= min_verified_skills
+            and pass_rate >= min_pass_rate
+        )
+
+        current_title = emp.title
+        suggested_tier = None
+        suggested_tools = []
+
+        if "Junior" in current_title:
+            next_title = current_title.replace("Junior ", "")
+            suggested_tier = "coding"
+            suggested_tools = ["git_merge"]
+        elif (
+            "Senior" not in current_title
+            and "Lead" not in current_title
+            and "Principal" not in current_title
+            and "Distinguished" not in current_title
+        ):
+            next_title = f"Senior {current_title}"
+            suggested_tier = "reasoning"
+            suggested_tools = ["architecture_reviewer", "code_review"]
+        elif "Senior" in current_title:
+            next_title = current_title.replace("Senior ", "Lead ")
+            suggested_tier = "reasoning"
+            suggested_tools = ["system_architect", "deployment_gate"]
+        elif "Lead" in current_title:
+            next_title = current_title.replace("Lead ", "Principal ")
+            suggested_tier = "reasoning"
+            suggested_tools = ["executive_governance", "architecture_reviewer"]
+        elif "Principal" in current_title:
+            next_title = current_title.replace("Principal ", "Distinguished ")
+            suggested_tier = "reasoning"
+            suggested_tools = ["executive_governance", "strategic_planner"]
+        else:
+            next_title = f"Distinguished {current_title}"
+            suggested_tier = "reasoning"
+            suggested_tools = ["executive_governance"]
+
+        return {
+            "employee_id": emp.employee_id,
+            "current_title": current_title,
+            "eligible": eligible,
+            "verified_tasks_count": verified_tasks,
+            "tasks_since_last_promotion": tasks_since_promotion,
+            "verified_skills_count": len(verified_skills),
+            "verified_skills": verified_skills,
+            "pass_rate": round(pass_rate, 2),
+            "suggested_title": next_title,
+            "suggested_model_tier": suggested_tier,
+            "suggested_tools": suggested_tools,
+            "criteria": {
+                "min_verified_tasks": min_verified_tasks,
+                "min_verified_skills": min_verified_skills,
+                "min_pass_rate": min_pass_rate,
+            },
+        }
 
 
 
@@ -2455,13 +3060,27 @@ class ActionItemRepository:
         description: str,
         assigned_to: str,
         deadline: Optional[datetime | str] = None,
-        status: ActionItemStatus = ActionItemStatus.OPEN
+        status: ActionItemStatus = ActionItemStatus.OPEN,
+        linked_task_id: Optional[str] = None,
+        acceptance_criteria: Optional[str] = None,
     ) -> ActionItem:
         # Resolve meeting_id to primary key UUID if meeting_id string like ANC-MTG-XXXX was passed
         stmt_m = select(Meeting).where((Meeting.meeting_id == meeting_id) | (Meeting.id == meeting_id))
         res_m = await self.session.execute(stmt_m)
         meeting = res_m.scalar_one_or_none()
         m_uuid = meeting.id if meeting else meeting_id
+
+        # Idempotency check: if an item in this meeting already exists with same normalized description and assigned_to, or matching linked_task_id
+        stmt_existing = select(ActionItem).where(ActionItem.meeting_id == m_uuid)
+        res_existing = await self.session.execute(stmt_existing)
+        existing_items = res_existing.scalars().all()
+        norm_desc = normalize_action_item_desc(description)
+        for existing in existing_items:
+            if (
+                (linked_task_id and existing.linked_task_id == linked_task_id)
+                or (existing.assigned_to == assigned_to and normalize_action_item_desc(existing.description) == norm_desc)
+            ):
+                return existing
 
         parsed_deadline = parse_deadline_datetime(deadline)
 
@@ -2472,7 +3091,9 @@ class ActionItemRepository:
             assigned_to=assigned_to,
             deadline=parsed_deadline,
             status=status,
-            created_at=utc_now()
+            created_at=utc_now(),
+            linked_task_id=linked_task_id,
+            acceptance_criteria=acceptance_criteria,
         )
         self.session.add(item)
         await self.session.commit()
@@ -2541,9 +3162,33 @@ class ActionItemRepository:
         if not item:
             return None
         if not action_item_transition_allowed(item.status, status):
-            raise ValueError(
-                f"Action item cannot transition from '{item.status.value}' to '{status.value}'."
+            raise ActionItemConflictError(
+                f"Action item cannot transition from '{item.status.value}' to '{status.value}'. "
+                "Resolved action items cannot be modified without formal reopening."
             )
+        if item.status == ActionItemStatus.RESOLVED:
+            if status == ActionItemStatus.RESOLVED:
+                return item
+            raise ActionItemConflictError("Resolved action items cannot be modified without formal reopening.")
+        if status == ActionItemStatus.RESOLVED and item.linked_task_id:
+            stmt_t = select(Task).where((Task.task_id == item.linked_task_id) | (Task.id == item.linked_task_id))
+            res_t = await self.session.execute(stmt_t)
+            task = res_t.scalar_one_or_none()
+            if not task:
+                raise ActionItemConflictError(
+                    f"Cannot resolve action item: linked task '{item.linked_task_id}' not found."
+                )
+            if task.status != TaskStatus.COMPLETED:
+                raise ActionItemConflictError(
+                    f"Cannot resolve action item: linked task '{item.linked_task_id}' is not completed (current status: {task.status.value}) and has not been independently verified with a passing receipt."
+                )
+            vr = task.verification_result or {}
+            receipt = vr.get("receipt", vr) if isinstance(vr, dict) else {}
+            if not receipt.get("passed") and str(receipt.get("verification_status")).upper() != "PASSED":
+                raise ActionItemConflictError(
+                    f"Cannot resolve action item: linked task '{item.linked_task_id}' has not been independently verified with a passing receipt."
+                )
+
         result = await self.session.execute(
             update(ActionItem)
             .where(ActionItem.id == item.id, ActionItem.status == item.status)
@@ -2552,7 +3197,7 @@ class ActionItemRepository:
         )
         if result.rowcount != 1:
             await self.session.rollback()
-            raise ValueError("Action item status changed concurrently; reload it and retry.")
+            raise ActionItemConflictError("Action item status changed concurrently; reload it and retry.")
         await self.session.commit()
         await self.session.refresh(item)
         return item
@@ -2561,13 +3206,37 @@ class ActionItemRepository:
         item = await self.get_by_id(action_item_id)
         if not item:
             return None
-        if "status" in kwargs and not action_item_transition_allowed(item.status, kwargs["status"]):
+        if "status" in kwargs:
             target = kwargs["status"]
-            raise ValueError(
-                f"Action item cannot transition from '{item.status.value}' to '{target.value}'."
-            )
+            if not action_item_transition_allowed(item.status, target):
+                raise ActionItemConflictError(
+                    f"Action item cannot transition from '{item.status.value}' to '{target.value}'. "
+                    "Resolved action items cannot be modified without formal reopening."
+                )
+            if target == ActionItemStatus.RESOLVED and item.linked_task_id:
+                stmt_t = select(Task).where((Task.task_id == item.linked_task_id) | (Task.id == item.linked_task_id))
+                res_t = await self.session.execute(stmt_t)
+                task = res_t.scalar_one_or_none()
+                if not task:
+                    raise ActionItemConflictError(
+                        f"Cannot resolve action item: linked task '{item.linked_task_id}' not found."
+                    )
+                if task.status != TaskStatus.COMPLETED:
+                    raise ActionItemConflictError(
+                        f"Cannot resolve action item: linked task '{item.linked_task_id}' is not completed (current status: {task.status.value}) and has not been independently verified with a passing receipt."
+                    )
+                vr = task.verification_result or {}
+                receipt = vr.get("receipt", vr) if isinstance(vr, dict) else {}
+                if not receipt.get("passed") and str(receipt.get("verification_status")).upper() != "PASSED":
+                    raise ActionItemConflictError(
+                        f"Cannot resolve action item: linked task '{item.linked_task_id}' has not been independently verified with a passing receipt."
+                    )
         if "deadline" in kwargs:
             kwargs["deadline"] = parse_deadline_datetime(kwargs["deadline"])
+        if item.status == ActionItemStatus.RESOLVED:
+            is_noop_status = kwargs.get("status") == ActionItemStatus.RESOLVED and all(k == "status" for k in kwargs)
+            if not is_noop_status:
+                raise ActionItemConflictError("Resolved action items cannot be modified without formal reopening.")
         values = {key: value for key, value in kwargs.items() if hasattr(item, key)}
         if "status" in values:
             result = await self.session.execute(
@@ -2578,10 +3247,35 @@ class ActionItemRepository:
             )
             if result.rowcount != 1:
                 await self.session.rollback()
-                raise ValueError("Action item status changed concurrently; reload it and retry.")
+                raise ActionItemConflictError("Action item status changed concurrently; reload it and retry.")
         else:
             for key, value in values.items():
                 setattr(item, key, value)
+        await self.session.commit()
+        await self.session.refresh(item)
+        return item
+
+    async def reopen_item(
+        self,
+        action_item_id: str,
+        reason: str,
+        reopened_by: str = "BossAI"
+    ) -> ActionItem:
+        item = await self.get_by_id(action_item_id)
+        if not item:
+            raise ValueError(f"Action item '{action_item_id}' not found")
+        if item.status not in (ActionItemStatus.RESOLVED, ActionItemStatus.CANCELLED):
+            raise ActionItemConflictError(f"Action item '{action_item_id}' is already active (status: {item.status.value}).")
+
+        result = await self.session.execute(
+            update(ActionItem)
+            .where(ActionItem.id == item.id, ActionItem.status == item.status)
+            .values(status=ActionItemStatus.OPEN)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            await self.session.rollback()
+            raise ActionItemConflictError("Action item status changed concurrently; reload it and retry.")
         await self.session.commit()
         await self.session.refresh(item)
         return item
@@ -2679,6 +3373,9 @@ class ApprovalRepository:
 
 
 
+_audit_chain_lock = asyncio.Lock()
+
+
 class AuditRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -2695,47 +3392,48 @@ class AuditRepository:
         request_hash: Optional[str] = None,
     ) -> AuditLog:
         """Stage a hash-chained record in the current transaction without committing."""
-        actual_payload = payload if payload is not None else {}
-        actual_details = details if details is not None else {}
-        actual_request_hash = request_hash
-        if not actual_request_hash:
-            if actual_payload and actual_details:
-                target = {"details": actual_details, "payload": actual_payload}
-            else:
-                target = actual_payload or actual_details
-            payload_str = json.dumps(target, sort_keys=True, default=str)
-            actual_request_hash = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
+        async with _audit_chain_lock:
+            actual_payload = payload if payload is not None else {}
+            actual_details = details if details is not None else {}
+            actual_request_hash = request_hash
+            if not actual_request_hash:
+                if actual_payload and actual_details:
+                    target = {"details": actual_details, "payload": actual_payload}
+                else:
+                    target = actual_payload or actual_details
+                payload_str = json.dumps(target, sort_keys=True, default=str)
+                actual_request_hash = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
 
-        # Fetch last entry for cryptographic chain link
-        last_stmt = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(1)
-        last_res = await self.session.execute(last_stmt)
-        last_entry = last_res.scalars().first()
-        prev_hash = last_entry.signature if (last_entry and last_entry.signature) else "GENESIS_AUDIT_BLOCK"
-        timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
-        if last_entry and last_entry.timestamp and timestamp <= last_entry.timestamp:
-            # Keep append order deterministic when the database clock has
-            # equal or lower precision than rapid consecutive audit writes.
-            timestamp = last_entry.timestamp + timedelta(microseconds=1)
+            # Fetch last entry for cryptographic chain link
+            last_stmt = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(1)
+            last_res = await self.session.execute(last_stmt)
+            last_entry = last_res.scalars().first()
+            prev_hash = last_entry.signature if (last_entry and last_entry.signature) else "GENESIS_AUDIT_BLOCK"
+            timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
+            if last_entry and last_entry.timestamp and timestamp <= last_entry.timestamp:
+                # Keep append order deterministic when the database clock has
+                # equal or lower precision than rapid consecutive audit writes.
+                timestamp = last_entry.timestamp + timedelta(microseconds=1)
 
-        # Compute cryptographic signature
-        sig_raw = f"{prev_hash}:{actor}:{action}:{resource_type}:{resource_id}:{actual_request_hash}"
-        signature = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
+            # Compute cryptographic signature
+            sig_raw = f"{prev_hash}:{actor}:{action}:{resource_type}:{resource_id}:{actual_request_hash}"
+            signature = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
 
-        entry = AuditLog(
-            actor=actor,
-            action=action,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            details=details,
-            ip_address=ip,
-            request_hash=actual_request_hash,
-            payload=actual_payload,
-            signature=signature,
-            previous_hash=prev_hash,
-            timestamp=timestamp,
-        )
-        self.session.add(entry)
-        return entry
+            entry = AuditLog(
+                actor=actor,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                details=details,
+                ip_address=ip,
+                request_hash=actual_request_hash,
+                payload=actual_payload,
+                signature=signature,
+                previous_hash=prev_hash,
+                timestamp=timestamp,
+            )
+            self.session.add(entry)
+            return entry
 
     async def log(
         self,
@@ -2774,6 +3472,16 @@ class AuditRepository:
 
     async def list_by_action(self, action: str, limit: int = 100) -> Sequence[AuditLog]:
         stmt = select(AuditLog).where(AuditLog.action == action).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(limit)
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def list_by_resource(self, resource_type: str, resource_id: str, limit: int = 100) -> Sequence[AuditLog]:
+        stmt = (
+            select(AuditLog)
+            .where(AuditLog.resource_type == resource_type, AuditLog.resource_id == resource_id)
+            .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+            .limit(limit)
+        )
         res = await self.session.execute(stmt)
         return res.scalars().all()
 
@@ -3860,17 +4568,21 @@ class EvolutionRepository:
         baseline_metrics: Optional[dict[str, Any]] = None,
         experiment_metrics: Optional[dict[str, Any]] = None,
         status: str = "in_review",
-        version: str = "1.0.0"
+        version: str = "1.0.0",
+        record_id: Optional[str] = None,
     ) -> EvolutionRecord:
-        record = EvolutionRecord(
-            record_type=record_type,
-            hypothesis=hypothesis,
-            experiment_details=experiment_details or {},
-            baseline_metrics=baseline_metrics or {},
-            experiment_metrics=experiment_metrics or {},
-            status=status,
-            version=version
-        )
+        kwargs: dict[str, Any] = {
+            "record_type": record_type,
+            "hypothesis": hypothesis,
+            "experiment_details": experiment_details or {},
+            "baseline_metrics": baseline_metrics or {},
+            "experiment_metrics": experiment_metrics or {},
+            "status": status,
+            "version": version,
+        }
+        if record_id:
+            kwargs["id"] = record_id
+        record = EvolutionRecord(**kwargs)
         self.session.add(record)
         await self.session.commit()
         await self.session.refresh(record)

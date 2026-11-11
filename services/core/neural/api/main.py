@@ -12,6 +12,7 @@ from neural.api.routes import (
     comms,
     decision_intelligence,
     employees,
+    events,
     evolution,
     governance,
     gui_intelligence,
@@ -44,9 +45,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     logger.info("Initializing ANCOS Core Operating System...")
     message_bus = None
+    outbox_worker = None
     resource_lease_reaper_task: asyncio.Task[None] | None = None
     try:
         await init_db()
+        from neural.db.engine import AsyncSessionLocal
+        from neural.events.outbox import get_outbox_worker
+
+        outbox_worker = get_outbox_worker(session_factory=AsyncSessionLocal)
+        outbox_worker.start()
         if settings.APP_ENV == "production":
             from neural.api.deps import get_message_bus
 
@@ -74,6 +81,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Database and workspace directories initialized successfully.")
         yield
     finally:
+        if outbox_worker is not None:
+            await outbox_worker.stop()
         if resource_lease_reaper_task is not None:
             resource_lease_reaper_task.cancel()
             try:
@@ -120,7 +129,7 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def require_owner_token(request, call_next):
         # Development remains convenient for the loopback-only local dashboard.
-        # Deployed production APIs require an independently provisioned owner token.
+        # Deployed production APIs require scoped bearer tokens per role.
         if (
             settings.APP_ENV == "production"
             and request.method != "OPTIONS"
@@ -128,23 +137,42 @@ def create_app() -> FastAPI:
             and not request.url.path.startswith(
                 ("/internal/worker/", "/internal/verifier/", "/internal/resources/leases/")
             )
-            and not (
-                request.method == "POST"
-                and request.url.path.startswith("/security/approvals/")
-                and request.url.path.endswith("/decide")
-            )
         ):
-            configured_token = settings.OWNER_API_TOKEN
-            if not configured_token or len(configured_token) < 32:
-                return JSONResponse(
-                    status_code=503,
-                    content={"detail": "Production owner API token must be configured with at least 32 characters."},
-                )
             authorization = request.headers.get("authorization", "")
             scheme, _, supplied_token = authorization.partition(" ")
-            if scheme.lower() != "bearer" or not supplied_token or not secrets.compare_digest(
-                supplied_token, configured_token
-            ):
+            if scheme.lower() != "bearer" or not supplied_token:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Valid bearer token required."},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
+            # Determine allowed tokens based on path scope
+            allowed_tokens: list[str] = []
+            if settings.OWNER_API_TOKEN and len(settings.OWNER_API_TOKEN) >= 32:
+                allowed_tokens.append(settings.OWNER_API_TOKEN)
+
+            if request.url.path.startswith("/boss/"):
+                if settings.BOSS_API_TOKEN and len(settings.BOSS_API_TOKEN) >= 32:
+                    allowed_tokens.append(settings.BOSS_API_TOKEN)
+            elif request.url.path.startswith("/security/"):
+                if settings.SECURITY_REVIEWER_API_TOKEN and len(settings.SECURITY_REVIEWER_API_TOKEN) >= 32:
+                    allowed_tokens.append(settings.SECURITY_REVIEWER_API_TOKEN)
+                if (
+                    request.method == "POST"
+                    and request.url.path.startswith("/security/approvals/")
+                    and request.url.path.endswith("/decide")
+                ):
+                    if settings.APPROVER_API_TOKEN and len(settings.APPROVER_API_TOKEN) >= 32:
+                        allowed_tokens.append(settings.APPROVER_API_TOKEN)
+
+            if not allowed_tokens:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Required API token for path is not configured with at least 32 characters."},
+                )
+
+            if not any(secrets.compare_digest(supplied_token, tok) for tok in allowed_tokens):
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Valid bearer token required."},
@@ -173,6 +201,7 @@ def create_app() -> FastAPI:
     app.include_router(meta_learning.router)
     app.include_router(gui_intelligence.router)
     app.include_router(decision_intelligence.router)
+    app.include_router(events.router)
 
     return app
 

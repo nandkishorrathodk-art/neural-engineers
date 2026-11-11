@@ -325,7 +325,6 @@ def test_safe_fallback_when_model_unavailable():
     assert res.confidence > 0.0
 
 
-@requires_laya_runtime
 def test_laya_cannot_approve_privileged_operations():
     """Requirement: The independent ANCOS policy engine must remain final authority."""
     from neural.security.approval_gates import HumanApprovalGate
@@ -338,3 +337,52 @@ def test_laya_cannot_approve_privileged_operations():
     # Check destructive database drop
     assert HumanApprovalGate.is_destructive("delete_database") is True
     assert HumanApprovalGate.is_destructive("rm -rf") is True
+
+
+def test_genuine_laya_onnx_inference():
+    """Verify genuine ONNX Runtime neural decision inference across Choice, Score, and Noul."""
+    reg = ModelRegistry()
+    ckpt = reg.get_checkpoint("Laya-Decision-ONNX")
+    assert ckpt is not None
+    assert ckpt.runtime == ModelRuntime.ONNX
+    assert os.path.exists(ckpt.onnx_path), f"Canonical ONNX model missing at {ckpt.onnx_path}"
+    assert reg.verify_checkpoint_file("Laya-Decision-ONNX", ckpt.onnx_path) is True
+
+    adapter = LayaAdapter(checkpoint_name="Laya-Decision-ONNX", registry=reg)
+    assert adapter.runtime == ModelRuntime.ONNX
+    assert adapter._onnx_session is not None
+
+    # 1. Choice
+    candidates = [
+        ChoiceCandidate(id="eng", label="Engineering Department"),
+        ChoiceCandidate(id="sec", label="Security Department"),
+        ChoiceCandidate(id="qa", label="QA Department"),
+    ]
+    choice_res = adapter.predict_choice(
+        ChoiceQuestion(context="Implement high-performance multi-tier LLM gateway with fallback", candidates=candidates)
+    )
+    assert isinstance(choice_res, ChoiceResult)
+    assert choice_res.selected_id in ["eng", "sec", "qa"]
+    assert 0.0 < choice_res.confidence <= 1.0
+    assert abs(sum(choice_res.probabilities.values()) - 1.0) < 0.05
+    assert choice_res.confidence == choice_res.probabilities[choice_res.selected_id]
+    assert choice_res.latency_ms > 0.0
+
+    # 2. Score
+    score_res = adapter.predict_score(
+        ScoreQuestion(proposition="Production database primary host crashed with deadlock error", scale_min=1, scale_max=5)
+    )
+    assert isinstance(score_res, ScoreResult)
+    assert 1 <= score_res.score <= 5
+    assert abs(sum(score_res.probabilities.values()) - 1.0) < 0.05
+    assert score_res.confidence == score_res.probabilities[score_res.score]
+
+    # 3. Noul
+    noul_res = adapter.predict_noul(
+        NoulQuestion(proposition="Disk space at 99% capacity with out-of-memory crash imminent", threshold=0.5)
+    )
+    assert isinstance(noul_res, NoulResult)
+    assert isinstance(noul_res.is_true, bool)
+    assert 0.0 <= noul_res.probability_true <= 1.0
+    assert 0.0 <= noul_res.confidence <= 1.0
+

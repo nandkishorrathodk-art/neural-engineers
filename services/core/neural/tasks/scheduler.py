@@ -195,6 +195,12 @@ class TaskScheduler:
             for task in ready_tasks[:available_slots]:
                 # Find best matching employee using TaskDelegator (strictly prioritizes verified skills)
                 assignee = self.delegator.select_best_assignee(task, available_employees)
+                if assignee and task.required_capabilities:
+                    req_skills = {c.strip().lower() for c in task.required_capabilities if c.strip()}
+                    if req_skills:
+                        emp_skills = {s.skill_name.strip().lower() for s in getattr(assignee, "skills", [])}
+                        if not req_skills.intersection(emp_skills):
+                            assignee = None
 
                 if assignee:
                     available_employees.remove(assignee)
@@ -289,6 +295,17 @@ class TaskScheduler:
         active_worker_func = worker_func
 
         async def _execute_worker_task(t: Task) -> Any:
+            from neural.boss.recovery import WorkerFaultInjector
+            fault = WorkerFaultInjector.check_and_trigger(t.task_id)
+            if fault:
+                logger.warning(
+                    "Fault injected into worker task execution",
+                    task_id=t.task_id,
+                    fault_type=fault.get("fault_type"),
+                    error=fault.get("error_message"),
+                )
+                raise RuntimeError(fault.get("error_message", "Simulated worker fault"))
+
             if inspect.iscoroutinefunction(active_worker_func):
                 return await active_worker_func(t)
             res = active_worker_func(t)

@@ -101,10 +101,32 @@ class GUIExecutionLoop:
             # 3. Dispatch action via motor controllers
             act_type = request.action_type
 
+            # Calibrated visual grounding confidence check
+            if request.confidence < 0.88 and act_type not in ("WAIT_SETTLE", "KEY_HOTKEY", "KEY_PRESS"):
+                raise VisualUncertaintyError(
+                    f"Action '{act_type}' confidence {request.confidence:.2f} is below calibrated threshold 0.88; "
+                    "uncertain visual grounding cannot be dispatched to screen."
+                )
+
+            if target_coords is not None:
+                frame_w, frame_h = frame_before.resolution
+                if not (0 <= target_coords[0] <= frame_w and 0 <= target_coords[1] <= frame_h):
+                    raise GUIActionBlockedError(
+                        f"Action '{act_type}' coordinates {target_coords} exceed screen resolution ({frame_w}, {frame_h})"
+                    )
+
             if act_type in ("MOUSE_MOVE", "MOUSE_CLICK", "MOUSE_DOUBLE_CLICK", "MOUSE_RIGHT_CLICK"):
                 if target_coords is None:
                     raise GUIActionBlockedError(
                         f"Action '{act_type}' requires explicit coordinates or valid target_element_id"
+                    )
+
+            if act_type == "MOUSE_DRAG" and request.drag_end_coordinates:
+                frame_w, frame_h = frame_before.resolution
+                end_c = request.drag_end_coordinates
+                if not (0 <= end_c[0] <= frame_w and 0 <= end_c[1] <= frame_h):
+                    raise GUIActionBlockedError(
+                        f"Action '{act_type}' drag end coordinates {end_c} exceed screen resolution ({frame_w}, {frame_h})"
                     )
 
             if act_type == "MOUSE_MOVE":

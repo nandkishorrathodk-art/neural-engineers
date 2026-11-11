@@ -11,11 +11,13 @@ from neural.api.deps import (
     get_task_repo,
     require_owner_identity,
 )
-from neural.api.schemas.requests import AssignDeskRequest
+from neural.api.schemas.requests import AssignDeskRequest, PromoteEmployeeRequest
 from neural.api.schemas.responses import (
+    EmployeePromotionEligibilityResponse,
     EmployeeResponse,
     TaskResponse,
     VncCredentialResponse,
+    VncTokenResponse,
     WorkstationAssignmentResponse,
     WorkstationResponse,
 )
@@ -28,6 +30,7 @@ from neural.db.repositories import (
     ResourceLeaseRepository,
     TaskRepository,
 )
+from neural.employees.promotion import EmployeePromotionManager
 from neural.resource_scheduler.workstation_lease import (
     claim_workstation_lease,
     release_workstation_lease,
@@ -56,6 +59,7 @@ def serialize_employee_model(emp, desktop_url: Optional[str] = None) -> Employee
         container_id=emp.container_id,
         desktop_url=desktop_url,
         desk_id=getattr(emp, "desk_id", None),
+        avatar_config=getattr(emp, "avatar_config", None),
     )
 
 
@@ -322,8 +326,9 @@ async def rotate_employee_vnc_password(
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
 
+    canonical_employee_id = employee.employee_id
     workstation = await container_mgr.get_desktop_by_employee_id(
-        employee.employee_id,
+        canonical_employee_id,
         container_repo=container_repo,
         employee_repo=employee_repo,
     )
@@ -333,7 +338,7 @@ async def rotate_employee_vnc_password(
         raise HTTPException(status_code=409, detail="Workstation must be running before rotating its VNC password")
     if await renew_workstation_lease(
         resource_lease_repo,
-        employee.employee_id,
+        canonical_employee_id,
         workstation["docker_id"],
     ) is None:
         raise HTTPException(status_code=409, detail="Workstation resource lease is expired or quarantined.")
@@ -341,7 +346,7 @@ async def rotate_employee_vnc_password(
     approval = await approval_repo.consume_once(
         approval_id,
         "ROTATE_VNC_PASSWORD",
-        {"employee_id": employee.employee_id, "docker_id": workstation["docker_id"]},
+        {"employee_id": canonical_employee_id, "docker_id": workstation["docker_id"]},
         actor,
     )
     if not approval:
@@ -353,12 +358,77 @@ async def rotate_employee_vnc_password(
         action="ROTATE_VNC_PASSWORD",
         resource_type="Container",
         resource_id=workstation["docker_id"],
-        details={"employee_id": employee.employee_id, "approval_id": approval.id},
+        details={"employee_id": canonical_employee_id, "approval_id": approval.id},
     )
     return VncCredentialResponse(
-        employee_id=employee.employee_id,
+        employee_id=canonical_employee_id,
         docker_id=workstation["docker_id"],
         vnc_password=password,
+    )
+
+
+@router.get("/{employee_id}/workstation/vnc-token", response_model=VncTokenResponse)
+@router.post("/{employee_id}/workstation/vnc-token", response_model=VncTokenResponse)
+async def get_or_issue_vnc_token(
+    employee_id: str,
+    interactive: bool = Query(default=False),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    audit_repo: AuditRepository = Depends(get_audit_repo),
+    container_mgr: ContainerManager = Depends(get_container_manager),
+    actor: str = Depends(require_owner_identity),
+):
+    from neural.containers.broker_api import read_vnc_token, write_vnc_token
+
+    employee = await employee_repo.get_by_employee_id(employee_id)
+    if not employee:
+        raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
+
+    canonical_employee_id = employee.employee_id
+    workstation = await container_mgr.get_desktop_by_employee_id(
+        canonical_employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    if not workstation:
+        raise HTTPException(status_code=404, detail=f"No workstation found for employee '{employee_id}'")
+    if workstation.get("status") != "running":
+        raise HTTPException(status_code=409, detail="Workstation container must be running to issue a VNC token")
+
+    token = read_vnc_token(workstation["docker_id"])
+    if not token or interactive:
+        token = write_vnc_token(workstation["docker_id"])
+
+    view_only = not interactive
+    novnc_port = workstation.get("novnc_port", 12003)
+    desktop_url = (
+        f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&path=websockify%3Ftoken%3D{token}"
+    )
+    read_only_desktop_url = (
+        f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&view_only=true&path=websockify%3Ftoken%3D{token}"
+    )
+
+    await audit_repo.log(
+        actor=actor,
+        action="VNC_TOKEN_ISSUED",
+        resource_type="Container",
+        resource_id=workstation["docker_id"],
+        details={
+            "employee_id": canonical_employee_id,
+            "view_only": view_only,
+            "interactive_allowed": interactive,
+        },
+    )
+
+    return VncTokenResponse(
+        employee_id=canonical_employee_id,
+        docker_id=workstation["docker_id"],
+        token=token,
+        ws_path=f"websockify?token={token}",
+        desktop_url=desktop_url,
+        read_only_desktop_url=read_only_desktop_url,
+        view_only=view_only,
+        interactive_allowed=interactive,
     )
 
 
@@ -378,8 +448,9 @@ async def terminate_employee_workstation(
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
 
+    canonical_employee_id = employee.employee_id
     desktop_spec = await container_mgr.get_desktop_by_employee_id(
-        employee.employee_id,
+        canonical_employee_id,
         container_repo=container_repo,
         employee_repo=employee_repo
     )
@@ -390,7 +461,7 @@ async def terminate_employee_workstation(
     approval = await approval_repo.consume_once(
         approval_id,
         "TERMINATE_WORKSTATION",
-        {"employee_id": employee.employee_id, "docker_id": docker_id},
+        {"employee_id": canonical_employee_id, "docker_id": docker_id},
         actor,
     )
     if not approval:
@@ -407,10 +478,10 @@ async def terminate_employee_workstation(
         action="TERMINATE_WORKSTATION",
         resource_type="Container",
         resource_id=docker_id,
-        details={"employee_id": employee.employee_id, "approval_id": approval.id}
+        details={"employee_id": canonical_employee_id, "approval_id": approval.id}
     )
 
-    return {"status": "terminated", "docker_id": docker_id, "employee_id": employee.employee_id}
+    return {"status": "terminated", "docker_id": docker_id, "employee_id": canonical_employee_id}
 
 
 @router.get("/{employee_id}/tasks", response_model=list[TaskResponse])
@@ -492,4 +563,59 @@ async def release_employee_desk(
     desktop_url = desktop_spec.get("desktop_url") if desktop_spec else None
     return serialize_employee_model(updated, desktop_url=desktop_url)
 
+
+@router.get("/{employee_id}/promotion-eligibility", response_model=EmployeePromotionEligibilityResponse)
+async def get_employee_promotion_eligibility(
+    employee_id: str,
+    min_verified_tasks: int = 1,
+    min_verified_skills: int = 1,
+    min_pass_rate: float = 0.5,
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+):
+    try:
+        data = await employee_repo.evaluate_promotion_eligibility(
+            employee_id=employee_id,
+            min_verified_tasks=min_verified_tasks,
+            min_verified_skills=min_verified_skills,
+            min_pass_rate=min_pass_rate,
+        )
+        return EmployeePromotionEligibilityResponse(**data)
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
+
+
+@router.post("/{employee_id}/promote", response_model=EmployeeResponse)
+async def promote_employee_endpoint(
+    employee_id: str,
+    payload: PromoteEmployeeRequest,
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    audit_repo: AuditRepository = Depends(get_audit_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_mgr: ContainerManager = Depends(get_container_manager),
+    actor: str = Depends(require_owner_identity),
+):
+    mgr = EmployeePromotionManager(employee_repo=employee_repo, audit_repo=audit_repo)
+    try:
+        promoted = await mgr.promote(
+            employee_id=employee_id,
+            new_title=payload.new_title,
+            new_model_tier=payload.new_model_tier,
+            additional_tools=payload.additional_tools,
+            reason=payload.reason,
+            actor=actor,
+            require_eligibility=True,
+        )
+    except ValueError as ve:
+        msg = str(ve)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=409, detail=msg)
+
+    desktop_spec = await container_mgr.get_desktop_by_employee_id(
+        promoted.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    desktop_url = desktop_spec.get("desktop_url") if desktop_spec else None
+    return serialize_employee_model(promoted, desktop_url=desktop_url)
 

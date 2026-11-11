@@ -272,7 +272,9 @@ class DesktopResourceScheduler:
         )
 
         # 2. Release slot and stop container
-        if not await self.slot_pool.release_slot(slot_id):
+        released = await self.slot_pool.release_slot(slot_id)
+        slot_obj = self.slot_pool._slots.get(slot_id)
+        if not released and (slot_obj is None or not slot_obj.is_free):
             raise RuntimeError(f"Desktop slot {slot_id} could not be safely released.")
         self._active_employees.pop(employee_id, None)
         self.lease_manager.revoke(slot_id)
@@ -293,6 +295,64 @@ class DesktopResourceScheduler:
             "released_slot_id": slot_id,
             "dispatched_next": next_allocation,
         }
+
+    async def complete_and_release(
+        self,
+        employee_id: str,
+        task_id: str,
+        clear_checkpoint: bool = True,
+        dispatch_next: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Safely completes and releases an active employee session:
+        1. Terminates desktop container and releases ports.
+        2. Releases durable DB slot lease with fencing token.
+        3. Clears checkpoint on task completion (if clear_checkpoint=True).
+        4. Removes employee from active without adding to standby.
+        5. Grants slot to next queued standby employee if available.
+        """
+        if employee_id not in self._active_employees:
+            return {"status": "not_active", "employee_id": employee_id}
+
+        slot_id = self._active_employees.pop(employee_id)
+        released = await self.slot_pool.release_slot(slot_id)
+        slot_obj = self.slot_pool._slots.get(slot_id)
+        if not released and (slot_obj is None or not slot_obj.is_free):
+            raise RuntimeError(f"Desktop slot {slot_id} could not be safely released.")
+        self.lease_manager.revoke(slot_id)
+        await self._release_resource_lease(slot_id)
+        self._standby_employees.discard(employee_id)
+
+        checkpoint_cleared = False
+        if clear_checkpoint:
+            checkpoint_cleared = self.checkpoint_manager.clear_checkpoint(employee_id, task_id)
+
+        logger.info(
+            "Employee completed task; session released cleanly",
+            employee_id=employee_id,
+            task_id=task_id,
+            slot_id=slot_id,
+        )
+
+        next_allocation = None
+        if dispatch_next:
+            next_allocation = await self._dispatch_next_queued_employee()
+
+        return {
+            "status": "completed_and_released",
+            "employee_id": employee_id,
+            "task_id": task_id,
+            "released_slot_id": slot_id,
+            "checkpoint_cleared": checkpoint_cleared,
+            "dispatched_next": next_allocation,
+        }
+
+    def cancel_standby(self, employee_id: str) -> bool:
+        """Removes a standby employee from the queue and standby set."""
+        was_standby = employee_id in self._standby_employees
+        self._standby_employees.discard(employee_id)
+        removed_from_queue = self.queue.remove(employee_id)
+        return was_standby or removed_from_queue
 
     async def _dispatch_next_queued_employee(self) -> Optional[dict[str, Any]]:
         if self.queue.is_empty():
@@ -407,7 +467,7 @@ class DesktopResourceScheduler:
             resource_key=desktop_slot_resource_key(slot_id, self.resource_pool_id),
             employee_id=employee_id,
             task_id=task_id,
-            session_id=f"desktop-slot-{slot_id}:{employee_id}",
+            session_id=f"ancos-desktop-{employee_id.lower()}",
             lease_seconds=self.resource_lease_seconds,
             resource_reservation={
                 "slot_id": slot_id,

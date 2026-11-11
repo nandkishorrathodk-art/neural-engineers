@@ -25,18 +25,36 @@ class GUIActionPolicy:
     """
 
     PROHIBITED_SHORTCUT_PATTERNS: list[str] = [
+        r"document\.",
         r"document\.querySelector",
         r"document\.getElementById",
+        r"\.querySelector",
+        r"window\.",
         r"eval\(",
         r"playwright",
         r"puppeteer",
+        r"selenium",
+        r"webdriver",
         r"cdp\.",
+        r"cdp\.send",
+        r"page\.evaluate",
+        r"page\.locator",
+        r"\.locator\(",
+        r"\.evaluate\(",
         r"at-spi",
         r"accessibility_tree",
-        r"xdotool\s+key",
+        r"uiautomation",
+        r"pywinauto",
+        r"\bxdotool\b",
         r"curl\s+",
         r"wget\s+",
         r"__import__\('sqlite3'\)",
+        r"__import__\('os'\)\.system",
+        r"__import__\('shutil'\)",
+        r"subprocess\.",
+        r"os\.system\(",
+        r"os\.popen\(",
+        r"shutil\.rmtree",
     ]
 
     DESTRUCTIVE_KEYWORDS: set[str] = {

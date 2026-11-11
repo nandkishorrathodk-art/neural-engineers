@@ -334,7 +334,7 @@ class WorkstationSandbox:
                 stderr_text = f"Process timed out after {effective_timeout}s limit"
                 try:
                     process.kill()
-                    await process.wait()
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
                 except Exception:
                     pass
 

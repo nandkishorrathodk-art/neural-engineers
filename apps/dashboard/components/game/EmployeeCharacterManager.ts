@@ -168,6 +168,9 @@ export function syncEmployeesToCharacters(
 
     if (existing) {
       // Update existing character state without resetting position or path
+      if ((emp as any).avatar_config || (emp as any).avatarConfig) {
+        existing.theme = (emp as any).avatar_config || (emp as any).avatarConfig;
+      }
       existing.name = emp.name;
       existing.title = emp.title;
       existing.department = emp.department;
@@ -208,7 +211,7 @@ export function syncEmployeesToCharacters(
     } else {
       // Recruited employee!
       const role = inferRole(emp.department, emp.title);
-      const theme = generateCharacterTheme(role, emp.employee_id + emp.name);
+      const theme = (emp as any).avatar_config || (emp as any).avatarConfig || generateCharacterTheme(role, emp.employee_id + emp.name);
 
       let ws: WorkstationDef | null = null;
       if (emp.desk_id) {

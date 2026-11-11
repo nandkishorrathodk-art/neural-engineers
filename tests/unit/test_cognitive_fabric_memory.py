@@ -425,3 +425,134 @@ async def test_six_tier_memory_records_reload_from_relational_repository(async_s
     assert [r.id for r in restored.query_trusted_records(layer=MemoryLayer.EPISODIC, requester_id="BossAI")] == [trusted.id]
     retrieved = retriever.retrieve("verified outcome survives", requester_id="BossAI")
     assert [record["id"] for record in retrieved] == [trusted.id]
+
+
+@pytest.mark.asyncio
+async def test_tampered_cryptographic_receipt_signature_rejected():
+    from neural.cognitive_fabric.memory.models import valid_independent_verification_receipt
+    from neural.evaluation.verifier import IndependentDeliverableVerifier
+
+    receipt = _verification_receipt("TASK-SIG-01", "LeadVerifier")
+    receipt["artifacts"] = ["pipeline.py"]
+    receipt["artifact_digests"] = {"pipeline.py": "abc123"}
+    # Generate genuine signature
+    verifier = IndependentDeliverableVerifier()
+    sig = verifier.generate_receipt_signature(receipt)
+    receipt["signature"] = sig
+
+    # Valid receipt passes
+    assert valid_independent_verification_receipt(receipt, task_id="TASK-SIG-01") is True
+
+    # Tampered receipt: modified evidence without re-signing
+    tampered_receipt = dict(receipt)
+    tampered_receipt["evidence_refs"] = ["tampered-evidence-injection"]
+    assert valid_independent_verification_receipt(tampered_receipt, task_id="TASK-SIG-01") is False
+
+    # Forged signature
+    forged_receipt = dict(receipt)
+    forged_receipt["signature"] = "deadbeef" * 8
+    assert valid_independent_verification_receipt(forged_receipt, task_id="TASK-SIG-01") is False
+
+
+@pytest.mark.asyncio
+async def test_procedural_memory_worker_self_verification_blocked():
+    store = SixTierMemoryStore()
+    self_verified = await store.store_procedural(
+        procedure_name="SneakyProcedure",
+        steps=[{"step": 1, "action": "self approve"}],
+        verified_by="ANC-EMP-ALICE",
+        owner_employee_id="ANC-EMP-ALICE",
+        verification_receipt=_verification_receipt("TASK-SELF", "ANC-EMP-ALICE"),
+        task_id="TASK-SELF",
+    )
+    assert not self_verified.is_verified
+    assert self_verified.verification_status == RecordVerificationStatus.UNVERIFIED
+    assert store.query_trusted_records(layer=MemoryLayer.PROCEDURAL, requester_id="BossAI") == []
+
+
+@pytest.mark.asyncio
+async def test_boardroom_organizational_policy_hydration_and_trusted_query(async_session):
+    repository = MemoryRepository(async_session)
+    original = SixTierMemoryStore(memory_repo=repository)
+
+    policy = await original.store_organizational(
+        policy_name="ZeroUnverifiedProductionDeploys",
+        statement="All production code changes must be verified with cryptographic deliverable receipts.",
+        approved_by="Boardroom",
+    )
+    assert policy.is_verified
+    assert policy.layer == MemoryLayer.ORGANIZATIONAL
+
+    restored = SixTierMemoryStore(memory_repo=repository)
+    count = await restored.load_persisted_records()
+    assert count >= 1
+
+    trusted_policies = restored.query_trusted_records(layer=MemoryLayer.ORGANIZATIONAL, requester_id="BossAI")
+    assert any(p.id == policy.id for p in trusted_policies)
+
+    retriever = HybridRetrievalEngine(memory_store=restored)
+    retriever.index_record(restored.get_record(policy.id))
+    retrieved = retriever.retrieve("cryptographic deliverable receipts", requester_id="BossAI")
+    assert any(r["id"] == policy.id for r in retrieved)
+
+
+@pytest.mark.asyncio
+async def test_access_controller_strictly_blocks_unowned_restricted_records():
+    access = MemoryAccessController()
+
+    rec_restricted_unowned = MemoryRecord(
+        layer=MemoryLayer.ORGANIZATIONAL,
+        category="executive_strategy",
+        source="boardroom",
+        content="Confidential executive strategy",
+        access_level=MemoryAccessLevel.RESTRICTED,
+        owner_employee_id=None,
+    )
+
+    # Ordinary employee is strictly blocked
+    assert access.can_read(rec_restricted_unowned, requester_id="ANC-EMP-BOB") is False
+    assert access.can_read(rec_restricted_unowned, requester_id="ANC-EMP-ALICE") is False
+
+    # Boss / Executive can read
+    assert access.can_read(rec_restricted_unowned, requester_id="BossAI") is True
+    assert access.can_read(rec_restricted_unowned, requester_id="admin") is True
+
+
+@pytest.mark.asyncio
+async def test_receipt_validation_rejects_empty_and_missing_signatures():
+    from neural.cognitive_fabric.memory.models import valid_independent_verification_receipt
+
+    base_receipt = _verification_receipt("TASK-GATE-01", "LeadVerifier")
+
+    # When require_signature=True, unsigned receipt is rejected
+    assert valid_independent_verification_receipt(base_receipt, require_signature=True) is False
+
+    # Empty string or whitespace signature is rejected
+    empty_sig_receipt = dict(base_receipt)
+    empty_sig_receipt["signature"] = "   "
+    assert valid_independent_verification_receipt(empty_sig_receipt) is False
+
+    # Valid signed receipt passes
+    from neural.evaluation.verifier import IndependentDeliverableVerifier
+    verifier = IndependentDeliverableVerifier()
+    signed_receipt = dict(base_receipt)
+    signed_receipt["signature"] = verifier.generate_receipt_signature(base_receipt)
+    assert valid_independent_verification_receipt(signed_receipt, require_signature=True) is True
+
+
+@pytest.mark.asyncio
+async def test_semantic_memory_worker_self_verification_blocked():
+    store = SixTierMemoryStore()
+    self_verified_sem = await store.store_semantic(
+        concept="SelfApprovedConcept",
+        explanation="Worker approves own concept",
+        source="task:TASK-SEM-SELF",
+        verified_by="ANC-EMP-ALICE",
+        owner_employee_id="ANC-EMP-ALICE",
+        verification_receipt=_verification_receipt("TASK-SEM-SELF", "ANC-EMP-ALICE"),
+    )
+    assert not self_verified_sem.is_verified
+    assert self_verified_sem.verification_status == RecordVerificationStatus.UNVERIFIED
+    assert store.query_trusted_records(layer=MemoryLayer.SEMANTIC, requester_id="BossAI") == []
+
+

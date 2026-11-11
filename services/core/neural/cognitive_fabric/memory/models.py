@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,6 +18,7 @@ def valid_independent_verification_receipt(
     *,
     employee_id: Optional[str] = None,
     task_id: Optional[str] = None,
+    require_signature: bool = False,
 ) -> bool:
     """Validate the minimum provenance needed to trust a task-derived memory."""
     if not isinstance(receipt, dict) or receipt.get("passed") is not True:
@@ -29,6 +32,10 @@ def valid_independent_verification_receipt(
         return False
     if not isinstance(attempt_id, str) or not attempt_id.strip():
         return False
+    if evidence_refs is None:
+        evidence_refs = receipt.get("artifacts")
+    if evidence_refs is None and isinstance(receipt.get("artifact_digests"), dict):
+        evidence_refs = list(receipt.get("artifact_digests").keys())
     if not isinstance(evidence_refs, list) or not evidence_refs:
         return False
     if not all(isinstance(ref, str) and ref.strip() for ref in evidence_refs):
@@ -36,6 +43,19 @@ def valid_independent_verification_receipt(
     receipt_task_id = receipt.get("task_id")
     if task_id and receipt_task_id != task_id:
         return False
+
+    signature = receipt.get("signature")
+    if require_signature and not signature:
+        return False
+    if "signature" in receipt:
+        if not isinstance(signature, str) or not signature.strip():
+            return False
+        raw = {k: v for k, v in receipt.items() if k != "signature"}
+        canonical = json.dumps(raw, sort_keys=True, default=str)
+        expected_sig = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if signature != expected_sig:
+            return False
+
     return True
 
 

@@ -475,3 +475,81 @@ class DisasterRecoveryManager:
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
 
+    def validate_rto_rpo_and_state_integrity(
+        self,
+        report: RestorationReport,
+        target_dir: str,
+        max_rto_seconds: float = 60.0,
+        max_rpo_seconds: float = 300.0,
+    ) -> dict[str, Any]:
+        """
+        NEURO-12: Validates Recovery Time Objective (RTO), Recovery Point Objective (RPO),
+        and full state integrity across SQLite database, outbox events, and workspaces.
+        """
+        rto_seconds = report.duration_seconds
+        rto_compliant = rto_seconds <= max_rto_seconds
+
+        manifest_data = report.details.get("manifest", {})
+        backup_ts_str = manifest_data.get("timestamp")
+        rpo_seconds: Optional[float] = None
+        rpo_compliant = False
+        if backup_ts_str:
+            try:
+                backup_ts = datetime.fromisoformat(backup_ts_str)
+                now = datetime.now(timezone.utc)
+                if backup_ts.tzinfo is None:
+                    backup_ts = backup_ts.replace(tzinfo=timezone.utc)
+                rpo_seconds = round(abs((now - backup_ts).total_seconds()), 3)
+                rpo_compliant = rpo_seconds <= max_rpo_seconds
+            except Exception as exc:
+                logger.warning("Failed to parse backup timestamp for RPO validation", error=str(exc))
+
+        # Check restored database integrity
+        db_path = os.path.join(target_dir, report.backup_id, "database", "neural_company.db")
+        if not os.path.isfile(db_path):
+            db_path = os.path.join(target_dir, "database", "neural_company.db")
+
+        db_tables: list[str] = []
+        db_ok = False
+        outbox_count = 0
+        if os.path.isfile(db_path):
+            conn = None
+            try:
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                chk = conn.execute("PRAGMA integrity_check;").fetchone()
+                db_ok = bool(chk and chk[0] == "ok")
+                tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+                db_tables = [t[0] for t in tables]
+                if "outbox_events" in db_tables:
+                    cnt = conn.execute("SELECT count(*) FROM outbox_events;").fetchone()
+                    outbox_count = cnt[0] if cnt else 0
+            except Exception as exc:
+                logger.warning("Database inspection failed during state integrity verification", error=str(exc))
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        state_integrity_ok = (
+            report.status == "SUCCESS"
+            and report.db_integrity_ok
+            and db_ok
+            and report.verified_components > 0
+        )
+
+        overall_valid = rto_compliant and rpo_compliant and state_integrity_ok
+
+        return {
+            "rto_seconds": rto_seconds,
+            "max_rto_seconds": max_rto_seconds,
+            "rto_compliant": rto_compliant,
+            "rpo_seconds": rpo_seconds,
+            "max_rpo_seconds": max_rpo_seconds,
+            "rpo_compliant": rpo_compliant,
+            "db_integrity_ok": db_ok,
+            "verified_components": report.verified_components,
+            "state_integrity_ok": state_integrity_ok,
+            "restored_tables": db_tables,
+            "outbox_events_count": outbox_count,
+            "status": "PASSED" if overall_valid else "FAILED",
+        }
+

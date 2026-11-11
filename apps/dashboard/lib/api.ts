@@ -1,3 +1,5 @@
+import { BossChatMessage, BossChatResponse } from '@/types';
+
 const API_BASE = '/api/ancos';
 
 export async function fetchBossStatus() {
@@ -139,11 +141,24 @@ export async function triggerBlockerMeeting(taskId: string, blockerReason: strin
   return res.json();
 }
 
-export async function submitObjective(objective: string, projectName?: string, scheduledAt?: string) {
+export async function submitObjective(
+  objective: string,
+  projectName?: string,
+  scheduledAt?: string,
+  budgetUsd?: number,
+  deadlineDays?: number
+) {
   const res = await fetch(`${API_BASE}/boss/objective`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ objective, project_name: projectName, scheduled_at: scheduledAt }),
+    body: JSON.stringify({
+      objective,
+      project_name: projectName,
+      scheduled_at: scheduledAt,
+      budget_usd: budgetUsd,
+      project_budget_usd: budgetUsd,
+      deadline_days: deadlineDays,
+    }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -288,5 +303,43 @@ export async function decideApproval(approvalId: string, decision: 'approved' | 
   if (!res.ok) throw new Error(`Failed to decide approval ${approvalId}`);
   return res.json();
 }
+
+export async function fetchSnapshot() {
+  const res = await fetch(`${API_BASE}/snapshot`, { cache: 'no-store' });
+  if (!res.ok) throw new Error('Failed to fetch system snapshot');
+  return res.json();
+}
+
+export async function fetchWorkstationVncToken(employeeId: string, interactive: boolean = false) {
+  const res = await fetch(`${API_BASE}/employees/${employeeId}/workstation/vnc-token?interactive=${interactive}`, {
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`Failed to fetch VNC token for employee ${employeeId}`);
+  return res.json();
+}
+
+export async function sendBossChatMessage(
+  message: string,
+  conversationHistory: BossChatMessage[] = [],
+  projectId?: string
+): Promise<BossChatResponse> {
+  const res = await fetch(`${API_BASE}/boss/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      conversation_history: conversationHistory,
+      project_id: projectId,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const detail = typeof err.detail === 'string' ? err.detail : err.detail?.message;
+    throw new Error(detail || 'Failed to send message to Boss AI');
+  }
+  return res.json();
+}
+
+
 
 

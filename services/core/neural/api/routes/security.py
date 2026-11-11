@@ -3,11 +3,17 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from neural.api.deps import get_db_session, require_approver_identity, require_owner_identity
+from neural.api.deps import (
+    get_db_session,
+    require_approver_identity,
+    require_owner_identity,
+    require_owner_or_security_reviewer_identity,
+)
 from neural.db.repositories import (
     ApprovalRepository,
     AuditRepository,
     EmergencyStopRepository,
+    ResourceLeaseRepository,
     TaskRepository,
 )
 from neural.security.approval_gates import HumanApprovalGate
@@ -41,6 +47,7 @@ class ApprovalRequestPayload(BaseModel):
 @router.get("/status")
 async def get_security_status(
     session: AsyncSession = Depends(get_db_session),
+    _actor: str = Depends(require_owner_or_security_reviewer_identity),
 ) -> dict[str, Any]:
     """Retrieves current Zero-Trust security and emergency kill switch status."""
     kill_switch = get_kill_switch()
@@ -68,7 +75,7 @@ async def get_security_status(
 async def trigger_emergency_stop(
     body: EmergencyStopRequest,
     session: AsyncSession = Depends(get_db_session),
-    actor: str = Depends(require_owner_identity),
+    actor: str = Depends(require_owner_or_security_reviewer_identity),
 ) -> dict[str, Any]:
     """
     Activates the Global Emergency Kill Switch.
@@ -78,12 +85,16 @@ async def trigger_emergency_stop(
     kill_switch = get_kill_switch()
     audit_repo = AuditRepository(session)
     state_repo = EmergencyStopRepository(session)
+    task_repo = TaskRepository(session)
+    resource_lease_repo = ResourceLeaseRepository(session)
     try:
         receipt = await kill_switch.emergency_halt(
             reason=body.reason,
             actor=actor,
             audit_repo=audit_repo,
             state_repo=state_repo,
+            task_repo=task_repo,
+            resource_lease_repo=resource_lease_repo,
         )
     except Exception as exc:
         raise HTTPException(
@@ -97,7 +108,7 @@ async def trigger_emergency_stop(
 async def resume_system(
     body: ResumeRequest,
     session: AsyncSession = Depends(get_db_session),
-    actor: str = Depends(require_owner_identity),
+    actor: str = Depends(require_owner_or_security_reviewer_identity),
 ) -> dict[str, Any]:
     """
     Resumes system operations from an emergency halt.
@@ -107,6 +118,7 @@ async def resume_system(
     task_repo = TaskRepository(session)
     audit_repo = AuditRepository(session)
     state_repo = EmergencyStopRepository(session)
+    resource_lease_repo = ResourceLeaseRepository(session)
     try:
         receipt = await kill_switch.resume(
             actor=actor,
@@ -115,6 +127,7 @@ async def resume_system(
             task_repo=task_repo,
             audit_repo=audit_repo,
             state_repo=state_repo,
+            resource_lease_repo=resource_lease_repo,
         )
     except Exception as exc:
         raise HTTPException(

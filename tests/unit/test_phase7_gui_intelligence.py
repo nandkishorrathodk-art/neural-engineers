@@ -961,3 +961,146 @@ async def test_dual_brain_cognitive_controller_failure_not_masked():
     result = await controller.execute_task("Save document to disk", max_steps=2)
     assert result["success"] is False
     assert result["completed_steps"] == 0
+
+
+def test_gui_action_policy_expanded_prohibited_shortcuts():
+    """Validates that all prohibited bypasses raise StrictGUIContractViolation."""
+    policy = GUIActionPolicy()
+    prohibited_samples = [
+        "document.querySelectorAll('button')",
+        "window.__ancos_hook()",
+        "page.locator('.save-btn').click()",
+        "xdotool click 1",
+        "os.system('id')",
+        "os.popen('whoami')",
+        "shutil.rmtree('/tmp/work')",
+        "__import__('shutil').rmtree('.')",
+    ]
+    for sample in prohibited_samples:
+        with pytest.raises(StrictGUIContractViolation):
+            policy.validate_gui_contract(sample)
+
+
+@pytest.mark.asyncio
+async def test_dual_brain_cognitive_controller_fails_closed_on_cheating_contract_violation():
+    """Validates that cheating in a planned step fails closed with StrictGUIContractViolation."""
+    planner = System2TaskPlanner()
+    planner.set_custom_plan_generator(
+        lambda obj, b: [
+            PlanStep(
+                step_id="step_cheat",
+                phase_name="Cheat Attempt",
+                action_intent="CLICK",
+                target_descriptor="document.querySelector('#hidden_button')",
+                expected_postcondition="File saved",
+            )
+        ]
+    )
+    controller = DualBrainCognitiveController(deep_planner=planner)
+    with pytest.raises(StrictGUIContractViolation):
+        await controller.execute_task("Cheat by DOM", max_steps=5)
+
+
+@pytest.mark.asyncio
+async def test_dual_brain_cognitive_controller_negative_or_zero_max_steps():
+    """Validates that non-positive max_steps does not slice negatively and fails cleanly."""
+    controller = DualBrainCognitiveController()
+    result_neg = await controller.execute_task("Save file", max_steps=-1)
+    assert result_neg["success"] is False
+    assert result_neg["steps_attempted"] == 0
+    assert result_neg["plan_truncated"] is True
+
+    result_zero = await controller.execute_task("Save file", max_steps=0)
+    assert result_zero["success"] is False
+    assert result_zero["steps_attempted"] == 0
+    assert result_zero["plan_truncated"] is True
+
+
+def test_gui_execution_loop_coordinates_out_of_bounds():
+    """Validates that coordinates exceeding screen dimensions are blocked."""
+    loop = GUIExecutionLoop()
+    req_oob = GUIActionRequest(
+        action_id="act_oob",
+        employee_id="emp_test",
+        action_type="MOUSE_CLICK",
+        coordinates=(9999, 9999),
+        confidence=0.95,
+    )
+    receipt = loop.execute_action(req_oob)
+    assert receipt.status == "BLOCKED_BY_SAFETY"
+    assert "exceed screen resolution" in (receipt.error_message or "")
+
+    req_drag_oob = GUIActionRequest(
+        action_id="act_drag_oob",
+        employee_id="emp_test",
+        action_type="MOUSE_DRAG",
+        coordinates=(100, 100),
+        drag_end_coordinates=(5000, 5000),
+        confidence=0.95,
+    )
+    receipt_drag = loop.execute_action(req_drag_oob)
+    assert receipt_drag.status == "BLOCKED_BY_SAFETY"
+    assert "drag end coordinates" in (receipt_drag.error_message or "")
+
+
+def test_visual_grounder_ungrounded_never_returns_screen_center():
+    """Validates ungrounded query returns invalid coordinates (-1, -1) and never screen center."""
+    engine = ScreenCaptureEngine()
+    frame = engine.render_synthetic_desktop(resolution=(1280, 800))
+    grounder = VisualGrounder()
+    target = grounder.ground_query(frame, "NonexistentTarget", require_confidence=False)
+    assert target.is_confident is False
+    assert target.coordinates == (-1, -1)
+    assert target.coordinates != (640, 400)
+
+
+def test_pixel_ocr_find_text_empty_query_returns_empty():
+    """Validates empty or whitespace query in find_text returns empty list."""
+    engine = ScreenCaptureEngine()
+    frame = engine.render_synthetic_desktop()
+    ocr = PixelOCREngine()
+    assert ocr.find_text(frame, "") == []
+    assert ocr.find_text(frame, "   ") == []
+
+
+def test_gui_skill_registry_thread_safety():
+    """Validates concurrent access to GUISkillRegistry across multiple threads."""
+    import concurrent.futures
+
+    from neural.gui_intelligence.skills.skill_compiler import CompiledGUISkill, RelativeGUIAction
+
+    registry = GUISkillRegistry()
+
+    def worker(idx: int):
+        skill = CompiledGUISkill(
+            skill_id=f"skill_thread_{idx}",
+            skill_name=f"Skill {idx}",
+            description="Concurrent test skill",
+            application_name="App",
+            actions=[RelativeGUIAction(0, "MOUSE_CLICK", "anchor", (0.1, 0.1))],
+        )
+        registry.register_skill(skill)
+        assert registry.get_skill(f"skill_thread_{idx}") is not None
+        registry.mark_certified(f"skill_thread_{idx}")
+        assert registry.is_certified(f"skill_thread_{idx}") is True
+        return True
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(worker, i) for i in range(20)]
+        results = [f.result() for f in futures]
+    assert all(results)
+    assert len(registry.list_skills(only_certified=True)) == 20
+
+
+def test_screen_capture_engine_escape_clears_dialog_pixels():
+    """Validates that pressing Escape key actually removes dialog pixels from the frame buffer."""
+    engine = ScreenCaptureEngine()
+    frame_with_dialog = engine.render_multi_app_desktop(active_app="editor", include_dialog=True)
+    engine.apply_visual_action("KEY_HOTKEY", text="Escape")
+    frame_after = engine.capture_frame()
+
+    detector = ScreenChangeDetector()
+    delta = detector.compute_delta(frame_with_dialog, frame_after)
+    assert delta.magnitude > 0.001
+    elements = ScreenCaptureEngine.get_last_rendered_elements()
+    assert not any(el.get("type") == "dialog" for el in elements)

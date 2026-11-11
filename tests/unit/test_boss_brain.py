@@ -316,3 +316,216 @@ async def test_boss_brain_plan_and_create_project(async_session):
     assert {task.execution_mode for task in persisted} == {"terminal", "hybrid"}
 
 
+@pytest.mark.asyncio
+async def test_clarification_required_persists_zero_projects_or_tasks(async_session):
+    from neural.db.repositories import ProjectRepository, TaskRepository
+    from neural.exceptions import ClarificationRequiredError
+
+    project_repo = ProjectRepository(async_session)
+    task_repo = TaskRepository(async_session)
+    brain = BossBrain(project_repo=project_repo, task_repo=task_repo)
+
+    # Vague objective triggers clarification
+    vague_obj = "do it"
+    with pytest.raises(ClarificationRequiredError) as exc_info:
+        await brain.plan_and_create_project(objective=vague_obj)
+
+    assert len(exc_info.value.questions) > 0
+
+    # Verify zero projects and zero tasks were persisted (fail-closed)
+    projects = await project_repo.list_all()
+    assert len(projects) == 0
+    all_tasks = await task_repo.list_all()
+    assert len(all_tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_clarifications_answered_allows_planning_and_persistence(async_session):
+    from neural.db.repositories import ProjectRepository, TaskRepository
+
+    project_repo = ProjectRepository(async_session)
+    task_repo = TaskRepository(async_session)
+    brain = BossBrain(project_repo=project_repo, task_repo=task_repo)
+
+    vague_obj = "do it"
+    clarifications = {
+        "What specific outcome should ANCOS deliver, and what would count as success?": (
+            "Build an autonomous math calculation utility package with comprehensive test coverage."
+        )
+    }
+
+    project, tasks = await brain.plan_and_create_project(
+        objective=vague_obj,
+        clarifications=clarifications,
+        project_name="Math-Utility-Project",
+    )
+
+    assert project.id is not None
+    assert project.name == "Math-Utility-Project"
+    assert len(tasks) >= 4
+    persisted_projects = await project_repo.list_all()
+    assert len(persisted_projects) == 1
+    persisted_tasks = await task_repo.list_by_project(project.id)
+    assert len(persisted_tasks) == len(tasks)
+
+
+@pytest.mark.asyncio
+async def test_dag_cycle_detection_via_kahns_algorithm():
+    from neural.boss.planner import ObjectivePlan, PlannedPhase, PlannedTask, validate_plan_dag
+    from neural.constants import ExecutionMode
+    from neural.exceptions import ModelProviderError
+
+    # Cycle: Task A depends on Task B, and Task B depends on Task A
+    cyclic_plan = ObjectivePlan(
+        code_name="CycleTest",
+        complexity="low",
+        phases=[
+            PlannedPhase(
+                title="Phase 1",
+                tasks=[
+                    PlannedTask(
+                        task_id="TASK-A",
+                        title="Task A",
+                        scope="Scope A",
+                        role_required="engineer",
+                        skills_required=["Python"],
+                        execution_mode=ExecutionMode.TERMINAL,
+                        dependencies=["TASK-B"],
+                        acceptance_criteria="passes test",
+                    ),
+                    PlannedTask(
+                        task_id="TASK-B",
+                        title="Task B",
+                        scope="Scope B",
+                        role_required="engineer",
+                        skills_required=["Python"],
+                        execution_mode=ExecutionMode.TERMINAL,
+                        dependencies=["TASK-A"],
+                        acceptance_criteria="passes test",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(ModelProviderError, match="dependency cycle detected"):
+        validate_plan_dag(cyclic_plan)
+
+
+@pytest.mark.asyncio
+async def test_dag_self_dependency_rejection():
+    from neural.boss.planner import ObjectivePlan, PlannedPhase, PlannedTask, validate_plan_dag
+    from neural.constants import ExecutionMode
+    from neural.exceptions import ModelProviderError
+
+    self_dep_plan = ObjectivePlan(
+        code_name="SelfDepTest",
+        complexity="low",
+        phases=[
+            PlannedPhase(
+                title="Phase 1",
+                tasks=[
+                    PlannedTask(
+                        task_id="TASK-SELF",
+                        title="Task Self",
+                        scope="Scope Self",
+                        role_required="engineer",
+                        skills_required=["Python"],
+                        execution_mode=ExecutionMode.TERMINAL,
+                        dependencies=["TASK-SELF"],
+                        acceptance_criteria="passes test",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(ModelProviderError, match="self-dependency in TASK-SELF"):
+        validate_plan_dag(self_dep_plan)
+
+
+@pytest.mark.asyncio
+async def test_dag_duplicate_task_id_rejection():
+    from neural.boss.planner import ObjectivePlan, PlannedPhase, PlannedTask, validate_plan_dag
+    from neural.constants import ExecutionMode
+    from neural.exceptions import ModelProviderError
+
+    dup_id_plan = ObjectivePlan(
+        code_name="DupIdTest",
+        complexity="low",
+        phases=[
+            PlannedPhase(
+                title="Phase 1",
+                tasks=[
+                    PlannedTask(
+                        task_id="TASK-DUP",
+                        title="Task 1",
+                        scope="Scope 1",
+                        role_required="engineer",
+                        skills_required=["Python"],
+                        execution_mode=ExecutionMode.TERMINAL,
+                        dependencies=[],
+                        acceptance_criteria="passes test",
+                    ),
+                    PlannedTask(
+                        task_id="TASK-DUP",
+                        title="Task 2",
+                        scope="Scope 2",
+                        role_required="engineer",
+                        skills_required=["Python"],
+                        execution_mode=ExecutionMode.TERMINAL,
+                        dependencies=[],
+                        acceptance_criteria="passes test",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(ModelProviderError, match="duplicate task IDs"):
+        validate_plan_dag(dup_id_plan)
+
+
+@pytest.mark.asyncio
+async def test_dag_forward_dependency_rejection():
+    from neural.boss.planner import ObjectivePlan, PlannedPhase, PlannedTask, validate_plan_dag
+    from neural.constants import ExecutionMode
+    from neural.exceptions import ModelProviderError
+
+    # TASK-1 depends on TASK-2 which is defined after TASK-1
+    forward_plan = ObjectivePlan(
+        code_name="ForwardTest",
+        complexity="low",
+        phases=[
+            PlannedPhase(
+                title="Phase 1",
+                tasks=[
+                    PlannedTask(
+                        task_id="TASK-1",
+                        title="Task 1",
+                        scope="Scope 1",
+                        role_required="engineer",
+                        skills_required=["Python"],
+                        execution_mode=ExecutionMode.TERMINAL,
+                        dependencies=["TASK-2"],
+                        acceptance_criteria="passes test",
+                    ),
+                    PlannedTask(
+                        task_id="TASK-2",
+                        title="Task 2",
+                        scope="Scope 2",
+                        role_required="engineer",
+                        skills_required=["Python"],
+                        execution_mode=ExecutionMode.TERMINAL,
+                        dependencies=[],
+                        acceptance_criteria="passes test",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(ModelProviderError, match="invalid or forward dependency"):
+        validate_plan_dag(forward_plan)
+
+

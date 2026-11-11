@@ -53,6 +53,12 @@ ANCOS is a completely independent, production-grade autonomous organization.
 - **DisasterRecoveryManager**: Automated hot SQLite backup, asset packaging, SHA-256 component manifests, and clean-room full restoration with SQLite `PRAGMA integrity_check`.
 - **Immutable Hash Chains**: Security audit trail with cryptographic hash chaining ensuring tamper-evident operational history.
 
+### 7. Interactive Terminal AI Coder REPL (`ancos`)
+- **Zero-Argument Launch**: Typing `ancos` or `python -m neural.cli` launches the frontier AI Coder REPL directly under employee identity `ANC-EMP-CODER`.
+- **Autonomous Coding Loop**: AST repository exploration, file edit planning, live Rich syntax-highlighted diffs, PTY deadlock-guarded streaming test execution, and autonomous bug diagnosis & self-fixing loop until exit code 0.
+- **Interactive Slash Commands**: `/diff` (unified diff), `/test` (pytest runner), `/evolve` (self-evolution), `/approve` (approval gates), `/status` (company health), `/exit`.
+- **Autonomous Self-Evolution (`/evolve`)**: Profiles codebase bottlenecks, provisions isolated candidate worktrees, implements vectorized fast paths, benchmarks speedup (>= 2.0x), passes multi-gate verification, and merges with sovereign human approval.
+
 ---
 
 ## Testing & Verification
@@ -85,4 +91,5 @@ npm run build
 2. **Never Fake Progress**: Verification requires ground-truth runtime receipts (passing pytest logs, valid exit codes, visual state changes).
 3. **Never Hardcode Secrets**: Keep all API keys and secrets in environment variables or `.env`. Never commit credentials to git.
 4. **Never Expose Unrestricted Docker Control**: Application containers must communicate only through `RestrictedDockerBroker`.
+5. **Zero Sugar-Coating & Brutal Ground-Truth Honesty**: Strictly prohibit buzzwords, promotional fluff, and exaggerated capability claims. Directly communicate limitations, failures, simulated vs. live aspects, compute/token costs, and exact empirical evidence without excuses.
 

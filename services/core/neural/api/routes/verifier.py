@@ -68,7 +68,7 @@ async def execute_verifier_test(
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if task.execution_mode != ExecutionMode.TERMINAL:
+    if not ExecutionMode.is_terminal(task.execution_mode):
         raise HTTPException(status_code=409, detail="Automated verifier execution only supports terminal tasks.")
     if not await task_repo.verification_attempt_is_current(task_id, attempt_id, request.fencing_token):
         raise HTTPException(status_code=409, detail="Verification attempt is stale or no longer pending.")
@@ -107,7 +107,7 @@ async def capture_verifier_manifest(
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if task.execution_mode != ExecutionMode.TERMINAL:
+    if not ExecutionMode.is_terminal(task.execution_mode):
         raise HTTPException(status_code=409, detail="Automated verifier manifests only support terminal tasks.")
     if not await task_repo.verification_attempt_is_current(task_id, attempt_id, request.fencing_token):
         raise HTTPException(status_code=409, detail="Verification attempt is stale or no longer pending.")

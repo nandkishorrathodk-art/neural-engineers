@@ -220,9 +220,18 @@ async def test_phase2_full_dag_parallel_execution_and_messaging(async_session: A
         artifact_path.write_text(llm_res.content, encoding="utf-8")
         test_path = task_dir / "test_service.py"
         test_path.write_text(
+            "import sys\nfrom pathlib import Path\nsys.path.insert(0, str(Path(__file__).parent))\n"
             "from service import VALUE\n\n\ndef test_generated_value():\n    assert VALUE == 42\n",
             encoding="utf-8",
         )
+        import os
+        from pathlib import Path
+        env = os.environ.copy()
+        pythonpath_entries = [str(task_dir.resolve())]
+        for p in sys.path:
+            if "site-packages" in p or "services/core" in p.replace("\\", "/"):
+                pythonpath_entries.append(str(Path(p).resolve()))
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
         test_process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -232,6 +241,7 @@ async def test_phase2_full_dag_parallel_execution_and_messaging(async_session: A
             cwd=task_dir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=env,
         )
         test_output, _ = await test_process.communicate()
 

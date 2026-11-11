@@ -92,6 +92,17 @@ DEFAULT_CHECKPOINTS: dict[str, ModelCheckpointMetadata] = {
         input_modality="neural_sequence",
         description="Official Laya ModernBERT neural decision engine for Choice, Score & Noul",
     ),
+    "Laya-Decision-ONNX": ModelCheckpointMetadata(
+        name="Laya-Decision-ONNX",
+        version="1.0.0",
+        task_types=["choice", "score", "noul"],
+        sha256_hash="8224784c98d73412d9fd99abcd57a38568bd590980d0fbe5916464531c52e8fc",
+        onnx_path="./data/models/laya/decision.onnx",
+        runtime=ModelRuntime.ONNX,
+        target_latency_ms=25.0,
+        input_modality="strict_json",
+        description="Official high-throughput ONNX Runtime decision engine (20ms - 30ms)",
+    ),
 }
 
 

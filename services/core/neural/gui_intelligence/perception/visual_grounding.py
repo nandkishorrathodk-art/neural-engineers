@@ -83,13 +83,20 @@ class VisualGrounder:
                     enclosing = elem
                     break
 
-            # Confidence fusion
+            # Multi-cue confidence fusion: base OCR + text exactness + element type affinity
             score = match.confidence
+            if match.text.strip().lower() == query_lower:
+                score = min(1.0, score + 0.05)
+            elif query_lower in match.text.strip().lower().split():
+                score = score * 0.90
+
             if enclosing:
                 if expected_element_type and enclosing.element_type == expected_element_type:
-                    score = min(1.0, score + 0.1)
-                else:
                     score = min(1.0, score + 0.05)
+                elif expected_element_type and enclosing.element_type != expected_element_type:
+                    score = max(0.01, score - 0.05)
+                else:
+                    score = min(1.0, score + 0.02)
 
             variance = max(0.01, 1.0 - score)
             if score > best_score:
@@ -137,12 +144,12 @@ class VisualGrounder:
                         grounding_latency_ms=latency_ms,
                     )
 
-        # Fallback if nothing matched
+        # Fallback if nothing matched: Never blindly assign screen center coordinates
         if best_target is None:
             latency_ms = (time.perf_counter() - start) * 1000.0
             best_target = GroundedTarget(
-                coordinates=(frame.width // 2, frame.height // 2),
-                bounding_box=(0, 0, frame.width, frame.height),
+                coordinates=(-1, -1),
+                bounding_box=(0, 0, 0, 0),
                 confidence=0.10,
                 variance=0.90,
                 matched_element=None,

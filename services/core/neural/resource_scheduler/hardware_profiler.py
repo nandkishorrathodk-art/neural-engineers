@@ -18,6 +18,9 @@ class HardwareProfile:
     max_cpu_percent_threshold: float = 85.0
     container_mem_limit: str = "2g"
     container_cpu_limit: float = 1.5
+    gpu_count: int = 0
+    safe_vram_headroom_gb: float = 0.0
+    max_gpu_percent_threshold: float = 90.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -29,6 +32,9 @@ class HardwareProfile:
             "max_cpu_percent_threshold": self.max_cpu_percent_threshold,
             "container_mem_limit": self.container_mem_limit,
             "container_cpu_limit": self.container_cpu_limit,
+            "gpu_count": self.gpu_count,
+            "safe_vram_headroom_gb": self.safe_vram_headroom_gb,
+            "max_gpu_percent_threshold": self.max_gpu_percent_threshold,
         }
 
 
@@ -118,6 +124,16 @@ class HardwareProfiler:
         else:
             base = PROFILE_16GB
 
+        gpu_count = 0
+        safe_vram_headroom_gb = 0.0
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_count = torch.cuda.device_count()
+                safe_vram_headroom_gb = 1.0
+        except Exception:
+            pass
+
         return HardwareProfile(
             profile_name=base.profile_name,
             total_ram_gb=total_ram_gb,
@@ -127,6 +143,9 @@ class HardwareProfiler:
             max_cpu_percent_threshold=base.max_cpu_percent_threshold,
             container_mem_limit=base.container_mem_limit,
             container_cpu_limit=base.container_cpu_limit,
+            gpu_count=gpu_count,
+            safe_vram_headroom_gb=safe_vram_headroom_gb,
+            max_gpu_percent_threshold=base.max_gpu_percent_threshold,
         )
 
     def set_profile(self, profile: HardwareProfile | str) -> None:
