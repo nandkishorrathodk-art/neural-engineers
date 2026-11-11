@@ -29,6 +29,7 @@ MODEL_PRICING_PER_1M = {
     "claude-3-opus": {"input": 15.00, "output": 75.00},
 
     # OpenAI
+    "gpt-5.6-sol": {"input": 2.00, "output": 10.00},
     "gpt-6.1-sol": {"input": 2.00, "output": 10.00},
     "gpt-6-luna": {"input": 0.10, "output": 0.50},
     "gpt-4o": {"input": 2.50, "output": 10.00},
