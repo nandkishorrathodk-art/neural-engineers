@@ -107,6 +107,42 @@ async def test_ambiguous_outcome_cannot_release_reserved_budget(async_session):
 
 
 @pytest.mark.asyncio
+async def test_reserve_settle_release_survives_sqlite_float_drift(async_session):
+    """Many reserve/settle cycles must not strand a reservation.
+
+    SQLite stores NUMERIC as REAL, so repeated add/subtract leaves the account
+    a hair below the preflight amount (e.g. 0.9999999999999997). Releasing the
+    preflight must still succeed and clamp the account back to zero.
+    """
+    repo = BudgetRepository(async_session)
+    scopes = {"month:2026-11": 500.0}
+    preflight = await repo.reserve(
+        idempotency_key="preflight",
+        reserved_usd=1.0,
+        scope_caps=scopes,
+    )
+    drifting_amounts = [0.0128586, 0.010206, 0.000476, 0.01129725, 0.00621053]
+    for index, amount in enumerate(drifting_amounts):
+        reservation = await repo.reserve(
+            idempotency_key=f"llm-{index}",
+            reserved_usd=amount,
+            scope_caps=scopes,
+        )
+        await repo.settle(reservation.id, actual_usd=0.0005, usage_receipt={"ok": True})
+
+    released = await repo.release_after_confirmed_no_charge(
+        preflight.id,
+        provider_confirmed_unbilled=True,
+        reason="Planning completed without provider charge.",
+    )
+
+    assert released.status == "released"
+    month = await async_session.get(BudgetAccount, "month:2026-11")
+    assert month is not None
+    assert month.reserved_usd == Decimal("0E-8")
+
+
+@pytest.mark.asyncio
 async def test_invalid_reservations_are_rejected(async_session):
     repo = BudgetRepository(async_session)
     for amount in (0, -1, float("nan"), float("inf"), True):

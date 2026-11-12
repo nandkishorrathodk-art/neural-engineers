@@ -129,8 +129,59 @@ class ProjectRepository:
 class BudgetRepository:
     """Atomically reserves and settles shared USD quotas across scopes."""
 
+    # SQLite stores NUMERIC as REAL, so adding and subtracting the same amount
+    # does not always round-trip exactly (e.g. 1.0 + 0.0128586 - 0.0128586 ->
+    # 0.9999999999999999). Budget guards therefore allow this tolerance, and
+    # decrements clamp at zero instead of failing on sub-cent float drift.
+    _DRIFT_TOLERANCE = Decimal("0.00000001")
+
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def _decrement_reserved(
+        self,
+        scope_key: str,
+        amount: Decimal,
+        *,
+        spent_delta: Optional[Decimal] = None,
+    ) -> int:
+        """Subtract a reservation from an account, absorbing float drift.
+
+        SQLite keeps NUMERIC as REAL, so `reserved_usd` can sit a hair below
+        `amount` after repeated add/subtract cycles. A plain subtraction would
+        then go negative and trip the non-negative CHECK constraint, so the
+        exact decrement is attempted first and the drift case is clamped to
+        zero in a second statement.
+        """
+        values: dict[str, Any] = {
+            "reserved_usd": BudgetAccount.reserved_usd - amount,
+            "updated_at": utc_now(),
+        }
+        if spent_delta is not None:
+            values["spent_usd"] = BudgetAccount.spent_usd + spent_delta
+
+        exact = await self.session.execute(
+            update(BudgetAccount)
+            .where(
+                BudgetAccount.scope_key == scope_key,
+                BudgetAccount.reserved_usd >= amount,
+            )
+            .values(**values)
+        )
+        if exact.rowcount == 1:
+            return 1
+
+        drift_values = dict(values, reserved_usd=Decimal("0"))
+        drifted = await self.session.execute(
+            update(BudgetAccount)
+            .where(
+                BudgetAccount.scope_key == scope_key,
+                BudgetAccount.reserved_usd >= amount - self._DRIFT_TOLERANCE,
+                BudgetAccount.reserved_usd < amount,
+            )
+            .values(**drift_values)
+        )
+        return drifted.rowcount
 
     @staticmethod
     def _money(value: int | float | Decimal, field: str) -> Decimal:
@@ -246,7 +297,10 @@ class BudgetRepository:
                     .where(
                         BudgetAccount.scope_key == scope_key,
                         BudgetAccount.cap_usd == cap,
-                        BudgetAccount.reserved_usd + BudgetAccount.spent_usd + amount <= cap,
+                        BudgetAccount.reserved_usd
+                        + BudgetAccount.spent_usd
+                        + amount
+                        <= cap + self._DRIFT_TOLERANCE,
                     )
                     .values(
                         reserved_usd=BudgetAccount.reserved_usd + amount,
@@ -303,19 +357,12 @@ class BudgetRepository:
             raise ValueError("budget reservation is already being settled")
 
         for scope_key in sorted(reservation.scope_keys):
-            updated = await self.session.execute(
-                update(BudgetAccount)
-                .where(
-                    BudgetAccount.scope_key == scope_key,
-                    BudgetAccount.reserved_usd >= reservation.reserved_usd,
-                )
-                .values(
-                    reserved_usd=BudgetAccount.reserved_usd - reservation.reserved_usd,
-                    spent_usd=BudgetAccount.spent_usd + actual,
-                    updated_at=utc_now(),
-                )
+            updated = await self._decrement_reserved(
+                scope_key,
+                reservation.reserved_usd,
+                spent_delta=actual,
             )
-            if updated.rowcount != 1:
+            if updated != 1:
                 await self.session.rollback()
                 raise RuntimeError(f"Reserved amount is missing from budget scope {scope_key!r}")
         reservation.actual_usd = actual
@@ -365,18 +412,8 @@ class BudgetRepository:
             await self.session.rollback()
             raise ValueError("budget reservation is already being released")
         for scope_key in sorted(reservation.scope_keys):
-            updated = await self.session.execute(
-                update(BudgetAccount)
-                .where(
-                    BudgetAccount.scope_key == scope_key,
-                    BudgetAccount.reserved_usd >= reservation.reserved_usd,
-                )
-                .values(
-                    reserved_usd=BudgetAccount.reserved_usd - reservation.reserved_usd,
-                    updated_at=utc_now(),
-                )
-            )
-            if updated.rowcount != 1:
+            updated = await self._decrement_reserved(scope_key, reservation.reserved_usd)
+            if updated != 1:
                 await self.session.rollback()
                 raise RuntimeError(f"Reserved amount is missing from budget scope {scope_key!r}")
         await self.session.execute(
@@ -3231,7 +3268,7 @@ class ActionItemRepository:
             update(ActionItem)
             .where(ActionItem.id == item.id, ActionItem.status == item.status)
             .values(status=status)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session="evaluate")
         )
         if result.rowcount != 1:
             await self.session.rollback()
@@ -3281,7 +3318,7 @@ class ActionItemRepository:
                 update(ActionItem)
                 .where(ActionItem.id == item.id, ActionItem.status == item.status)
                 .values(**values)
-                .execution_options(synchronize_session=False)
+                .execution_options(synchronize_session="evaluate")
             )
             if result.rowcount != 1:
                 await self.session.rollback()
@@ -3309,7 +3346,7 @@ class ActionItemRepository:
             update(ActionItem)
             .where(ActionItem.id == item.id, ActionItem.status == item.status)
             .values(status=ActionItemStatus.OPEN)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session="evaluate")
         )
         if result.rowcount != 1:
             await self.session.rollback()
