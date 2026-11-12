@@ -93,3 +93,7 @@ npm run build
 4. **Never Expose Unrestricted Docker Control**: Application containers must communicate only through `RestrictedDockerBroker`.
 5. **Zero Sugar-Coating & Brutal Ground-Truth Honesty**: Strictly prohibit buzzwords, promotional fluff, and exaggerated capability claims. Directly communicate limitations, failures, simulated vs. live aspects, compute/token costs, and exact empirical evidence without excuses.
 
+## Known Pitfalls
+
+- **SQLite `NUMERIC` is stored as `REAL`.** Repeated `reserved_usd +/- amount` cycles do not round-trip exactly (e.g. `1.0 + 0.0128586 - 0.0128586` -> `0.9999999999999999`). Any budget comparison or decrement must tolerate ~1e-8 drift and clamp at zero; otherwise the non-negative CHECK constraint or a `>= amount` guard fails and surfaces as HTTP 500. See `BudgetRepository._decrement_reserved` and `_DRIFT_TOLERANCE`.
+
