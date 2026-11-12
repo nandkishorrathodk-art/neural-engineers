@@ -213,6 +213,14 @@ class EmployeeFactory:
         elif "frontend" in effective_title.lower() or "qa" in effective_title.lower():
             approved_tools.append("browser")
 
+        # Execution capabilities are the environments this employee can actually
+        # operate. Browser-approved roles gain GUI capability in addition to the
+        # universal terminal capability; the capability set is what routing uses,
+        # so a task requiring GUI is never matched to a terminal-only employee.
+        execution_capabilities = ["terminal"]
+        if "browser" in approved_tools:
+            execution_capabilities.append("gui")
+
         model_config_data = {}
         if role_cfg:
             model_config_data = {
@@ -263,6 +271,7 @@ class EmployeeFactory:
             system_prompt=system_prompt,
             approved_tools=approved_tools,
             model_config_data=model_config_data,
+            execution_capabilities=execution_capabilities,
             performance_summary={"completed_tasks": 0, "verified_skills": []},
             desk_id=assigned_desk,
             avatar_config=effective_avatar,

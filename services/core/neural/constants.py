@@ -51,6 +51,35 @@ ALL_EXECUTION_MODES: list[ExecutionMode] = [
 ]
 
 
+class ExecutionCapability(str, Enum):
+    """Concrete execution environment an employee must possess to run a task.
+
+    Modes are declarative intent; capabilities are the actual environments a
+    worker/employee can operate. Keeping them separate lets routing match a
+    task to an employee that truly has the required environment instead of a
+    single hardcoded mode string.
+    """
+
+    TERMINAL = "terminal"
+    GUI = "gui"
+
+
+_MODE_CAPABILITIES: dict[ExecutionMode, frozenset[ExecutionCapability]] = {
+    ExecutionMode.TERMINAL: frozenset({ExecutionCapability.TERMINAL}),
+    ExecutionMode.TERMINAL_ONLY: frozenset({ExecutionCapability.TERMINAL}),
+    ExecutionMode.GUI: frozenset({ExecutionCapability.GUI}),
+    ExecutionMode.GUI_ONLY: frozenset({ExecutionCapability.GUI}),
+    ExecutionMode.HYBRID: frozenset({ExecutionCapability.GUI, ExecutionCapability.TERMINAL}),
+    ExecutionMode.AUTHORIZED_TOOLS: frozenset({ExecutionCapability.TERMINAL}),
+    ExecutionMode.RESEARCH_REASONING: frozenset({ExecutionCapability.TERMINAL}),
+}
+
+
+def required_execution_capabilities(mode: object) -> frozenset[ExecutionCapability]:
+    """Returns the execution capabilities a task in ``mode`` requires."""
+    return _MODE_CAPABILITIES.get(ExecutionMode.normalize(mode), frozenset({ExecutionCapability.TERMINAL}))
+
+
 class ProjectStatus(str, Enum):
     PLANNING = "planning"
     ACTIVE = "active"

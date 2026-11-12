@@ -47,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     message_bus = None
     outbox_worker = None
     resource_lease_reaper_task: asyncio.Task[None] | None = None
+    stale_recovery_task: asyncio.Task[None] | None = None
     try:
         await init_db()
         from neural.db.engine import AsyncSessionLocal
@@ -78,11 +79,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         os.makedirs(os.path.abspath(settings.EMPLOYEE_WORKSPACE_BASE), exist_ok=True)
         if message_bus is not None:
             await message_bus.start_outbox_dispatcher()
+        from neural.tasks.recovery_loop import stale_assignment_recovery_loop
+
+        stale_recovery_task = asyncio.create_task(
+            stale_assignment_recovery_loop(),
+            name="ancos-stale-assignment-recovery",
+        )
         logger.info("Database and workspace directories initialized successfully.")
         yield
     finally:
         if outbox_worker is not None:
             await outbox_worker.stop()
+        if stale_recovery_task is not None:
+            stale_recovery_task.cancel()
+            try:
+                await stale_recovery_task
+            except asyncio.CancelledError:
+                pass
         if resource_lease_reaper_task is not None:
             resource_lease_reaper_task.cancel()
             try:

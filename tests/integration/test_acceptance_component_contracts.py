@@ -1,4 +1,5 @@
 import subprocess
+import sys
 
 import pytest
 from neural.boss.brain import BossBrain
@@ -152,7 +153,7 @@ async def test_planning_recruitment_and_verification_component_contracts(async_s
 
     # Run the actual test command to generate real execution receipts
     result = subprocess.run(
-        ["pytest", str(test_file)],
+        [sys.executable, "-m", "pytest", str(test_file)],
         capture_output=True,
         text=True,
         cwd=str(workspace)
@@ -161,7 +162,7 @@ async def test_planning_recruitment_and_verification_component_contracts(async_s
 
     # Run security validation script
     sec_result = subprocess.run(
-        ["python", str(sec_file)],
+        [sys.executable, str(sec_file)],
         capture_output=True,
         text=True,
         cwd=str(workspace)

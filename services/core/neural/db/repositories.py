@@ -21,6 +21,7 @@ from neural.constants import (
     ApprovalStatus,
     ContainerStatus,
     EmployeeStatus,
+    ExecutionCapability,
     MeetingStatus,
     MemoryCategory,
     ProposalStatus,
@@ -30,6 +31,7 @@ from neural.constants import (
     TaskStatus,
     VerificationStatus,
     VoteChoice,
+    required_execution_capabilities,
 )
 from neural.db.models import (
     ActionItem,
@@ -80,6 +82,22 @@ def _task_dispatch_order() -> tuple[Any, ...]:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _employee_has_execution_capabilities(employee: Employee, mode: object) -> bool:
+    """True when the employee's declared capabilities cover every capability the mode needs.
+
+    An employee with no declared capabilities is treated as terminal-capable for
+    backward compatibility with records created before capabilities existed.
+    """
+    required = required_execution_capabilities(mode)
+    declared = {
+        str(capability).lower()
+        for capability in (getattr(employee, "execution_capabilities", None) or [])
+    }
+    if not declared:
+        declared = {ExecutionCapability.TERMINAL.value}
+    return all(capability.value in declared for capability in required)
 
 
 def get_session_lock(session: AsyncSession) -> asyncio.Lock:
@@ -578,7 +596,11 @@ class TaskRepository:
                     Employee.id == task.assigned_to,
                 )
             )
-            if not employee or not employee.container or employee.container.status != ContainerStatus.RUNNING:
+            if not employee:
+                continue
+            if not _employee_has_execution_capabilities(employee, task.execution_mode):
+                continue
+            if not employee.container or employee.container.status != ContainerStatus.RUNNING:
                 continue
             if task.required_capabilities:
                 req_skills = {c.strip().lower() for c in task.required_capabilities if c.strip()}
@@ -740,6 +762,8 @@ class TaskRepository:
                 assignee = delegator.select_best_assignee(ready_task, eligible_employees)
                 if not assignee:
                     continue
+                if not _employee_has_execution_capabilities(assignee, ready_task.execution_mode):
+                    continue
                 if ready_task.required_capabilities:
                     req_skills = {c.strip().lower() for c in ready_task.required_capabilities if c.strip()}
                     if req_skills:
@@ -768,6 +792,87 @@ class TaskRepository:
                     )
                 await self.session.rollback()
         return None
+
+    async def recover_stale_assignments(self, now: Optional[datetime] = None) -> list[dict[str, Any]]:
+        """Requeue tasks whose assigned employee can no longer execute them.
+
+        A task is stranded when its assignee's workstation is absent, not running,
+        or the employee lacks the required execution capability. Such a task must
+        not stay pinned to a dead assignment: it is released to PENDING so a
+        qualified employee can claim it. This is infrastructure recovery, not a
+        code failure, so it deliberately does not consume the task's retry budget.
+        """
+        now = now or utc_now()
+        stranded = (
+            await self.session.execute(
+                select(Task)
+                .options(selectinload(Task.assignee).selectinload(Employee.container))
+                .where(
+                    Task.assigned_to.is_not(None),
+                    Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
+                )
+                .order_by(*_task_dispatch_order())
+                .limit(256)
+            )
+        ).scalars().all()
+
+        recovered: list[dict[str, Any]] = []
+        for task in stranded:
+            employee = task.assignee
+            if not employee:
+                continue
+            container = employee.container
+            has_running_desktop = container is not None and container.status == ContainerStatus.RUNNING
+            has_capability = _employee_has_execution_capabilities(employee, task.execution_mode)
+            if has_running_desktop and has_capability:
+                continue
+            reason = (
+                "assignee lacks required execution capability"
+                if not has_capability
+                else "assignee workstation is absent or not running"
+            )
+            released = await self.session.execute(
+                update(Task)
+                .where(
+                    Task.id == task.id,
+                    Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
+                )
+                .values(
+                    assigned_to=None,
+                    status=TaskStatus.PENDING,
+                    fencing_token=Task.fencing_token + 1,
+                )
+            )
+            if released.rowcount != 1:
+                await self.session.rollback()
+                continue
+            # Only release the employee if they hold no other live claim.
+            other_active_attempt = await self.session.scalar(
+                select(TaskAttempt.id)
+                .join(Task, Task.id == TaskAttempt.task_id)
+                .where(
+                    Task.assigned_to == employee.id,
+                    Task.id != task.id,
+                    TaskAttempt.status.in_(["leased", "running"]),
+                    TaskAttempt.lease_expires_at > now,
+                )
+                .limit(1)
+            )
+            if not other_active_attempt and employee.status == EmployeeStatus.WORKING:
+                await self.session.execute(
+                    update(Employee)
+                    .where(Employee.id == employee.id, Employee.status == EmployeeStatus.WORKING)
+                    .values(status=EmployeeStatus.IDLE)
+                )
+            await self.session.commit()
+            recovered.append(
+                {
+                    "task_id": task.task_id,
+                    "previous_assignee": employee.employee_id,
+                    "reason": reason,
+                }
+            )
+        return recovered
 
     async def worker_claim_is_current(self, task_id: str, worker_id: str, fencing_token: int) -> bool:
         """Check that this worker still owns a live, not-yet-started attempt."""

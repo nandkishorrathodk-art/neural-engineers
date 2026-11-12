@@ -324,41 +324,33 @@ class SelfEvolutionMultiGateVerifier:
         if not py_files:
             return True, "No Python files to lint."
 
-        # Check if ruff or uv run ruff is available
+        # Ruff is run through the current interpreter (`python -m ruff`) so it is
+        # found regardless of PATH, and a missing tool (exit code 2) falls through
+        # to the AST check instead of being misread as a lint violation.
+        candidate_commands = [
+            [sys.executable, "-m", "ruff", "check", "--select", "E,F", *py_files],
+        ]
         ruff_bin = shutil.which("ruff")
-        uv_bin = shutil.which("uv")
-
-        if uv_bin:
-            try:
-                res = subprocess.run(
-                    [uv_bin, "run", "ruff", "check", "--select", "E,F", *py_files],
-                    cwd=str(candidate_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if res.returncode == 0:
-                    return True, "Ruff static analysis clean (0 issues)."
-                else:
-                    return False, f"Ruff violations: {res.stdout.strip()}"
-            except Exception:
-                pass
-
         if ruff_bin:
+            candidate_commands.append([ruff_bin, "check", "--select", "E,F", *py_files])
+
+        for cmd in candidate_commands:
             try:
                 res = subprocess.run(
-                    [ruff_bin, "check", "--select", "E,F", *py_files],
+                    cmd,
                     cwd=str(candidate_path),
                     capture_output=True,
                     text=True,
                     timeout=30,
                 )
-                if res.returncode == 0:
-                    return True, "Ruff static analysis clean (0 issues)."
-                else:
-                    return False, f"Ruff violations: {res.stdout.strip()}"
             except Exception:
-                pass
+                continue
+            if res.returncode == 0:
+                return True, "Ruff static analysis clean (0 issues)."
+            if res.returncode == 1:
+                return False, f"Ruff violations: {res.stdout.strip()}"
+            # Any other exit code means ruff itself failed to run; try the next
+            # command and ultimately the AST compile fallback.
 
         # Fallback to AST compile check
         for f in py_files:

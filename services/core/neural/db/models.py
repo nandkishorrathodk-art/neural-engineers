@@ -158,6 +158,7 @@ class Employee(Base):
     status: Mapped[EmployeeStatus] = mapped_column(
         SQLEnum(EmployeeStatus), default=EmployeeStatus.IDLE, nullable=False
     )
+    execution_capabilities: Mapped[list[str]] = mapped_column(JSON, default=list)
     performance_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     hired_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     desk_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)

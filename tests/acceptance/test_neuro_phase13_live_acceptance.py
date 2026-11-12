@@ -30,6 +30,7 @@ import hashlib
 import json
 import sqlite3
 import subprocess
+import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -417,7 +418,7 @@ def test_telemetry_negative_metric_raises():
     test_file.write_text(test_collector_code, encoding="utf-8")
 
     worker_test = subprocess.run(
-        ["pytest", str(test_file)],
+        [sys.executable, "-m", "pytest", str(test_file)],
         capture_output=True,
         text=True,
     )
