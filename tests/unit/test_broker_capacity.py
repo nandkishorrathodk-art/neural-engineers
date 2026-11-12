@@ -226,3 +226,29 @@ def test_ensure_employee_image_rejects_unallowlisted_tag():
 
     assert rejected.value.status_code == 400
     assert rejected.value.detail == "Requested employee image is not allowlisted."
+
+
+def test_warm_employee_images_builds_pinned_base(monkeypatch):
+    warmed: list[str] = []
+    sentinel = object()
+
+    monkeypatch.setattr(broker_api, "docker_client", lambda: sentinel)
+    monkeypatch.setattr(
+        broker_api,
+        "ensure_employee_image",
+        lambda client, tag: warmed.append((client, tag)),
+    )
+
+    broker_api.warm_employee_images()
+
+    assert warmed == [(sentinel, broker_api.BASE_IMAGE)]
+
+
+def test_warm_employee_images_never_blocks_broker_startup(monkeypatch):
+    def explode(_client, _tag):
+        raise RuntimeError("docker socket unavailable")
+
+    monkeypatch.setattr(broker_api, "docker_client", lambda: object())
+    monkeypatch.setattr(broker_api, "ensure_employee_image", explode)
+
+    broker_api.warm_employee_images()

@@ -9,6 +9,41 @@ from pydantic import BaseModel, Field
 from neural.constants import ExecutionMode
 from neural.exceptions import ModelProviderError, UnsupportedExecutionModeError
 from neural.llm.gateway import LLMGateway
+from neural.verification.test_commands import TEST_ONLY_ACCEPTANCE, normalize_acceptance_criteria
+
+# Canonical acceptance contract the independent verifier replays. Every terminal
+# task must carry it, otherwise the verifier fails closed and no task can ever
+# complete.
+VERIFIER_SUPPORTED_ACCEPTANCE = "Automated tests pass"
+
+
+def _terminal_acceptance_contract(acceptance_criteria: str, execution_mode: ExecutionMode) -> str:
+    """Rewrites terminal-task acceptance criteria to a verifier-supported contract."""
+    if not ExecutionMode.is_terminal(execution_mode):
+        return acceptance_criteria
+    if normalize_acceptance_criteria(acceptance_criteria) in TEST_ONLY_ACCEPTANCE:
+        return acceptance_criteria
+    return VERIFIER_SUPPORTED_ACCEPTANCE
+
+
+_TEST_INSTRUCTION = (
+    " Persist the deliverable to the workspace and include an automated test that verifies it, "
+    "then run that test."
+)
+
+
+def _terminal_task_objective(objective: str, execution_mode: ExecutionMode) -> str:
+    """Ensure a terminal task instructs the employee to produce a replayable test.
+
+    The independent verifier only accepts test-bearing terminal tasks, so a task
+    whose objective never mentions tests cannot be verified and would fail closed.
+    """
+    if not ExecutionMode.is_terminal(execution_mode):
+        return objective
+    if re.search(r"(?i)\btest", objective or ""):
+        return objective
+    return f"{objective.rstrip()}{_TEST_INSTRUCTION}"
+
 
 
 class PlannedTask(BaseModel):
@@ -155,6 +190,9 @@ class TaskPlanner:
             "objectives without an explicit atomicity constraint, use 2-6 phases and concrete, independently "
             "verifiable tasks an engineering team can deliver. "
             "Every task needs measurable acceptance criteria and required skills. "
+            "Each terminal task must be independently verifiable by an automated test: have the "
+            "employee persist the deliverable to the workspace and include a test that verifies it, "
+            "then run that test. "
             "Every task must declare its execution_mode as one of gui, terminal, hybrid, or authorized_tools. "
             "In this deployment, only terminal tasks have a long-running worker consumer. "
             "Do not assign gui, hybrid, or authorized_tools unless the objective cannot be met safely "
@@ -240,13 +278,15 @@ class TaskPlanner:
                     "task_id": f"TASK-{phase_index:02d}-{task_index:02d}-{uuid.uuid4().hex[:4].upper()}",
                     "source_task_id": task.task_id,
                     "title": task.title,
-                    "objective": task.objective or task.title,
+                    "objective": _terminal_task_objective(task.objective or task.title, task.execution_mode),
                     "scope": task.scope,
                     "role_required": task.role_required,
                     "skills_required": task.skills_required,
                     "execution_mode": task.execution_mode,
                     "dependencies": task.dependencies,
-                    "acceptance_criteria": task.acceptance_criteria,
+                    "acceptance_criteria": _terminal_acceptance_contract(
+                        task.acceptance_criteria, task.execution_mode
+                    ),
                     "subtasks": task.subtasks,
                     "resource_budget": {
                         "estimated_hours": task.estimated_hours,
@@ -552,13 +592,15 @@ class TaskPlanner:
                     "task_id": f"TASK-{phase_index:02d}-{task_index:02d}-{uuid.uuid4().hex[:4].upper()}",
                     "source_task_id": task.task_id,
                     "title": task.title,
-                    "objective": task.objective or task.title,
+                    "objective": _terminal_task_objective(task.objective or task.title, task.execution_mode),
                     "scope": task.scope,
                     "role_required": task.role_required,
                     "skills_required": list(task.skills_required),
                     "execution_mode": task.execution_mode.value,
                     "dependencies": list(task.dependencies),
-                    "acceptance_criteria": task.acceptance_criteria,
+                    "acceptance_criteria": _terminal_acceptance_contract(
+                        task.acceptance_criteria, task.execution_mode
+                    ),
                     "subtasks": list(task.subtasks),
                     "resource_budget": {
                         "estimated_hours": task.estimated_hours,

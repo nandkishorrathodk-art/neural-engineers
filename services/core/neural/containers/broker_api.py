@@ -10,6 +10,8 @@ import string
 import tempfile
 import threading
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -19,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from neural.config import get_settings
 from neural.containers.execution_limits import command_with_timeout
+from neural.logger import get_logger
 
 try:
     from docker.errors import APIError, ImageNotFound, NotFound
@@ -32,7 +35,38 @@ except ImportError:  # pragma: no cover - packaging error surfaced as runtime un
 
 
 settings = get_settings()
-app = FastAPI(title="ANCOS Restricted Docker Broker", docs_url=None, redoc_url=None, openapi_url=None)
+logger = get_logger("ancos.containers.broker_api")
+
+
+def warm_employee_images() -> None:
+    """Build the pinned base employee image at startup if it is absent.
+
+    The first provisioning request otherwise performs this multi-minute build
+    inline. The calling core API aborts that request at its client timeout and
+    reports failure while this broker goes on to create the workstation, leaving
+    an orphaned managed container that consumes the only desktop slot and
+    deadlocks all further provisioning. Warming at startup keeps the create path
+    fast and bounded.
+    """
+    try:
+        ensure_employee_image(docker_client(), BASE_IMAGE)
+    except Exception as exc:  # pragma: no cover - defensive startup path
+        logger.warning("Employee base image warm-up did not complete", error=str(exc))
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    warm_employee_images()
+    yield
+
+
+app = FastAPI(
+    title="ANCOS Restricted Docker Broker",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    lifespan=lifespan,
+)
 _docker_client: Any = None
 _port_lock = threading.Lock()
 _provision_lock = threading.Lock()

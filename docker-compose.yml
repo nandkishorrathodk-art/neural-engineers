@@ -1,4 +1,21 @@
 services:
+  data-init:
+    image: ancos-core-api:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.core
+    container_name: ancos-data-init
+    restart: "no"
+    # core-api runs as root with cap_drop ALL (no CAP_DAC_OVERRIDE), so it cannot
+    # write into a bind-mounted ./data owned by the host user. Grant the container
+    # root group access without changing ownership, keeping host-side tooling and
+    # tests (which run as the directory owner) working.
+    command: ["sh", "-c", "mkdir -p /app/data/workspaces && chgrp -R 0 /app/data && chmod -R g+rwX /app/data"]
+    volumes:
+      - ./data:/app/data
+    networks:
+      - ancos-network
+
   redis:
     image: redis:7-alpine
     container_name: ancos-redis
@@ -122,6 +139,8 @@ services:
       - ./data:/app/data
       - ./configs:/app/configs
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       redis:
         condition: service_started
       docker-broker:
