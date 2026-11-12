@@ -24,7 +24,7 @@ def infer_desk_role(department: str = "", title: str = "") -> str:
     if any(k in d or k in t for k in ("creative", "design", "ux", "art", "product")):
         return "creative"
     if "frontend" in d or "frontend" in t or "ui" in d or "ui" in t:
-        return "swe"
+        return "frontend"
     return "swe"
 
 

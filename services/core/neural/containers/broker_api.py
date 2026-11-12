@@ -611,9 +611,9 @@ def capture_verification_manifest(payload: VerificationManifestRequest) -> dict[
             },
         )
         if isinstance(result.output, tuple):
-            stdout_bytes, stderr_bytes = result.output
+            stdout_bytes, _stderr_bytes = result.output
         else:
-            stdout_bytes, stderr_bytes = result.output, None
+            stdout_bytes, _stderr_bytes = result.output, None
         output = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
         if result.exit_code != 0:
             raise HTTPException(status_code=503, detail="Workspace manifest command failed.")

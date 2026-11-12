@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +9,6 @@ from neural.cli.self_evolution_cli import CLIAutonomousEvolutionRunner
 from neural.evolution.candidate_staging import SelfEvolutionCandidateManager
 from neural.evolution.models import (
     PROHIBITED_SELF_EVOLUTION_PATHS,
-    ProtectedPathViolationError,
     SelfEvolutionProposal,
     is_protected_path,
 )

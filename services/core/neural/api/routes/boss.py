@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from neural.api.deps import (
     get_approval_repo,
     get_audit_repo,
@@ -465,6 +465,7 @@ async def trigger_boss_emergency_resume(
     task_repo: TaskRepository = Depends(get_task_repo),
     resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
     actor: str = Depends(require_owner_identity),
+    authorization: str | None = Header(default=None),
 ) -> dict[str, object]:
     """
     NEURO-12: Boss Emergency Resume.
@@ -478,7 +479,7 @@ async def trigger_boss_emergency_resume(
         receipt = await kill_switch.resume(
             actor=actor,
             recovery_strategy=body.recovery_strategy,
-            auth_token=None,
+            auth_token=authorization,
             task_repo=task_repo,
             audit_repo=audit_repo,
             state_repo=state_repo,

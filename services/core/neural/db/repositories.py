@@ -3401,7 +3401,6 @@ class ApprovalRepository:
                 or approval.action_type != action_type
                 or any(approval.details.get(key) != value for key, value in expected_details.items())
             ):
-                await self.session.rollback()
                 return None
             approval.consumed_at = utc_now()
             approval.consumed_by = consumed_by

@@ -225,8 +225,8 @@ class SelfEvolutionVerificationReceipt:
     benchmark_comparison: dict[str, Any]
     artifact_digests: dict[str, str]
     diff_stat: str
-    timestamp: str
     signature: str
+    timestamp: str = field(default_factory=lambda: utc_now().isoformat())
     head_commit: Optional[str] = None
     notes: str = ""
 

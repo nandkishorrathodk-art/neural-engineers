@@ -13,7 +13,7 @@ from neural.config import get_settings
 from neural.db.repositories import BudgetRepository
 from neural.exceptions import ModelProviderError, QuotaExceededError, RateLimitError
 from neural.llm.cost import CostTracker
-from neural.llm.retry import CircuitBreaker, CircuitState, retry_with_backoff
+from neural.llm.retry import CircuitBreaker, retry_with_backoff
 from neural.logger import get_logger
 
 logger = get_logger("ancos.llm.gateway")

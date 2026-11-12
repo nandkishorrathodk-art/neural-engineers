@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from neural.api.deps import (
     get_db_session,
     require_approver_identity,
@@ -109,6 +109,7 @@ async def resume_system(
     body: ResumeRequest,
     session: AsyncSession = Depends(get_db_session),
     actor: str = Depends(require_owner_or_security_reviewer_identity),
+    authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """
     Resumes system operations from an emergency halt.
@@ -123,7 +124,7 @@ async def resume_system(
         receipt = await kill_switch.resume(
             actor=actor,
             recovery_strategy=body.recovery_strategy,
-            auth_token=None,
+            auth_token=authorization,
             task_repo=task_repo,
             audit_repo=audit_repo,
             state_repo=state_repo,

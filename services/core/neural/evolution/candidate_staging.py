@@ -70,13 +70,13 @@ class SelfEvolutionCandidateManager:
                 text=True,
                 timeout=30,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
-            detail = getattr(exc, "stderr", None)
-            if isinstance(detail, bytes):
-                detail = detail.decode("utf-8", errors="replace")
-            raise CandidateStagingError(str(detail or exc).strip()) from exc
+            self.repository = Path(result.stdout.strip()).resolve(strict=True)
+        except (OSError, subprocess.SubprocessError):
+            # Defer the failure to provisioning time so the manager can be
+            # constructed against a plain directory (e.g. the interactive REPL
+            # launched outside a git checkout). Git-backed operations fail closed.
+            self.repository = requested_repo
 
-        self.repository = Path(result.stdout.strip()).resolve(strict=True)
         self.managed_root = Path(managed_root).resolve()
 
     def _git(self, *args: str) -> str:
