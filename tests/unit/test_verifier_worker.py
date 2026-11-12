@@ -459,7 +459,7 @@ def test_broker_captures_bounded_manifest_through_read_only_sandbox(monkeypatch)
         "300s",
         "python3",
         "-I",
-        "-P",
+        "-B",
         "-c",
     ]
     assert "max_files=2000" in calls["exec"]["cmd"][-1]

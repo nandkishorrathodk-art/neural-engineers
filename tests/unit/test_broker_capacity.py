@@ -167,3 +167,62 @@ def test_vnc_tokens_are_scoped_to_container_and_revoked_atomically(tmp_path, mon
     broker_api.revoke_vnc_token("ancos-desktop-anc-emp-test")
     assert broker_api.read_vnc_token("ancos-desktop-anc-emp-test") is None
     assert (tmp_path / "tokens").read_text(encoding="utf-8") == ""
+
+
+def test_ensure_employee_image_tags_role_alias_from_existing_base():
+    tagged: list[str] = []
+
+    class FakeImages:
+        def get(self, tag):
+            if tag == "ancos/employee-base:latest":
+                return type("Image", (), {"tag": lambda _self, t: tagged.append(t)})()
+            raise broker_api.ImageNotFound(tag)
+
+        def build(self, **_kwargs):
+            raise AssertionError("base image already present; rebuild must not happen")
+
+    client = type("DockerClient", (), {"images": FakeImages()})()
+
+    broker_api.ensure_employee_image(client, "ancos/employee-qa:latest")
+
+    assert tagged == ["ancos/employee-qa:latest"]
+
+
+def test_ensure_employee_image_builds_base_then_tags_alias(tmp_path, monkeypatch):
+    built: list[str] = []
+    tagged: list[str] = []
+    present: set[str] = set()
+
+    source = tmp_path / "ancos-docker"
+    (source / "configs").mkdir(parents=True)
+    (source / "Dockerfile.employee-base").write_text("FROM scratch\n", encoding="utf-8")
+    (source / "entrypoint-employee.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(broker_api, "BUILD_SOURCE_DIR", source)
+
+    class FakeImages:
+        def get(self, tag):
+            if tag in present:
+                return type("Image", (), {"tag": lambda _self, t: tagged.append(t)})()
+            raise broker_api.ImageNotFound(tag)
+
+        def build(self, tag=None, **_kwargs):
+            built.append(tag)
+            present.add(tag)
+            return None, []
+
+    client = type("DockerClient", (), {"images": FakeImages()})()
+
+    broker_api.ensure_employee_image(client, "ancos/employee-frontend:latest")
+
+    assert built == ["ancos/employee-base:latest"]
+    assert tagged == ["ancos/employee-frontend:latest"]
+
+
+def test_ensure_employee_image_rejects_unallowlisted_tag():
+    client = type("DockerClient", (), {"images": object()})()
+
+    with pytest.raises(HTTPException) as rejected:
+        broker_api.ensure_employee_image(client, "ancos/employee-evil:latest")
+
+    assert rejected.value.status_code == 400
+    assert rejected.value.detail == "Requested employee image is not allowlisted."

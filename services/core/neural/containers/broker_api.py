@@ -395,10 +395,10 @@ def _provision_single_container(payload: ProvisionRequest) -> dict[str, Any]:
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"Workstation {name} already exists; refusing replacement.")
 
-    try:
-        client.images.get(payload.image)
-    except ImageNotFound as exc:
-        raise HTTPException(status_code=409, detail=f"Allowlisted image {payload.image} has not been built.") from exc
+    # Self-heal a missing allowlisted image: role images are aliases of the pinned
+    # base workstation image, so build the base and tag the alias on demand instead
+    # of failing workstation provisioning on a fresh deployment.
+    ensure_employee_image(client, payload.image)
 
     novnc_port = 12003
     volume_name = ensure_employee_volume(client, payload.employee_id)
@@ -600,7 +600,7 @@ def capture_verification_manifest(payload: VerificationManifestRequest) -> dict[
     )
     try:
         result = verifier_container.exec_run(
-            cmd=["/usr/bin/timeout", "300s", "python3", "-I", "-P", "-c", manifest_script],
+            cmd=["/usr/bin/timeout", "300s", "python3", "-I", "-B", "-c", manifest_script],
             user="1000:1000",
             workdir="/home/employee/workspace",
             demux=True,
@@ -749,8 +749,24 @@ def resume_workstations() -> dict[str, int]:
 
 @app.post("/v1/images/build")
 def build_employee_image(payload: ImageBuildRequest) -> dict[str, Any]:
-    client = docker_client()
-    source = Path("/opt/ancos-docker")
+    ensure_employee_image(docker_client(), payload.tag)
+    return {"tag": payload.tag, "built": True}
+
+
+BUILD_SOURCE_DIR = Path("/opt/ancos-docker")
+BASE_IMAGE = "ancos/employee-base:latest"
+
+
+def _image_exists(client: Any, tag: str) -> bool:
+    try:
+        client.images.get(tag)
+        return True
+    except ImageNotFound:
+        return False
+
+
+def _build_base_employee_image(client: Any) -> None:
+    source = BUILD_SOURCE_DIR
     dockerfile = source / "Dockerfile.employee-base"
     if not dockerfile.is_file():
         raise HTTPException(status_code=503, detail="Fixed employee base Dockerfile is unavailable.")
@@ -765,12 +781,32 @@ def build_employee_image(payload: ImageBuildRequest) -> dict[str, Any]:
             client.images.build(
                 path=str(context),
                 dockerfile="docker/Dockerfile.employee-base",
-                tag=payload.tag,
+                tag=BASE_IMAGE,
                 rm=True,
             )
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"Fixed employee image build failed: {exc}") from exc
-    return {"tag": payload.tag, "built": True}
+
+
+def ensure_employee_image(client: Any, tag: str) -> None:
+    """Guarantee an allowlisted employee image exists.
+
+    Role images (swe/frontend/qa/devops) are content-identical aliases of the
+    pinned base workstation image, so a fresh deployment only needs to build the
+    base once and tag the role aliases from it. Without this, provisioning a role
+    workstation fails on any deployment where the aliases were never built.
+    """
+    if tag not in ALLOWED_IMAGES:
+        raise HTTPException(status_code=400, detail="Requested employee image is not allowlisted.")
+    if _image_exists(client, tag):
+        return
+    if not _image_exists(client, BASE_IMAGE):
+        _build_base_employee_image(client)
+    if tag != BASE_IMAGE:
+        try:
+            client.images.get(BASE_IMAGE).tag(tag)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Employee image alias tagging failed: {exc}") from exc
 
 
 def get_managed_container(container_id: str) -> Any:

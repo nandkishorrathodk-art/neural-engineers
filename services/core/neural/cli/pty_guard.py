@@ -146,54 +146,12 @@ class PTYExecutionGuard:
         t_out.start()
         t_err.start()
 
-        timed_out = False
-        interrupted = False
-        deadline = start_time + run_timeout
-
-        try:
+        def _drain_queue() -> None:
             while True:
-                # Drain queue items
-                while True:
-                    try:
-                        stream_name, line = out_q.get_nowait()
-                        if stream_name == "stdout":
-                            stdout_lines.append(line)
-                            if on_stdout_line:
-                                try:
-                                    on_stdout_line(line)
-                                except Exception:
-                                    pass
-                        else:
-                            stderr_lines.append(line)
-                            if on_stderr_line:
-                                try:
-                                    on_stderr_line(line)
-                                except Exception:
-                                    pass
-                    except queue.Empty:
-                        break
-
-                if proc.poll() is not None:
-                    break
-
-                if time.monotonic() > deadline:
-                    timed_out = True
-                    self._kill_process_tree(proc)
-                    break
-
-                time.sleep(0.02)
-        except KeyboardInterrupt:
-            interrupted = True
-            self._kill_process_tree(proc)
-
-        # Wait for readers to finish draining remaining output
-        t_out.join(timeout=1.0)
-        t_err.join(timeout=1.0)
-
-        # Final drain
-        while not out_q.empty():
-            try:
-                stream_name, line = out_q.get_nowait()
+                try:
+                    stream_name, line = out_q.get_nowait()
+                except queue.Empty:
+                    return
                 if stream_name == "stdout":
                     stdout_lines.append(line)
                     if on_stdout_line:
@@ -208,8 +166,39 @@ class PTYExecutionGuard:
                             on_stderr_line(line)
                         except Exception:
                             pass
-            except queue.Empty:
-                break
+
+        timed_out = False
+        interrupted = False
+        deadline = start_time + run_timeout
+
+        try:
+            while True:
+                _drain_queue()
+
+                if proc.poll() is not None:
+                    break
+
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    self._kill_process_tree(proc)
+                    break
+
+                time.sleep(0.02)
+        except KeyboardInterrupt:
+            interrupted = True
+            self._kill_process_tree(proc)
+
+        # The child has exited, so both pipes reach EOF once every buffered byte
+        # has been read. Keep draining while the reader threads finish, instead of
+        # a single short join that can truncate the tail of a large output stream
+        # on a loaded machine; bound the wait in case a lingering grandchild keeps
+        # the write end of a pipe open.
+        drain_deadline = time.monotonic() + 5.0
+        while (t_out.is_alive() or t_err.is_alive()) and time.monotonic() < drain_deadline:
+            t_out.join(timeout=0.05)
+            t_err.join(timeout=0.05)
+            _drain_queue()
+        _drain_queue()
 
         duration = time.monotonic() - start_time
         if timed_out:
