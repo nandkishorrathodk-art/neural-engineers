@@ -64,6 +64,10 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+      # On a fresh deployment the broker builds the pinned base employee image
+      # during startup warm-up, which can take several minutes. Do not mark the
+      # broker unhealthy (and block every dependent service) while that runs.
+      start_period: 900s
     depends_on:
       workstation-gateway:
         condition: service_healthy
