@@ -28,36 +28,8 @@ class EvidenceBasedProposalEngine:
     def __init__(self, task_repo: Optional[TaskRepository] = None) -> None:
         self.task_repo = task_repo
 
-    async def detect_weaknesses_from_tasks(
-        self,
-        sample_failure_logs: Optional[list[dict[str, Any]]] = None,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """
-        Analyzes task execution failure logs and operational metrics
-        to identify systemic weaknesses and optimization opportunities.
-        """
+    def _analyze_log_entries(self, logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         weaknesses: list[dict[str, Any]] = []
-        logs = list(sample_failure_logs or [])
-
-        if self.task_repo:
-            failed_tasks = await self.task_repo.list_tasks(status=TaskStatus.FAILED, limit=limit)
-            for t in failed_tasks:
-                verification_notes = ""
-                if isinstance(t.verification_result, dict):
-                    verification_notes = (
-                        t.verification_result.get("notes", "") or t.verification_result.get("error", "")
-                    )
-                elif isinstance(t.verification_result, str):
-                    verification_notes = t.verification_result
-                logs.append({
-                    "task_id": t.task_id,
-                    "title": t.title,
-                    "objective": t.objective,
-                    "verification_notes": verification_notes,
-                    "retry_count": t.retry_count,
-                })
-
         for entry in logs:
             title = str(entry.get("title", "")).lower()
             notes = str(entry.get("verification_notes", "")).lower()
@@ -116,28 +88,48 @@ class EvidenceBasedProposalEngine:
                     },
                 })
 
-        # Fallback weakness if no explicit failures detected
-        if not weaknesses:
-            weaknesses.append({
-                "category": "optimization",
-                "subsystem": "string_math_kernel",
-                "title": "Vectorized Fast Path Optimization for String-Math Kernel",
-                "target_files": ["services/core/neural/utils/string_kernel.py"],
-                "root_cause": "Interpreted regex evaluation overhead in hot token normalization path.",
-                "baseline_metrics": {
-                    "throughput_tokens_sec": 2500.0,
-                    "latency_ms": 12.0,
-                    "accuracy": 0.99,
-                },
-                "target_goals": {
-                    "throughput_tokens_sec": 8000.0,
-                    "latency_ms": 3.5,
-                    "accuracy": 1.0,
-                    "min_speedup_ratio": 2.0,
-                },
-            })
-
         return weaknesses
+
+    async def detect_weaknesses_from_tasks(
+        self,
+        sample_failure_logs: Optional[list[dict[str, Any]]] = None,
+        task_records: Optional[list[dict[str, Any]]] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """
+        Analyzes task execution failure logs and operational metrics
+        to identify systemic weaknesses and optimization opportunities.
+        """
+        logs = list(task_records or sample_failure_logs or [])
+
+        if self.task_repo:
+            failed_tasks = await self.task_repo.list_tasks(status=TaskStatus.FAILED, limit=limit)
+            for t in failed_tasks:
+                verification_notes = ""
+                if isinstance(t.verification_result, dict):
+                    verification_notes = (
+                        t.verification_result.get("notes", "") or t.verification_result.get("error", "")
+                    )
+                elif isinstance(t.verification_result, str):
+                    verification_notes = t.verification_result
+                logs.append({
+                    "task_id": t.task_id,
+                    "title": t.title,
+                    "objective": t.objective,
+                    "verification_notes": verification_notes,
+                    "retry_count": t.retry_count,
+                })
+
+        return self._analyze_log_entries(logs)
+
+    def detect_weaknesses_sync(
+        self,
+        sample_failure_logs: Optional[list[dict[str, Any]]] = None,
+        task_records: Optional[list[dict[str, Any]]] = None,
+    ) -> list[dict[str, Any]]:
+        """Synchronous analysis of provided sample logs without database lookup."""
+        logs = list(task_records or sample_failure_logs or [])
+        return self._analyze_log_entries(logs)
 
     def create_proposal(
         self,

@@ -57,16 +57,6 @@ class LayaAdapter(BaseLayaAdapter):
     def _detect_runtime(self) -> ModelRuntime:
         # Treat a local ONNX file as executable input: verify its pinned digest
         # before importing the runtime or allowing a session to load it.
-        if self.checkpoint_metadata.onnx_path and not os.path.exists(self.checkpoint_metadata.onnx_path):
-            dataset_path = os.path.abspath(".venv/Lib/site-packages/onnxruntime/datasets/logreg_iris.onnx")
-            if os.path.exists(dataset_path):
-                try:
-                    import shutil
-                    os.makedirs(os.path.dirname(self.checkpoint_metadata.onnx_path), exist_ok=True)
-                    shutil.copyfile(dataset_path, self.checkpoint_metadata.onnx_path)
-                except Exception:
-                    pass
-
         if self.checkpoint_metadata.onnx_path and os.path.exists(self.checkpoint_metadata.onnx_path):
             try:
                 self._verify_onnx_checkpoint()
@@ -78,7 +68,6 @@ class LayaAdapter(BaseLayaAdapter):
                     model=self.checkpoint_metadata.name,
                     error=str(exc),
                 )
-                pass
 
         # Check if PyTorch model is requested/available
         if (
@@ -100,7 +89,6 @@ class LayaAdapter(BaseLayaAdapter):
                     model=self.checkpoint_metadata.name,
                     error=str(exc),
                 )
-                pass
 
         return ModelRuntime.FALLBACK
 
@@ -191,8 +179,44 @@ class LayaAdapter(BaseLayaAdapter):
             raise ValueError(f"Choice questions require 2-12 candidates, got {num_candidates}")
 
         # 1. Genuine PyTorch Laya Neural Model Inference
-        if self.runtime == ModelRuntime.TORCH and self._torch_model is not None:
-            try:
+        if self.runtime == ModelRuntime.TORCH:
+            if self._torch_model is None:
+                raise RuntimeError(
+                    f"PyTorch model is not initialized for checkpoint '{self.checkpoint_metadata.name}'"
+                )
+            state = question.context
+            criteria = {c.id: f"{c.label}: {c.metadata or ''}" if c.metadata else c.label for c in candidates}
+            q_dict = {
+                question.question_id: {
+                    "type": "choice",
+                    "instructions": question.question_text or "Select the best candidate in context",
+                    "criteria": criteria,
+                }
+            }
+            raw = self._torch_model.predict(state, q_dict)
+            ans = raw.get("answers", {}).get(question.question_id, {})
+            selected_id = ans.get("choice", candidates[0].id)
+            confidence = float(ans.get("confidence", 0.0))
+            raw_probs = ans.get("probabilities", {})
+            prob_dict = {c.id: round(float(raw_probs.get(c.id, 1.0 / num_candidates)), 4) for c in candidates}
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            return ChoiceResult(
+                question_id=question.question_id,
+                selected_id=selected_id,
+                confidence=round(confidence, 4),
+                probabilities=prob_dict,
+                latency_ms=round(elapsed_ms, 2),
+                model_name=self.checkpoint_metadata.name,
+                reasoning_hint=f"Laya neural choice: {selected_id} ({confidence:.2f})",
+            )
+
+        # 2. Genuine ONNX Runtime Inference
+        if self.runtime == ModelRuntime.ONNX:
+            if self._onnx_session is None:
+                raise RuntimeError(
+                    f"ONNX session is not initialized for checkpoint '{self.checkpoint_metadata.name}'"
+                )
+            if hasattr(self._onnx_session, "predict"):
                 state = question.context
                 criteria = {c.id: f"{c.label}: {c.metadata or ''}" if c.metadata else c.label for c in candidates}
                 q_dict = {
@@ -202,95 +226,61 @@ class LayaAdapter(BaseLayaAdapter):
                         "criteria": criteria,
                     }
                 }
-                raw = self._torch_model.predict(state, q_dict)
+                raw = self._onnx_session.predict(state, q_dict)
                 ans = raw.get("answers", {}).get(question.question_id, {})
                 selected_id = ans.get("choice", candidates[0].id)
                 confidence = float(ans.get("confidence", 0.0))
                 raw_probs = ans.get("probabilities", {})
-                prob_dict = {c.id: round(float(raw_probs.get(c.id, 1.0 / num_candidates)), 4) for c in candidates}
+                raw_scores = [float(raw_probs.get(c.id, 1.0 / num_candidates)) for c in candidates]
+                total_s = sum(raw_scores)
+                norm_scores = [s / total_s for s in raw_scores] if total_s > 0 else [1.0 / num_candidates for _ in raw_scores]
+                prob_dict = {c.id: round(s, 4) for c, s in zip(candidates, norm_scores)}
+                confidence = prob_dict.get(selected_id, round(confidence, 4))
                 elapsed_ms = (time.perf_counter() - start_time) * 1000.0
                 return ChoiceResult(
                     question_id=question.question_id,
                     selected_id=selected_id,
-                    confidence=round(confidence, 4),
+                    confidence=confidence,
                     probabilities=prob_dict,
                     latency_ms=round(elapsed_ms, 2),
                     model_name=self.checkpoint_metadata.name,
-                    reasoning_hint=f"Laya neural choice: {selected_id} ({confidence:.2f})",
+                    reasoning_hint=f"Laya ONNX neural choice: {selected_id} ({confidence:.2f})",
                 )
-            except Exception as e:
-                logger.warning("Laya neural choice failed, falling back to heuristic engine", error=str(e))
-
-        # 2. Genuine ONNX Runtime Inference
-        if self.runtime == ModelRuntime.ONNX and self._onnx_session is not None:
-            try:
-                if hasattr(self._onnx_session, "predict"):
-                    state = question.context
-                    criteria = {c.id: f"{c.label}: {c.metadata or ''}" if c.metadata else c.label for c in candidates}
-                    q_dict = {
-                        question.question_id: {
-                            "type": "choice",
-                            "instructions": question.question_text or "Select the best candidate in context",
-                            "criteria": criteria,
-                        }
-                    }
-                    raw = self._onnx_session.predict(state, q_dict)
-                    ans = raw.get("answers", {}).get(question.question_id, {})
-                    selected_id = ans.get("choice", candidates[0].id)
-                    confidence = float(ans.get("confidence", 0.0))
-                    raw_probs = ans.get("probabilities", {})
-                    raw_scores = [float(raw_probs.get(c.id, 1.0 / num_candidates)) for c in candidates]
+            elif hasattr(self._onnx_session, "run"):
+                feed_dict = self._build_onnx_feed(question.context, num_candidates)
+                raw_out = self._onnx_session.run(None, feed_dict)
+                prob_dict = {}
+                if len(raw_out) > 1 and isinstance(raw_out[1], (list, dict)):
+                    probs = raw_out[1][0] if isinstance(raw_out[1], list) else raw_out[1]
+                    raw_scores = [float(probs.get(i, probs.get(str(i), 1.0 / num_candidates))) for i in range(num_candidates)]
                     total_s = sum(raw_scores)
                     norm_scores = [s / total_s for s in raw_scores] if total_s > 0 else [1.0 / num_candidates for _ in raw_scores]
                     prob_dict = {c.id: round(s, 4) for c, s in zip(candidates, norm_scores)}
-                    confidence = prob_dict.get(selected_id, round(confidence, 4))
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-                    return ChoiceResult(
-                        question_id=question.question_id,
-                        selected_id=selected_id,
-                        confidence=confidence,
-                        probabilities=prob_dict,
-                        latency_ms=round(elapsed_ms, 2),
-                        model_name=self.checkpoint_metadata.name,
-                        reasoning_hint=f"Laya ONNX neural choice: {selected_id} ({confidence:.2f})",
-                    )
-                elif hasattr(self._onnx_session, "run"):
-                    feed_dict = self._build_onnx_feed(question.context, num_candidates)
-                    raw_out = self._onnx_session.run(None, feed_dict)
-                    prob_dict = {}
-                    if len(raw_out) > 1 and isinstance(raw_out[1], (list, dict)):
-                        probs = raw_out[1][0] if isinstance(raw_out[1], list) else raw_out[1]
-                        raw_scores = [float(probs.get(i, probs.get(str(i), 1.0 / num_candidates))) for i in range(num_candidates)]
-                        total_s = sum(raw_scores)
-                        norm_scores = [s / total_s for s in raw_scores] if total_s > 0 else [1.0 / num_candidates for _ in raw_scores]
-                        prob_dict = {c.id: round(s, 4) for c, s in zip(candidates, norm_scores)}
-                    else:
-                        import numpy as np
+                else:
+                    import numpy as np
 
-                        arr = np.asarray(raw_out[0]).flatten()
-                        logits = arr[:num_candidates]
-                        max_l = float(np.max(logits)) if len(logits) > 0 else 0.0
-                        exp_a = np.exp(logits - max_l)
-                        sum_exp = float(np.sum(exp_a)) if np.sum(exp_a) > 0 else 1.0
-                        norm_probs = exp_a / sum_exp
-                        for i, c in enumerate(candidates):
-                            prob_val = float(norm_probs[i]) if i < len(norm_probs) else 1.0 / num_candidates
-                            prob_dict[c.id] = round(prob_val, 4)
+                    arr = np.asarray(raw_out[0]).flatten()
+                    logits = arr[:num_candidates]
+                    max_l = float(np.max(logits)) if len(logits) > 0 else 0.0
+                    exp_a = np.exp(logits - max_l)
+                    sum_exp = float(np.sum(exp_a)) if np.sum(exp_a) > 0 else 1.0
+                    norm_probs = exp_a / sum_exp
+                    for i, c in enumerate(candidates):
+                        prob_val = float(norm_probs[i]) if i < len(norm_probs) else 1.0 / num_candidates
+                        prob_dict[c.id] = round(prob_val, 4)
 
-                    best_cand = max(prob_dict, key=prob_dict.get)
-                    confidence = prob_dict[best_cand]
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-                    return ChoiceResult(
-                        question_id=question.question_id,
-                        selected_id=best_cand,
-                        confidence=confidence,
-                        probabilities=prob_dict,
-                        latency_ms=round(elapsed_ms, 2),
-                        model_name=self.checkpoint_metadata.name,
-                        reasoning_hint=f"Laya ONNX neural choice: {best_cand} ({confidence:.2f})",
-                    )
-            except Exception as e:
-                logger.warning("Laya ONNX choice failed, falling back to heuristic engine", error=str(e))
+                best_cand = max(prob_dict, key=prob_dict.get)
+                confidence = prob_dict[best_cand]
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                return ChoiceResult(
+                    question_id=question.question_id,
+                    selected_id=best_cand,
+                    confidence=confidence,
+                    probabilities=prob_dict,
+                    latency_ms=round(elapsed_ms, 2),
+                    model_name=self.checkpoint_metadata.name,
+                    reasoning_hint=f"Laya ONNX neural choice: {best_cand} ({confidence:.2f})",
+                )
 
         # 3. Calibrated Deterministic Heuristic Fallback Engine
         # Compute raw matching scores for each candidate against context
@@ -362,8 +352,50 @@ class LayaAdapter(BaseLayaAdapter):
         num_steps = len(steps)
 
         # 1. Genuine PyTorch Laya Neural Model Inference
-        if self.runtime == ModelRuntime.TORCH and self._torch_model is not None:
-            try:
+        if self.runtime == ModelRuntime.TORCH:
+            if self._torch_model is None:
+                raise RuntimeError(
+                    f"PyTorch model is not initialized for checkpoint '{self.checkpoint_metadata.name}'"
+                )
+            state = f"{question.proposition} {question.context}".strip()
+            criteria = [str(step) for step in steps]
+            q_dict = {
+                question.question_id: {
+                    "type": "score",
+                    "instructions": question.proposition or "Score priority or severity",
+                    "criteria": criteria,
+                }
+            }
+            raw = self._torch_model.predict(state, q_dict)
+            ans = raw.get("answers", {}).get(question.question_id, {})
+            # Laya score answers are expected ordinal positions in the
+            # criteria list (0..N-1), not the caller's scale values.
+            pred_continuous = float(ans.get("score", float(num_steps // 2)))
+            score_index = max(0, min(num_steps - 1, int(round(pred_continuous))))
+            chosen_score = steps[score_index]
+            confidence = float(ans.get("confidence", 0.5))
+            raw_probs = ans.get("probabilities", {})
+            prob_dict = {
+                step: round(float(raw_probs.get(str(step), raw_probs.get(str(i), 1.0 / num_steps))), 4)
+                for i, step in enumerate(steps)
+            }
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            return ScoreResult(
+                question_id=question.question_id,
+                score=chosen_score,
+                probabilities=prob_dict,
+                confidence=round(confidence, 4),
+                latency_ms=round(elapsed_ms, 2),
+                model_name=self.checkpoint_metadata.name,
+            )
+
+        # 2. Genuine ONNX Runtime Inference
+        if self.runtime == ModelRuntime.ONNX:
+            if self._onnx_session is None:
+                raise RuntimeError(
+                    f"ONNX session is not initialized for checkpoint '{self.checkpoint_metadata.name}'"
+                )
+            if hasattr(self._onnx_session, "predict"):
                 state = f"{question.proposition} {question.context}".strip()
                 criteria = [str(step) for step in steps]
                 q_dict = {
@@ -373,94 +405,45 @@ class LayaAdapter(BaseLayaAdapter):
                         "criteria": criteria,
                     }
                 }
-                raw = self._torch_model.predict(state, q_dict)
+                raw = self._onnx_session.predict(state, q_dict)
                 ans = raw.get("answers", {}).get(question.question_id, {})
-                # Laya score answers are expected ordinal positions in the
-                # criteria list (0..N-1), not the caller's scale values.
                 pred_continuous = float(ans.get("score", float(num_steps // 2)))
                 score_index = max(0, min(num_steps - 1, int(round(pred_continuous))))
                 chosen_score = steps[score_index]
                 confidence = float(ans.get("confidence", 0.5))
                 raw_probs = ans.get("probabilities", {})
-                prob_dict = {
-                    step: round(float(raw_probs.get(str(step), raw_probs.get(str(i), 1.0 / num_steps))), 4)
+                raw_step_probs = [
+                    float(raw_probs.get(str(step), raw_probs.get(str(i), 1.0 / num_steps)))
                     for i, step in enumerate(steps)
-                }
+                ]
+                sum_p = sum(raw_step_probs)
+                norm_probs = [p / sum_p for p in raw_step_probs] if sum_p > 0 else [1.0 / num_steps for _ in steps]
+                prob_dict = {step: round(p, 4) for step, p in zip(steps, norm_probs)}
+                confidence = prob_dict.get(chosen_score, round(confidence, 4))
                 elapsed_ms = (time.perf_counter() - start_time) * 1000.0
                 return ScoreResult(
                     question_id=question.question_id,
                     score=chosen_score,
                     probabilities=prob_dict,
-                    confidence=round(confidence, 4),
+                    confidence=confidence,
                     latency_ms=round(elapsed_ms, 2),
                     model_name=self.checkpoint_metadata.name,
                 )
-            except Exception as e:
-                logger.warning("Laya neural score failed, falling back to heuristic engine", error=str(e))
+            elif hasattr(self._onnx_session, "run"):
+                import numpy as np
 
-        # 2. Genuine ONNX Runtime Inference
-        if self.runtime == ModelRuntime.ONNX and self._onnx_session is not None:
-            try:
-                if hasattr(self._onnx_session, "predict"):
-                    state = f"{question.proposition} {question.context}".strip()
-                    criteria = [str(step) for step in steps]
-                    q_dict = {
-                        question.question_id: {
-                            "type": "score",
-                            "instructions": question.proposition or "Score priority or severity",
-                            "criteria": criteria,
-                        }
-                    }
-                    raw = self._onnx_session.predict(state, q_dict)
-                    ans = raw.get("answers", {}).get(question.question_id, {})
-                    pred_continuous = float(ans.get("score", float(num_steps // 2)))
-                    score_index = max(0, min(num_steps - 1, int(round(pred_continuous))))
-                    chosen_score = steps[score_index]
-                    confidence = float(ans.get("confidence", 0.5))
-                    raw_probs = ans.get("probabilities", {})
-                    raw_step_probs = [
-                        float(raw_probs.get(str(step), raw_probs.get(str(i), 1.0 / num_steps)))
-                        for i, step in enumerate(steps)
-                    ]
+                feed_dict = self._build_onnx_feed(f"{question.proposition} {question.context}".strip(), num_steps)
+                raw_out = self._onnx_session.run(None, feed_dict)
+                if len(raw_out) > 1 and isinstance(raw_out[1], (list, dict)):
+                    probs = raw_out[1][0] if isinstance(raw_out[1], list) else raw_out[1]
+                    raw_step_probs = [float(probs.get(i, probs.get(str(i), 0.0))) for i in range(num_steps)]
                     sum_p = sum(raw_step_probs)
-                    norm_probs = [p / sum_p for p in raw_step_probs] if sum_p > 0 else [1.0 / num_steps for _ in steps]
-                    prob_dict = {step: round(p, 4) for step, p in zip(steps, norm_probs)}
-                    confidence = prob_dict.get(chosen_score, round(confidence, 4))
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-                    return ScoreResult(
-                        question_id=question.question_id,
-                        score=chosen_score,
-                        probabilities=prob_dict,
-                        confidence=confidence,
-                        latency_ms=round(elapsed_ms, 2),
-                        model_name=self.checkpoint_metadata.name,
-                    )
-                elif hasattr(self._onnx_session, "run"):
-                    import numpy as np
-
-                    feed_dict = self._build_onnx_feed(f"{question.proposition} {question.context}".strip(), num_steps)
-                    raw_out = self._onnx_session.run(None, feed_dict)
-                    if len(raw_out) > 1 and isinstance(raw_out[1], (list, dict)):
-                        probs = raw_out[1][0] if isinstance(raw_out[1], list) else raw_out[1]
-                        raw_step_probs = [float(probs.get(i, probs.get(str(i), 0.0))) for i in range(num_steps)]
-                        sum_p = sum(raw_step_probs)
-                        if sum_p > 0:
-                            norm_probs = [p / sum_p for p in raw_step_probs]
-                            score_idx = int(np.argmax(norm_probs))
-                            chosen_score = steps[score_idx]
-                            prob_dict = {s: round(p, 4) for s, p in zip(steps, norm_probs)}
-                            confidence = prob_dict[chosen_score]
-                        else:
-                            val = float(np.mean(raw_out[0]))
-                            score_idx = max(0, min(num_steps - 1, int(round(abs(val)))))
-                            chosen_score = steps[score_idx]
-                            logits = [- (abs(i - score_idx) ** 2) * 1.5 for i in range(num_steps)]
-                            max_l = max(logits)
-                            exp_vals = [math.exp(val_logit - max_l) for val_logit in logits]
-                            sum_exp = sum(exp_vals)
-                            norm_probs = [e / sum_exp for e in exp_vals]
-                            prob_dict = {s: round(p, 4) for s, p in zip(steps, norm_probs)}
-                            confidence = round(prob_dict[chosen_score], 4)
+                    if sum_p > 0:
+                        norm_probs = [p / sum_p for p in raw_step_probs]
+                        score_idx = int(np.argmax(norm_probs))
+                        chosen_score = steps[score_idx]
+                        prob_dict = {s: round(p, 4) for s, p in zip(steps, norm_probs)}
+                        confidence = prob_dict[chosen_score]
                     else:
                         val = float(np.mean(raw_out[0]))
                         score_idx = max(0, min(num_steps - 1, int(round(abs(val)))))
@@ -472,18 +455,27 @@ class LayaAdapter(BaseLayaAdapter):
                         norm_probs = [e / sum_exp for e in exp_vals]
                         prob_dict = {s: round(p, 4) for s, p in zip(steps, norm_probs)}
                         confidence = round(prob_dict[chosen_score], 4)
+                else:
+                    val = float(np.mean(raw_out[0]))
+                    score_idx = max(0, min(num_steps - 1, int(round(abs(val)))))
+                    chosen_score = steps[score_idx]
+                    logits = [- (abs(i - score_idx) ** 2) * 1.5 for i in range(num_steps)]
+                    max_l = max(logits)
+                    exp_vals = [math.exp(val_logit - max_l) for val_logit in logits]
+                    sum_exp = sum(exp_vals)
+                    norm_probs = [e / sum_exp for e in exp_vals]
+                    prob_dict = {s: round(p, 4) for s, p in zip(steps, norm_probs)}
+                    confidence = round(prob_dict[chosen_score], 4)
 
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-                    return ScoreResult(
-                        question_id=question.question_id,
-                        score=chosen_score,
-                        probabilities=prob_dict,
-                        confidence=confidence,
-                        latency_ms=round(elapsed_ms, 2),
-                        model_name=self.checkpoint_metadata.name,
-                    )
-            except Exception as e:
-                logger.warning("Laya ONNX score failed, falling back to heuristic engine", error=str(e))
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                return ScoreResult(
+                    question_id=question.question_id,
+                    score=chosen_score,
+                    probabilities=prob_dict,
+                    confidence=confidence,
+                    latency_ms=round(elapsed_ms, 2),
+                    model_name=self.checkpoint_metadata.name,
+                )
 
         # 3. Calibrated Deterministic Heuristic Fallback Engine
         # Semantic keywords for urgency/severity/complexity
@@ -537,8 +529,42 @@ class LayaAdapter(BaseLayaAdapter):
         start_time = time.perf_counter()
 
         # 1. Genuine PyTorch Laya Neural Model Inference
-        if self.runtime == ModelRuntime.TORCH and self._torch_model is not None:
-            try:
+        if self.runtime == ModelRuntime.TORCH:
+            if self._torch_model is None:
+                raise RuntimeError(
+                    f"PyTorch model is not initialized for checkpoint '{self.checkpoint_metadata.name}'"
+                )
+            state = f"{question.proposition} {question.context}".strip()
+            q_dict = {
+                question.question_id: {
+                    "type": "noul",
+                    "instructions": question.proposition or "Verify proposition condition",
+                }
+            }
+            raw = self._torch_model.predict(state, q_dict)
+            ans = raw.get("answers", {}).get(question.question_id, {})
+            prob_true = float(ans.get("noul", 0.5))
+            confidence = float(ans.get("confidence", 0.5))
+            is_true = prob_true >= question.threshold
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            return NoulResult(
+                question_id=question.question_id,
+                is_true=is_true,
+                probability_true=round(prob_true, 4),
+                calibrated_prob=round(prob_true, 4),
+                confidence=round(confidence, 4),
+                threshold=question.threshold,
+                latency_ms=round(elapsed_ms, 2),
+                model_name=self.checkpoint_metadata.name,
+            )
+
+        # 2. Genuine ONNX Runtime Inference
+        if self.runtime == ModelRuntime.ONNX:
+            if self._onnx_session is None:
+                raise RuntimeError(
+                    f"ONNX session is not initialized for checkpoint '{self.checkpoint_metadata.name}'"
+                )
+            if hasattr(self._onnx_session, "predict"):
                 state = f"{question.proposition} {question.context}".strip()
                 q_dict = {
                     question.question_id: {
@@ -546,95 +572,61 @@ class LayaAdapter(BaseLayaAdapter):
                         "instructions": question.proposition or "Verify proposition condition",
                     }
                 }
-                raw = self._torch_model.predict(state, q_dict)
+                raw = self._onnx_session.predict(state, q_dict)
                 ans = raw.get("answers", {}).get(question.question_id, {})
                 prob_true = float(ans.get("noul", 0.5))
-                confidence = float(ans.get("confidence", 0.5))
+                prob_true = round(max(0.01, min(0.99, prob_true)), 4)
                 is_true = prob_true >= question.threshold
+                confidence = round(prob_true if prob_true >= 0.5 else 1.0 - prob_true, 4)
                 elapsed_ms = (time.perf_counter() - start_time) * 1000.0
                 return NoulResult(
                     question_id=question.question_id,
                     is_true=is_true,
-                    probability_true=round(prob_true, 4),
-                    calibrated_prob=round(prob_true, 4),
-                    confidence=round(confidence, 4),
+                    probability_true=prob_true,
+                    calibrated_prob=prob_true,
+                    confidence=confidence,
                     threshold=question.threshold,
                     latency_ms=round(elapsed_ms, 2),
                     model_name=self.checkpoint_metadata.name,
                 )
-            except Exception as e:
-                logger.warning("Laya neural noul failed, falling back to heuristic engine", error=str(e))
+            elif hasattr(self._onnx_session, "run"):
+                import numpy as np
 
-        # 2. Genuine ONNX Runtime Inference
-        if self.runtime == ModelRuntime.ONNX and self._onnx_session is not None:
-            try:
-                if hasattr(self._onnx_session, "predict"):
-                    state = f"{question.proposition} {question.context}".strip()
-                    q_dict = {
-                        question.question_id: {
-                            "type": "noul",
-                            "instructions": question.proposition or "Verify proposition condition",
-                        }
-                    }
-                    raw = self._onnx_session.predict(state, q_dict)
-                    ans = raw.get("answers", {}).get(question.question_id, {})
-                    prob_true = float(ans.get("noul", 0.5))
-                    prob_true = round(max(0.01, min(0.99, prob_true)), 4)
-                    is_true = prob_true >= question.threshold
-                    confidence = round(prob_true if is_true else 1.0 - prob_true, 4)
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-                    return NoulResult(
-                        question_id=question.question_id,
-                        is_true=is_true,
-                        probability_true=prob_true,
-                        calibrated_prob=prob_true,
-                        confidence=confidence,
-                        threshold=question.threshold,
-                        latency_ms=round(elapsed_ms, 2),
-                        model_name=self.checkpoint_metadata.name,
-                    )
-                elif hasattr(self._onnx_session, "run"):
-                    import numpy as np
-
-                    feed_dict = self._build_onnx_feed(f"{question.proposition} {question.context}".strip(), 2)
-                    raw_out = self._onnx_session.run(None, feed_dict)
-                    if len(raw_out) > 1 and isinstance(raw_out[1], (list, dict)):
-                        probs = raw_out[1][0] if isinstance(raw_out[1], list) else raw_out[1]
-                        if 1 in probs or "1" in probs:
-                            prob_true = float(probs.get(1, probs.get("1", 0.5)))
-                        elif len(probs) > 1:
-                            keys = sorted(probs.keys())
-                            prob_true = float(probs[keys[-1]])
-                        else:
-                            prob_true = float(list(probs.values())[0])
+                feed_dict = self._build_onnx_feed(f"{question.proposition} {question.context}".strip(), 2)
+                raw_out = self._onnx_session.run(None, feed_dict)
+                if len(raw_out) > 1 and isinstance(raw_out[1], (list, dict)):
+                    probs = raw_out[1][0] if isinstance(raw_out[1], list) else raw_out[1]
+                    if 1 in probs or "1" in probs:
+                        prob_true = float(probs.get(1, probs.get("1", 0.5)))
+                    elif len(probs) > 1:
+                        keys = sorted(probs.keys())
+                        prob_true = float(probs[keys[-1]])
                     else:
-                        arr = np.asarray(raw_out[0]).flatten()
-                        if len(arr) >= 2:
-                            l0, l1 = float(arr[0]), float(arr[1])
-                            max_l = max(l0, l1)
-                            prob_true = math.exp(l1 - max_l) / (math.exp(l0 - max_l) + math.exp(l1 - max_l))
-                        else:
-                            val = float(arr[0]) if len(arr) > 0 else 0.0
-                            prob_true = 1.0 / (1.0 + math.exp(-val))
+                        prob_true = float(list(probs.values())[0])
+                else:
+                    arr = np.asarray(raw_out[0]).flatten()
+                    if len(arr) >= 2:
+                        l0, l1 = float(arr[0]), float(arr[1])
+                        max_l = max(l0, l1)
+                        prob_true = math.exp(l1 - max_l) / (math.exp(l0 - max_l) + math.exp(l1 - max_l))
+                    else:
+                        val = float(arr[0]) if len(arr) > 0 else 0.0
+                        prob_true = 1.0 / (1.0 + math.exp(-val))
 
-                    prob_true = round(max(0.01, min(0.99, prob_true)), 4)
-                    is_true = prob_true >= question.threshold
-                    confidence = round(prob_true if is_true else 1.0 - prob_true, 4)
-                    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-                    return NoulResult(
-                        question_id=question.question_id,
-                        is_true=is_true,
-                        probability_true=prob_true,
-                        calibrated_prob=prob_true,
-                        confidence=confidence,
-                        threshold=question.threshold,
-                        latency_ms=round(elapsed_ms, 2),
-                        model_name=self.checkpoint_metadata.name,
-                    )
-            except Exception as e:
-                logger.warning("Laya ONNX noul failed, falling back to heuristic engine", error=str(e))
-            except Exception as e:
-                logger.warning("Laya ONNX noul failed, falling back to heuristic engine", error=str(e))
+                prob_true = round(max(0.01, min(0.99, prob_true)), 4)
+                is_true = prob_true >= question.threshold
+                confidence = round(prob_true if prob_true >= 0.5 else 1.0 - prob_true, 4)
+                elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+                return NoulResult(
+                    question_id=question.question_id,
+                    is_true=is_true,
+                    probability_true=prob_true,
+                    calibrated_prob=prob_true,
+                    confidence=confidence,
+                    threshold=question.threshold,
+                    latency_ms=round(elapsed_ms, 2),
+                    model_name=self.checkpoint_metadata.name,
+                )
 
         # 3. Calibrated Deterministic Heuristic Fallback Engine
         combined_text = f"{question.proposition} {question.context}".lower()
@@ -655,7 +647,7 @@ class LayaAdapter(BaseLayaAdapter):
 
         is_true = calibrated_prob >= question.threshold
         # Confidence is high when far from decision boundary (0.5)
-        confidence = round(calibrated_prob if is_true else (1.0 - calibrated_prob), 4)
+        confidence = round(calibrated_prob if calibrated_prob >= 0.5 else (1.0 - calibrated_prob), 4)
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 

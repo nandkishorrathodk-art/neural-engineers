@@ -153,9 +153,13 @@ class BudgetRepository:
     async def reserve(
         self,
         *,
-        idempotency_key: str,
-        reserved_usd: int | float | Decimal,
-        scope_caps: dict[str, int | float | Decimal],
+        idempotency_key: Optional[str] = None,
+        reserved_usd: Optional[int | float | Decimal] = None,
+        scope_caps: Optional[dict[str, int | float | Decimal]] = None,
+        scope: Optional[str] = None,
+        amount_usd: Optional[int | float | Decimal] = None,
+        project_id: Optional[str] = None,
+        task_id: Optional[str] = None,
     ) -> BudgetReservation:
         """Reserve one call against every provided cap in a single DB transaction.
 
@@ -163,6 +167,22 @@ class BudgetRepository:
         and task account. The caller supplies the maximum cost of this provider
         attempt, not a predicted average.
         """
+        if amount_usd is not None and reserved_usd is None:
+            reserved_usd = amount_usd
+        if reserved_usd is None:
+            raise ValueError("reserved_usd or amount_usd is required")
+
+        if idempotency_key is None:
+            prefix = f"proj-{project_id}" if project_id else f"scope-{scope}" if scope else "res"
+            idempotency_key = f"{prefix}:{uuid.uuid4().hex}"
+
+        if scope_caps is None:
+            scope_caps = {}
+            if scope:
+                account = await self.get_account(scope)
+                scope_caps[scope] = account.cap_usd if account is not None else Decimal("10000.00")
+            if project_id:
+                scope_caps[f"project:{project_id}"] = reserved_usd
         if not idempotency_key or len(idempotency_key) > 128:
             raise ValueError("idempotency_key must contain 1-128 characters")
         amount = self._money(reserved_usd, "reserved_usd")
@@ -402,6 +422,18 @@ class TaskRepository:
         await self.session.commit()
         await self.session.refresh(task)
         return task
+
+    async def get_by_employee_id(self, employee_id: str) -> Optional[Employee]:
+        stmt = (
+            select(Employee)
+            .where((Employee.employee_id == employee_id) | (Employee.id == employee_id))
+            .options(
+                selectinload(Employee.skills),
+                selectinload(Employee.container),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def _get_task_for_worker(self, task_id: str) -> Optional[Task]:
         stmt = (
@@ -934,7 +966,7 @@ class TaskRepository:
         async with get_session_lock(self.session):
             previous_assignee_id = task.assigned_to
             previous_assignee = (
-                await self.session.get(Employee, previous_assignee_id)
+                await self.get_by_employee_id(previous_assignee_id)
                 if previous_assignee_id
                 else None
             )
@@ -985,11 +1017,16 @@ class TaskRepository:
                 await self.session.rollback()
                 return None
             if (not should_retry or alternate_assignee) and previous_assignee_id:
+                assignee_filter = (
+                    Task.assigned_to.in_([previous_assignee.id, previous_assignee.employee_id])
+                    if previous_assignee
+                    else (Task.assigned_to == previous_assignee_id)
+                )
                 other_active_attempt = (
                     select(TaskAttempt.id)
                     .join(Task, Task.id == TaskAttempt.task_id)
                     .where(
-                        Task.assigned_to == previous_assignee_id,
+                        assignee_filter,
                         Task.id != task.id,
                         TaskAttempt.status.in_(["leased", "running"]),
                         TaskAttempt.lease_expires_at > now,
@@ -999,7 +1036,7 @@ class TaskRepository:
                 await self.session.execute(
                     update(Employee)
                     .where(
-                        Employee.id == previous_assignee_id,
+                        (Employee.id == previous_assignee_id) | (Employee.employee_id == previous_assignee_id),
                         Employee.status == EmployeeStatus.WORKING,
                         ~other_active_attempt,
                     )
@@ -1115,7 +1152,7 @@ class TaskRepository:
             attempt.verification_receipt = verification_receipt
             attempt.verified_by = verifier_id
             attempt.verified_at = now
-            employee = await self.session.get(Employee, task.assigned_to) if task.assigned_to else None
+            employee = await self.get_by_employee_id(task.assigned_to) if task.assigned_to else None
             execution_receipt = attempt.execution_receipt if isinstance(attempt.execution_receipt, dict) else {}
             model_receipt = execution_receipt.get("model", {})
             if not isinstance(model_receipt, dict):
@@ -1275,9 +1312,10 @@ class TaskRepository:
                 task.completed_at = None if retrying else now
                 task.fencing_token += 1
             if (passed or not retrying) and task.assigned_to:
+                target_emp_id = employee.id if employee else task.assigned_to
                 await self.session.execute(
                     update(Employee)
-                    .where(Employee.id == task.assigned_to)
+                    .where((Employee.id == target_emp_id) | (Employee.employee_id == target_emp_id))
                     .values(status=EmployeeStatus.IDLE)
                 )
             await self.session.commit()
@@ -3380,6 +3418,59 @@ class AuditRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    async def _create_entry_unlocked(
+        self,
+        actor: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        details: dict[str, Any],
+        ip: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+        request_hash: Optional[str] = None,
+    ) -> AuditLog:
+        actual_payload = payload if payload is not None else {}
+        actual_details = details if details is not None else {}
+        actual_request_hash = request_hash
+        if not actual_request_hash:
+            if actual_payload and actual_details:
+                target = {"details": actual_details, "payload": actual_payload}
+            else:
+                target = actual_payload or actual_details
+            payload_str = json.dumps(target, sort_keys=True, default=str)
+            actual_request_hash = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
+
+        # Fetch last entry for cryptographic chain link
+        last_stmt = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(1)
+        last_res = await self.session.execute(last_stmt)
+        last_entry = last_res.scalars().first()
+        prev_hash = last_entry.signature if (last_entry and last_entry.signature) else "GENESIS_AUDIT_BLOCK"
+        timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
+        if last_entry and last_entry.timestamp and timestamp <= last_entry.timestamp:
+            # Keep append order deterministic when the database clock has
+            # equal or lower precision than rapid consecutive audit writes.
+            timestamp = last_entry.timestamp + timedelta(microseconds=1)
+
+        # Compute cryptographic signature
+        sig_raw = f"{prev_hash}:{actor}:{action}:{resource_type}:{resource_id}:{actual_request_hash}"
+        signature = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
+
+        entry = AuditLog(
+            actor=actor,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details=details,
+            ip_address=ip,
+            request_hash=actual_request_hash,
+            payload=actual_payload,
+            signature=signature,
+            previous_hash=prev_hash,
+            timestamp=timestamp,
+        )
+        self.session.add(entry)
+        return entry
+
     async def create_entry(
         self,
         actor: str,
@@ -3393,47 +3484,16 @@ class AuditRepository:
     ) -> AuditLog:
         """Stage a hash-chained record in the current transaction without committing."""
         async with _audit_chain_lock:
-            actual_payload = payload if payload is not None else {}
-            actual_details = details if details is not None else {}
-            actual_request_hash = request_hash
-            if not actual_request_hash:
-                if actual_payload and actual_details:
-                    target = {"details": actual_details, "payload": actual_payload}
-                else:
-                    target = actual_payload or actual_details
-                payload_str = json.dumps(target, sort_keys=True, default=str)
-                actual_request_hash = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
-
-            # Fetch last entry for cryptographic chain link
-            last_stmt = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).limit(1)
-            last_res = await self.session.execute(last_stmt)
-            last_entry = last_res.scalars().first()
-            prev_hash = last_entry.signature if (last_entry and last_entry.signature) else "GENESIS_AUDIT_BLOCK"
-            timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
-            if last_entry and last_entry.timestamp and timestamp <= last_entry.timestamp:
-                # Keep append order deterministic when the database clock has
-                # equal or lower precision than rapid consecutive audit writes.
-                timestamp = last_entry.timestamp + timedelta(microseconds=1)
-
-            # Compute cryptographic signature
-            sig_raw = f"{prev_hash}:{actor}:{action}:{resource_type}:{resource_id}:{actual_request_hash}"
-            signature = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
-
-            entry = AuditLog(
+            return await self._create_entry_unlocked(
                 actor=actor,
                 action=action,
                 resource_type=resource_type,
                 resource_id=resource_id,
                 details=details,
-                ip_address=ip,
-                request_hash=actual_request_hash,
-                payload=actual_payload,
-                signature=signature,
-                previous_hash=prev_hash,
-                timestamp=timestamp,
+                ip=ip,
+                payload=payload,
+                request_hash=request_hash,
             )
-            self.session.add(entry)
-            return entry
 
     async def log(
         self,
@@ -3446,19 +3506,20 @@ class AuditRepository:
         payload: Optional[dict[str, Any]] = None,
         request_hash: Optional[str] = None,
     ) -> AuditLog:
-        entry = await self.create_entry(
-            actor=actor,
-            action=action,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            details=details,
-            ip=ip,
-            payload=payload,
-            request_hash=request_hash,
-        )
-        await self.session.commit()
-        await self.session.refresh(entry)
-        return entry
+        async with _audit_chain_lock:
+            entry = await self._create_entry_unlocked(
+                actor=actor,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                details=details,
+                ip=ip,
+                payload=payload,
+                request_hash=request_hash,
+            )
+            await self.session.commit()
+            await self.session.refresh(entry)
+            return entry
 
     async def list_all(self, limit: int = 100, offset: int = 0) -> Sequence[AuditLog]:
         stmt = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc()).offset(offset).limit(limit)

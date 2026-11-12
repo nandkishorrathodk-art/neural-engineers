@@ -59,3 +59,27 @@ def test_pty_guard_timeout_protection(tmp_path: Path):
     assert res.timed_out is True
     assert res.exit_code == -9
     assert not res.success
+
+
+def test_pty_guard_stdin_devnull_prevents_interactive_hang(tmp_path: Path):
+    """
+    Ensures that commands prompting for interactive stdin do not hang indefinitely,
+    because stdin is set to subprocess.DEVNULL by default.
+    """
+    guard = PTYExecutionGuard(cwd=tmp_path, default_timeout=5.0)
+    # Calling input() with stdin=DEVNULL raises EOFError immediately without hanging
+    script = "try:\n    val = input('prompt: ')\n    print('got', val)\nexcept EOFError:\n    print('handled EOFError')\n"
+    res = guard.run_command([sys.executable, "-c", script], timeout=3.0)
+    assert res.exit_code == 0
+    assert not res.timed_out
+    assert "handled EOFError" in res.stdout
+
+
+def test_pty_guard_pythonunbuffered_env(tmp_path: Path):
+    """Ensures PYTHONUNBUFFERED=1 is set in the subprocess environment."""
+    guard = PTYExecutionGuard(cwd=tmp_path)
+    script = "import os; print('UNBUFFERED=' + os.environ.get('PYTHONUNBUFFERED', '0'))"
+    res = guard.run_command([sys.executable, "-c", script])
+    assert res.exit_code == 0
+    assert "UNBUFFERED=1" in res.stdout
+

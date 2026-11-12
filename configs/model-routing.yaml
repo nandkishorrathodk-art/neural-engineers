@@ -1,27 +1,19 @@
 tiers:
   reasoning:
-    primary: "openai/gpt-5.6-sol"
+    primary: "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
     fallbacks:
-      - "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+      - "nim/nvidia/nemotron-3.5-bolt-e4b"
       - "openai/gpt-6.1-sol"
       - "anthropic/claude-sonnet-5-5"
       - "gemini/gemini-3.5-flash"
   
   coding:
-    primary: "openai/gpt-5.6-sol"
+    primary: "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
     fallbacks:
-      - "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+      - "nim/nvidia/nemotron-3.5-bolt-e4b"
       - "openai/gpt-6.1-sol"
       - "anthropic/claude-sonnet-5-5"
       - "gemini/gemini-3.5-flash"
-
-  # Daybreak Blue cyber tier — reduced refusals for
-  # authorized defensive security, bug bounty, and pentesting tasks.
-  cyber:
-    primary: "openai/gpt-5.6-sol"
-    fallbacks:
-      - "openai/gpt-6.1-sol"
-      - "anthropic/claude-sonnet-5-5"
 
   fast:
     primary: "nim/openai/gpt-oss-20b"
@@ -39,9 +31,6 @@ routes:
   code_generation: "coding"
   code_debugging: "coding"
   code_review: "reasoning"
-  security_review: "cyber"
-  vulnerability_analysis: "cyber"
-  recon_analysis: "cyber"
-  exploit_assessment: "cyber"
   status_reporting: "fast"
   log_summarization: "fast"
+

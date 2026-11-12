@@ -154,6 +154,53 @@ class SelfEvolutionRollbackManager:
     def __init__(self, repository: Path) -> None:
         self.repository = Path(repository).resolve(strict=True)
 
+    def _cleanup_candidate_worktree_safe(
+        self,
+        proposal_id: str,
+        candidate_worktree_path: Optional[Path | str] = None,
+    ) -> None:
+        """
+        Safely removes staged candidate worktrees without running git clean -fdx on the main repo root.
+        Targets only the candidate worktree to prevent deleting .env secrets, production databases, or .venv.
+        """
+        worktree_targets: list[Path] = []
+        if candidate_worktree_path:
+            worktree_targets.append(Path(candidate_worktree_path))
+
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.repository), "worktree", "list", "--porcelain"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            current_worktree: Optional[Path] = None
+            for line in res.stdout.splitlines():
+                if line.startswith("worktree "):
+                    current_worktree = Path(line.split(" ", 1)[1].strip())
+                elif line.startswith("branch refs/heads/") and current_worktree:
+                    branch_name = line.split(" ", 1)[1].strip()
+                    if proposal_id in branch_name or proposal_id in str(current_worktree):
+                        if current_worktree != self.repository and current_worktree not in worktree_targets:
+                            worktree_targets.append(current_worktree)
+        except Exception as exc:
+            logger.warning("Failed to list git worktrees during rollback", error=str(exc))
+
+        for wt in worktree_targets:
+            try:
+                if wt.resolve() == self.repository.resolve():
+                    continue
+                subprocess.run(
+                    ["git", "-C", str(self.repository), "worktree", "remove", "--force", str(wt)],
+                    capture_output=True,
+                    check=False,
+                )
+                if wt.exists():
+                    import shutil
+                    shutil.rmtree(wt, ignore_errors=True)
+            except Exception as exc:
+                logger.warning("Failed to safely remove candidate worktree", path=str(wt), error=str(exc))
+
     async def execute_rollback(
         self,
         proposal_id: str,
@@ -162,12 +209,13 @@ class SelfEvolutionRollbackManager:
         anomaly_detected: dict[str, Any],
         audit_repo: Optional[AuditRepository] = None,
         requested_by: str = "PostPromotionHealthMonitor",
+        candidate_worktree_path: Optional[Path | str] = None,
     ) -> SelfEvolutionRollbackReceipt:
         """
         Executes fail-closed rollback:
         1. Identifies the current rolled-back HEAD commit.
         2. Resets the target branch to the pinned pre-evolution commit state.
-        3. Cleans any untracked or residual artifacts.
+        3. Cleans candidate worktree safely without repository root git clean -fdx.
         4. Verifies the restored HEAD commit matches the pinned pre-evolution commit.
         5. Issues tamper-evident SelfEvolutionRollbackReceipt.
         6. Records audit entry with cryptographic hash chain.
@@ -191,17 +239,17 @@ class SelfEvolutionRollbackManager:
         except subprocess.SubprocessError as exc:
             raise SelfEvolutionRollbackError(f"Failed to inspect current HEAD before rollback: {exc}") from exc
 
-        # 2. Hard reset to pinned pre_evolution_commit
+        # 2. Hard reset to pinned pre_evolution_commit & safe candidate worktree removal
         try:
             subprocess.run(
                 ["git", "-C", str(self.repository), "reset", "--hard", pre_evolution_commit],
                 check=True,
                 capture_output=True,
             )
-            subprocess.run(
-                ["git", "-C", str(self.repository), "clean", "-fdx"],
-                check=True,
-                capture_output=True,
+            # Safe worktree cleanup targeting only candidate worktree, strictly avoiding git clean -fdx on repository root
+            self._cleanup_candidate_worktree_safe(
+                proposal_id=proposal_id,
+                candidate_worktree_path=candidate_worktree_path,
             )
         except subprocess.SubprocessError as exc:
             raise SelfEvolutionRollbackError(
@@ -255,3 +303,5 @@ class SelfEvolutionRollbackManager:
             receipt_id=receipt.receipt_id,
         )
         return receipt
+
+    rollback_proposal = execute_rollback

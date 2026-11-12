@@ -221,8 +221,7 @@ class CostTracker:
         exact_cost = cost_usd if cost_usd is not None else calculated_cost
         if not isinstance(exact_cost, (int, float)) or not math.isfinite(exact_cost) or exact_cost < 0:
             raise ValueError("cost_usd must be a finite non-negative amount")
-        if enforce_budget:
-            self.check_budget_ceiling(exact_cost, task_id=task_id, project_id=project_id)
+
         record = UsageRecord(
             task_id=task_id,
             employee_id=employee_id,
@@ -232,6 +231,24 @@ class CostTracker:
             output_tokens=output_tokens,
             cost_usd=exact_cost
         )
+
+        if enforce_budget:
+            try:
+                self.check_budget_ceiling(exact_cost, task_id=task_id, project_id=project_id)
+            except QuotaExceededError:
+                self.records.append(record)
+                logger.error(
+                    "LLM API usage exceeded budget ceiling; recorded usage before raising",
+                    model=model,
+                    task_id=task_id,
+                    employee_id=employee_id,
+                    project_id=project_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost_usd=exact_cost
+                )
+                raise
+
         self.records.append(record)
 
         logger.info(

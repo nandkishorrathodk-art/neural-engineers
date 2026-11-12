@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from neural.config import get_settings
 from neural.constants import TaskStatus
-from neural.exceptions import EmergencyStopTriggered
+from neural.exceptions import EmergencyStopTriggered, SecurityViolationError
 from neural.logger import get_logger
 
 logger = get_logger("ancos.security.kill_switch")
@@ -219,7 +221,28 @@ class GlobalEmergencyKillSwitch:
         """
         Resumes the system from an emergency halt.
         Recovers state for interrupted tasks and unfreezes schedulers.
+        Validates authorization token against configured owner / security reviewer secrets.
         """
+        settings = get_settings()
+        valid_tokens = [
+            tok.strip()
+            for tok in (settings.OWNER_API_TOKEN, settings.SECURITY_REVIEWER_API_TOKEN)
+            if tok and isinstance(tok, str) and tok.strip()
+        ]
+
+        if auth_token is not None:
+            raw_token = auth_token.strip()
+            if raw_token.lower().startswith("bearer "):
+                raw_token = raw_token[7:].strip()
+            if not valid_tokens or not any(secrets.compare_digest(raw_token, vt) for vt in valid_tokens):
+                raise SecurityViolationError(
+                    "Invalid or unauthorized token provided for emergency halt resumption."
+                )
+        elif settings.APP_ENV == "production":
+            raise SecurityViolationError(
+                "An authorized token (owner or security reviewer) is required to resume the system in production."
+            )
+
         if state_repo is not None:
             durable_state = await state_repo.get_state()
             self.is_halted = bool(durable_state["active"])

@@ -169,6 +169,8 @@ class BossBrain:
         budget_usd: Optional[float] = None,
         project_budget_usd: Optional[float] = None,
         clarifications: Optional[dict[str, str]] = None,
+        project_id: Optional[str] = None,
+        month_pre_reserved: bool = False,
     ) -> tuple[Project, list[Task]]:
         """
         Analyzes objective, produces structured execution plan,
@@ -195,19 +197,20 @@ class BossBrain:
         ):
             raise ValueError("project_budget_usd must be greater than 0 and at most 1000000")
 
-        project_id = str(uuid.uuid4())
+        project_id = project_id or str(uuid.uuid4())
         reservation = None
         budget_repo = None
         db_session = getattr(p_repo, "session", None)
-        if db_session is not None and budget_usd is not None:
+        if db_session is not None and budget_usd is not None and not month_pre_reserved:
             budget_repo = BudgetRepository(db_session)
             month_scope = f"organization-month:{datetime.now(timezone.utc):%Y-%m}"
             account = await budget_repo.get_account(month_scope)
-            month_cap = account.cap_usd if account is not None else Decimal("10000.00")
-            scope_caps = {
-                month_scope: month_cap,
-                f"project:{project_id}": Decimal(str(budget_usd)),
-            }
+            month_cap = (
+                account.cap_usd
+                if account is not None
+                else Decimal(str(self.llm_gateway.cost_tracker.monthly_hard_cap_usd))
+            )
+            scope_caps = {month_scope: month_cap}
             reserve_amount = min(Decimal(str(budget_usd)), Decimal("1.00"))
             reservation = await budget_repo.reserve(
                 idempotency_key=f"plan-pre-reserve:{project_id}",
@@ -1385,4 +1388,3 @@ class BossBrain:
             "plan_proposal": plan_proposal,
             "conversation_history": history,
         }
-

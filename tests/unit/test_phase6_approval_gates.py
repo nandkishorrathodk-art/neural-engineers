@@ -165,3 +165,150 @@ async def test_human_approval_gate_blocks_rejected_request(async_session: AsyncS
             approval_id=app_req.id,
             approval_repo=approval_repo,
         )
+
+
+@pytest.mark.asyncio
+async def test_human_approval_gate_replay_prevention_single_use(async_session: AsyncSession):
+    """
+    Validates that an approval token is strictly single-use:
+    After successful execution, it is marked consumed and cannot be replayed.
+    """
+    approval_repo = ApprovalRepository(async_session)
+
+    app_req = await HumanApprovalGate.request_approval(
+        action_type=DestructiveOperationType.DATABASE_MIGRATION.value,
+        requested_by="ai_agent",
+        description="Migrate schema v1 to v2",
+        justification="Schema update",
+        details={"migration": "v2"},
+        approval_repo=approval_repo,
+    )
+    await HumanApprovalGate.decide(
+        approval_id=app_req.id,
+        decision="approved",
+        decided_by="human_owner",
+        approval_repo=approval_repo,
+    )
+
+    exec_count = 0
+
+    def run_migration():
+        nonlocal exec_count
+        exec_count += 1
+        return "migration_done"
+
+    # First execution succeeds and consumes the approval
+    res = await HumanApprovalGate.execute_with_gate(
+        action_type=DestructiveOperationType.DATABASE_MIGRATION.value,
+        requested_by="ai_agent",
+        description="Migrate schema v1 to v2",
+        operation_callable=run_migration,
+        details={"migration": "v2"},
+        approval_id=app_req.id,
+        approval_repo=approval_repo,
+    )
+    assert res == "migration_done"
+    assert exec_count == 1
+
+    # Verify database record is consumed
+    app = await approval_repo.get_by_id(app_req.id)
+    assert app.consumed_at is not None
+
+    # check_authorized returns False once consumed
+    assert await HumanApprovalGate.check_authorized(app_req.id, approval_repo) is False
+
+    # Second execution attempt (replay attack) fails closed
+    with pytest.raises(HumanApprovalRequiredError):
+        await HumanApprovalGate.execute_with_gate(
+            action_type=DestructiveOperationType.DATABASE_MIGRATION.value,
+            requested_by="ai_agent",
+            description="Migrate schema v1 to v2",
+            operation_callable=run_migration,
+            details={"migration": "v2"},
+            approval_id=app_req.id,
+            approval_repo=approval_repo,
+        )
+    assert exec_count == 1
+
+
+@pytest.mark.asyncio
+async def test_human_approval_gate_blocks_action_type_mismatch(async_session: AsyncSession):
+    """
+    Validates that an approved token for action A cannot be used to execute action B.
+    """
+    approval_repo = ApprovalRepository(async_session)
+
+    app_req = await HumanApprovalGate.request_approval(
+        action_type=DestructiveOperationType.DATABASE_MIGRATION.value,
+        requested_by="ai_agent",
+        description="Migrate schema",
+        justification="Legitimate migration",
+        details={"target": "db"},
+        approval_repo=approval_repo,
+    )
+    await HumanApprovalGate.decide(
+        approval_id=app_req.id,
+        decision="approved",
+        decided_by="human_owner",
+        approval_repo=approval_repo,
+    )
+
+    # check_authorized with wrong action_type returns False
+    assert await HumanApprovalGate.check_authorized(
+        app_req.id,
+        approval_repo,
+        action_type=DestructiveOperationType.PRODUCTION_DEPLOYMENT.value,
+    ) is False
+
+    # Attempting to execute PRODUCTION_DEPLOYMENT with DATABASE_MIGRATION approval fails closed
+    with pytest.raises(HumanApprovalRequiredError, match="action_type"):
+        await HumanApprovalGate.execute_with_gate(
+            action_type=DestructiveOperationType.PRODUCTION_DEPLOYMENT.value,
+            requested_by="ai_agent",
+            description="Deploy prod",
+            operation_callable=lambda: "deployed",
+            details={"target": "db"},
+            approval_id=app_req.id,
+            approval_repo=approval_repo,
+        )
+
+
+@pytest.mark.asyncio
+async def test_human_approval_gate_blocks_during_emergency_halt(async_session: AsyncSession):
+    """
+    Validates that destructive operations cannot execute when the global emergency kill switch is active.
+    """
+    from neural.exceptions import EmergencyStopTriggered
+    from neural.security.kill_switch import get_kill_switch, reset_kill_switch
+
+    reset_kill_switch()
+    ks = get_kill_switch()
+    await ks.emergency_halt(reason="Containment drill", actor="sec_lead")
+
+    approval_repo = ApprovalRepository(async_session)
+    app_req = await HumanApprovalGate.request_approval(
+        action_type=DestructiveOperationType.INFRASTRUCTURE_DESTROY.value,
+        requested_by="ai_agent",
+        description="Destroy cluster",
+        justification="Decommissioning",
+        details={},
+        approval_repo=approval_repo,
+    )
+    await HumanApprovalGate.decide(
+        approval_id=app_req.id,
+        decision="approved",
+        decided_by="human_owner",
+        approval_repo=approval_repo,
+    )
+
+    with pytest.raises(EmergencyStopTriggered):
+        await HumanApprovalGate.execute_with_gate(
+            action_type=DestructiveOperationType.INFRASTRUCTURE_DESTROY.value,
+            requested_by="ai_agent",
+            description="Destroy cluster",
+            operation_callable=lambda: "cluster_destroyed",
+            approval_id=app_req.id,
+            approval_repo=approval_repo,
+        )
+
+    reset_kill_switch()

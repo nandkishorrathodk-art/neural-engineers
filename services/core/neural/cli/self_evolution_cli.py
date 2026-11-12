@@ -12,7 +12,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -82,6 +82,7 @@ class CLIAutonomousEvolutionRunner:
         auto_approve: bool = False,
         target_subsystem: str = "performance_kernel",
         interactive: bool = True,
+        task_records: Optional[list[dict[str, Any]]] = None,
     ) -> EvolutionCLIResult:
         """
         Executes end-to-end self-evolution cycle in terminal:
@@ -113,10 +114,24 @@ class CLIAutonomousEvolutionRunner:
                 "retry_count": 1,
             }
         ]
-        # Profile weakness patterns
-        _ = sample_logs
-        time.sleep(0.05)
-        bottleneck_title = "Algorithmic Inefficiency in Fast-Path Vector Kernel"
+        # Profile weakness patterns with real proposal engine analysis & fail-closed error handling
+        logs_to_profile = sample_logs if task_records is None else task_records
+        weaknesses = self.proposal_engine.detect_weaknesses_sync(task_records=logs_to_profile)
+        if not weaknesses:
+            self.console.print("[bold red]❌ Profiling failed closed: No actionable bottlenecks detected in task execution logs.[/bold red]")
+            return EvolutionCLIResult(
+                proposal_id="",
+                bottleneck_detected="None",
+                speedup_ratio=0.0,
+                verification_passed=False,
+                approved=False,
+                promoted=False,
+                candidate_branch="",
+                audit_notes=["Profiling fail-closed: No bottlenecks detected"],
+            )
+
+        detected_weakness = weaknesses[0]
+        bottleneck_title = f"{detected_weakness.get('title', 'Algorithmic Inefficiency')} (Fast-Path Vector Kernel)"
         audit_notes.append(f"Identified bottleneck: {bottleneck_title}")
         self.console.print(f"[yellow]⚡ Detected Bottleneck: {bottleneck_title}[/yellow]")
 
@@ -217,9 +232,13 @@ class CLIAutonomousEvolutionRunner:
             _ = float(np.dot(arr_a, arr_b))
         t_opt = time.perf_counter() - t_opt_start
 
-        speedup = max(2.5, t_base / max(t_opt, 1e-6))
+        # Real measured speedup calculation without artificial clamp
+        speedup = t_base / max(t_opt, 1e-6)
         self.console.print(f"[bold green]⚡ Benchmark Result: {speedup:.2f}x Speedup Achieved![/bold green]")
         audit_notes.append(f"Measured speedup: {speedup:.2f}x")
+
+        cand_exec_time_ms = round(t_opt * 1000.0, 2)
+        measured_throughput = round(100.0 / max(t_opt, 1e-6), 1)
 
         # Multi-gate verification
         verifier = SelfEvolutionMultiGateVerifier(candidate_manager=self.candidate_manager)
@@ -227,9 +246,9 @@ class CLIAutonomousEvolutionRunner:
             proposal=proposal,
             test_command=[sys.executable, "-m", "pytest", "test_math_kernel.py"],
             candidate_benchmark_metrics={
-                "execution_time_ms": 25.0,
+                "execution_time_ms": max(cand_exec_time_ms, 0.01),
                 "error_rate": 0.0,
-                "benchmark_throughput_ops_sec": 1650.0,
+                "benchmark_throughput_ops_sec": measured_throughput,
             },
         )
         verification_passed = verification_receipt.passed
@@ -250,19 +269,28 @@ class CLIAutonomousEvolutionRunner:
         )
 
         # Step 6: One-Click Approval & Staged Promotion
-        approved = auto_approve
-        if not auto_approve and interactive:
+        # Require that verification_passed is True before allowing any promotion or merge
+        approved = False
+        if verification_passed is not True:
             self.console.print(
-                f"[bold yellow]⚠ Human Sovereign Approval Required for Self-Evolution Promotion[/bold yellow]\n"
-                f"Candidate: {candidate_receipt.branch} | Speedup: {speedup:.2f}x | Security: VERIFIED"
+                "[bold red]⛔ Promotion BLOCKED: Candidate failed multi-gate verification. "
+                "Autonomous and operator merge are strictly prohibited.[/bold red]"
             )
-            try:
-                approved = Confirm.ask("Do you approve merging this self-evolution candidate into main?", default=True)
-            except Exception:
-                approved = False
+            audit_notes.append("Promotion strictly blocked: verification_passed is False")
+        else:
+            approved = bool(auto_approve)
+            if not auto_approve and interactive:
+                self.console.print(
+                    f"[bold yellow]⚠ Human Sovereign Approval Required for Self-Evolution Promotion[/bold yellow]\n"
+                    f"Candidate: {candidate_receipt.branch} | Speedup: {speedup:.2f}x | Security: VERIFIED"
+                )
+                try:
+                    approved = Confirm.ask("Do you approve merging this self-evolution candidate into main?", default=True)
+                except Exception:
+                    approved = False
 
         promoted = False
-        if approved:
+        if approved and verification_passed is True:
             self.console.print("[bold green]✔ Evolution approved! Promoting candidate into target branch...[/bold green]")
             try:
                 self.candidate_manager._git("merge", "--no-ff", candidate_receipt.branch, "-m", f"Merge self-evolution candidate {proposal_id}")
@@ -289,7 +317,10 @@ class CLIAutonomousEvolutionRunner:
                 self.console.print(f"[bold red]Promotion merge error: {e}[/bold red]")
                 promoted = False
         else:
-            self.console.print("[yellow]Promotion declined or deferred. Candidate worktree cleaned up.[/yellow]")
+            if not verification_passed:
+                self.console.print("[yellow]Candidate worktree retained/cleaned up without merging due to verification failure.[/yellow]")
+            else:
+                self.console.print("[yellow]Promotion declined or deferred. Candidate worktree cleaned up.[/yellow]")
             try:
                 self.candidate_manager.cleanup_candidate_worktree(proposal_id=proposal_id, delete_branch=False)
             except Exception:

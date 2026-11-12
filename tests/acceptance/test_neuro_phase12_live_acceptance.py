@@ -475,17 +475,25 @@ async def test_neuro_phase12_live_acceptance_full_scenario(
         # ---------------------------------------------------------------------
         token_before_resume = task.fencing_token
 
-        # Resume via /boss/emergency-resume with Boss token
-        resume_res = await client.post(
+        # Boss AI token must be rejected (cannot unilaterally clear emergency stop)
+        resume_res_boss = await client.post(
             "/boss/emergency-resume",
             headers=boss_headers,
+            json={"recovery_strategy": "checkpoint"},
+        )
+        assert resume_res_boss.status_code == 401
+
+        # Resume via /boss/emergency-resume with Owner token
+        resume_res = await client.post(
+            "/boss/emergency-resume",
+            headers=owner_headers,
             json={"recovery_strategy": "checkpoint"},
         )
         assert resume_res.status_code == 200
         resume_receipt = resume_res.json()
         assert resume_receipt["resumed"] is True
         assert resume_receipt["status"] == "RUNNING"
-        assert resume_receipt["resumed_by"] == "boss-ai"
+        assert resume_receipt["resumed_by"] == "human-owner"
 
         # Verify durable latch cleared in DB
         durable_state_resumed = await EmergencyStopRepository(async_session).get_state()

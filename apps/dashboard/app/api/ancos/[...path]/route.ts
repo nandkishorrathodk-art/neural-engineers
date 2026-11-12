@@ -76,6 +76,7 @@ async function proxyToApi(
       body,
       cache: 'no-store',
       redirect: 'manual',
+      signal: request.signal,
     });
     const responseHeaders = new Headers(upstream.headers);
     for (const header of HOP_BY_HOP_HEADERS) responseHeaders.delete(header);
@@ -85,7 +86,10 @@ async function proxyToApi(
       statusText: upstream.statusText,
       headers: responseHeaders,
     });
-  } catch {
+  } catch (err: any) {
+    if (err?.name === 'AbortError' || request.signal.aborted) {
+      return new Response(null, { status: 499, statusText: 'Client Closed Request' });
+    }
     return NextResponse.json({ detail: 'ANCOS API is unavailable.' }, { status: 503 });
   }
 }

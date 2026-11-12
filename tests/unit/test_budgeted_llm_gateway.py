@@ -1,10 +1,31 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
 from neural.db.models import BudgetAccount, BudgetReservation
 from neural.exceptions import ModelProviderError, QuotaExceededError
+from neural.llm.budget import load_budget_scope_caps
 from neural.llm.gateway import LLMGateway
 from sqlalchemy import select
+
+
+@pytest.mark.asyncio
+async def test_budget_scope_loader_uses_durable_monthly_cap(async_session):
+    month_scope = f"organization-month:{datetime.now(timezone.utc):%Y-%m}"
+    async_session.add(
+        BudgetAccount(
+            scope_key=month_scope,
+            cap_usd=Decimal("1000.00"),
+            reserved_usd=Decimal("0.00"),
+            spent_usd=Decimal("0.00"),
+        )
+    )
+    await async_session.commit()
+
+    gateway = LLMGateway()
+    caps = await load_budget_scope_caps(async_session, gateway.cost_tracker)
+
+    assert caps[month_scope] == Decimal("1000.00")
 
 
 @pytest.mark.asyncio

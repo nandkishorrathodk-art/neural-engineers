@@ -568,6 +568,103 @@ async def test_promotion_verification_receipt_mismatch_defense(async_session: As
         )
 
 
+@pytest.mark.asyncio
+async def test_promotion_missing_proposal_id_and_replay_defense(async_session: AsyncSession, tmp_path: Path):
+    """
+    Validates that:
+    1. Approval token lacking explicit 'proposal_id' in details strictly fails closed.
+    2. Approval token cannot be replayed after being consumed once.
+    """
+    repo = _setup_git_repository(tmp_path)
+    managed_root = tmp_path / "data" / "evolution_worktrees"
+    candidate_mgr = SelfEvolutionCandidateManager(repo, managed_root)
+
+    proposal_id = "PROP-EVO-DETAIL-01"
+    candidate_mgr.provision_candidate_staging(proposal_id)
+    candidate_mgr.apply_candidate_changes(
+        proposal_id=proposal_id,
+        files={"detail_kernel.py": "def fast_math(): return 42\n"},
+        commit_message="Detail kernel",
+    )
+
+    proposal = SelfEvolutionProposal(
+        proposal_id=proposal_id,
+        title="Detail Kernel",
+        description="Math kernel",
+        category="performance",
+        target_files=["detail_kernel.py"],
+        root_cause_rationale="Baseline",
+        baseline_metrics={"latency_ms": 50.0},
+        target_goals={"latency_ms": 10.0, "min_speedup_ratio": 2.0},
+    )
+
+    verifier = SelfEvolutionMultiGateVerifier(candidate_mgr)
+    verif_receipt = verifier.verify_candidate(
+        proposal=proposal,
+        test_command=["python", "-c", "import sys; sys.exit(0)"],
+        candidate_benchmark_metrics={"latency_ms": 8.0},
+    )
+
+    approval_repo = ApprovalRepository(async_session)
+    audit_repo = AuditRepository(async_session)
+    promotion_mgr = SelfEvolutionPromotionManager(candidate_mgr)
+
+    # 1. Approval lacking 'proposal_id' in details fails closed
+    approval_no_proposal = await approval_repo.create(
+        action_type=DestructiveOperationType.SELF_EVOLUTION_PROMOTION.value,
+        description="Missing proposal_id approval",
+        justification="Invalid details test",
+        requested_by="ANC-EMP-TEST",
+        details={"verification_receipt_id": verif_receipt.receipt_id},  # No proposal_id!
+    )
+    await approval_repo.decide(approval_no_proposal.id, decision="approved", decided_by="owner@ancos.corp")
+
+    with pytest.raises(PromotionGateError, match="must strictly contain proposal_id"):
+        await promotion_mgr.check_promotion_authorization_and_promote(
+            proposal_id=proposal_id,
+            target_branch="main",
+            verification_receipt=verif_receipt,
+            approval_id=approval_no_proposal.id,
+            approval_repo=approval_repo,
+            audit_repo=audit_repo,
+        )
+
+    # 2. Valid approval promotes successfully
+    valid_approval = await approval_repo.create(
+        action_type=DestructiveOperationType.SELF_EVOLUTION_PROMOTION.value,
+        description="Valid approval",
+        justification="Valid details test",
+        requested_by="ANC-EMP-TEST",
+        details={"proposal_id": proposal_id, "verification_receipt_id": verif_receipt.receipt_id},
+    )
+    await approval_repo.decide(valid_approval.id, decision="approved", decided_by="owner@ancos.corp")
+
+    prom_receipt = await promotion_mgr.check_promotion_authorization_and_promote(
+        proposal_id=proposal_id,
+        target_branch="main",
+        verification_receipt=verif_receipt,
+        approval_id=valid_approval.id,
+        approval_repo=approval_repo,
+        audit_repo=audit_repo,
+    )
+    assert prom_receipt.verify_signature() is True
+
+    # Check that approval is now marked consumed in database
+    reloaded_approval = await approval_repo.get_by_id(valid_approval.id)
+    assert reloaded_approval.consumed_at is not None
+
+    # 3. Attempting to replay consumed approval fails closed
+    with pytest.raises(HumanApprovalRequiredError, match="already been consumed"):
+        await promotion_mgr.check_promotion_authorization_and_promote(
+            proposal_id=proposal_id,
+            target_branch="main",
+            verification_receipt=verif_receipt,
+            approval_id=valid_approval.id,
+            approval_repo=approval_repo,
+            audit_repo=audit_repo,
+        )
+
+
 def test_scope_boundary_enforcement(tmp_path: Path):
     """Validates that candidate changes modifying unauthorized files outside proposal targets fail verification."""
     repo = _setup_git_repository(tmp_path)

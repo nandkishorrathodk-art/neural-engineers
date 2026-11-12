@@ -391,8 +391,8 @@ async def test_resource_scheduler_admission_control_and_emergency_shutdown():
     assert res["status"] == "queued_standby"
     assert "Insufficient RAM headroom" in res["reason"]
 
-    # Clear mock metrics to restore healthy host state
-    monitor.clear_mock_metrics()
+    # Keep admission independent of the host running the test suite.
+    monitor.set_mock_metrics(free_ram_gb=8.0, cpu_percent=25.0)
 
     # Now allocation succeeds
     res_ok = await scheduler.request_desktop_session("ANC-EMP-OK", "TASK-OK")
@@ -594,5 +594,3 @@ async def test_resource_scheduler_certify_one_two_three_four_workloads():
         await scheduler.emergency_capacity_shutdown()
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-
-

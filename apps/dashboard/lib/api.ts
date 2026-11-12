@@ -180,10 +180,13 @@ export async function fetchEmployeeWorkstation(employeeId: string) {
   return res.json();
 }
 
-export async function provisionWorkstation(employeeId: string) {
-  const res = await fetch(`${API_BASE}/employees/${employeeId}/workstation/provision`, {
-    method: 'POST',
-  });
+export async function provisionWorkstation(employeeId: string, approvalId: string) {
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/workstation/provision?approval_id=${encodeURIComponent(approvalId)}`,
+    {
+      method: 'POST',
+    }
+  );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Failed to provision workstation for ${employeeId}`);
@@ -191,10 +194,13 @@ export async function provisionWorkstation(employeeId: string) {
   return res.json();
 }
 
-export async function terminateWorkstation(employeeId: string) {
-  const res = await fetch(`${API_BASE}/employees/${employeeId}/workstation/terminate`, {
-    method: 'POST',
-  });
+export async function terminateWorkstation(employeeId: string, approvalId: string) {
+  const res = await fetch(
+    `${API_BASE}/employees/${employeeId}/workstation/terminate?approval_id=${encodeURIComponent(approvalId)}`,
+    {
+      method: 'POST',
+    }
+  );
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Failed to terminate workstation for ${employeeId}`);

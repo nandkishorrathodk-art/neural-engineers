@@ -59,10 +59,10 @@ async def test_project_budget_usd_accepted_and_validated_positive_finite(
     async_session: AsyncSession,
     month_scope_key: str,
 ):
-    # Seed month budget account with plenty of quota
+    # Seed the durable monthly cap used by the provider gateway.
     account = BudgetAccount(
         scope_key=month_scope_key,
-        cap_usd=Decimal("10000.00"),
+        cap_usd=Decimal("500.00"),
         reserved_usd=Decimal("0.00"),
         spent_usd=Decimal("0.00"),
     )
@@ -106,6 +106,13 @@ async def test_project_budget_usd_accepted_and_validated_positive_finite(
     body = resp_valid.json()
     assert body["id"] is not None
     assert body["status"] in ("in_progress", "pending", "planned", "planning")
+    reservations = (await async_session.scalars(select(BudgetReservation))).all()
+    assert len(reservations) == 1
+    assert reservations[0].status == "released"
+    assert reservations[0].scope_keys == [month_scope_key]
+    month_account = await async_session.get(BudgetAccount, month_scope_key)
+    assert month_account is not None
+    assert month_account.reserved_usd == Decimal("0E-8")
 
 
 @pytest.mark.asyncio
@@ -171,6 +178,7 @@ async def test_project_budget_pre_reserves_durable_quota_before_planning(
     await async_session.commit()
 
     reservation_verified_during_planning = False
+    reservation_scopes: list[str] = []
 
     async def hooked_decompose(self, objective, db_session=None, project_id=None, budget_usd=None):
         nonlocal reservation_verified_during_planning
@@ -180,6 +188,7 @@ async def test_project_budget_pre_reserves_durable_quota_before_planning(
         )
         if res is not None and res.reserved_usd > Decimal("0"):
             reservation_verified_during_planning = True
+            reservation_scopes.extend(res.scope_keys)
 
         return {
             "code_name": "TestPlan",
@@ -216,6 +225,7 @@ async def test_project_budget_pre_reserves_durable_quota_before_planning(
     assert reservation_verified_during_planning is True, (
         "BudgetReservation must be durably committed with status='reserved' before model planning executes"
     )
+    assert reservation_scopes == [month_scope_key]
     assert project is not None
 
 

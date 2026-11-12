@@ -4,8 +4,9 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,18 +48,68 @@ class OutboxSSEBroadcaster:
             self._subscribers.discard(queue)
             logger.debug("SSE client disconnected, total subscribers: %d", len(self._subscribers))
 
+    @asynccontextmanager
+    async def subscription(self) -> AsyncGenerator[asyncio.Queue[dict[str, Any]], None]:
+        """
+        Async context manager providing a temporary subscriber queue that is
+        guaranteed to be unsubscribed upon completion, disconnection, or cancellation.
+        """
+        queue = await self.subscribe()
+        try:
+            yield queue
+        finally:
+            await self.unsubscribe(queue)
+
+    async def event_generator(
+        self,
+        request: Any = None,
+        timeout: float = 15.0,
+    ) -> AsyncGenerator[dict[str, Any] | None, None]:
+        """
+        Async event generator that yields events from a subscribed queue,
+        periodically yielding None for keepalive comments,
+        and immediately unsubscribes the queue if disconnected or cancelled.
+        """
+        queue = await self.subscribe()
+        try:
+            while True:
+                if request is not None and hasattr(request, "is_disconnected"):
+                    if await request.is_disconnected():
+                        break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=timeout)
+                    yield event
+                except asyncio.TimeoutError:
+                    yield None
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        finally:
+            await self.unsubscribe(queue)
+
     async def broadcast_event(self, event_data: dict[str, Any]) -> int:
         """Pushes an event payload to all active subscriber queues."""
         async with self._lock:
             active = list(self._subscribers)
 
         dispatched = 0
+        dead_queues: list[asyncio.Queue[dict[str, Any]]] = []
         for queue in active:
             try:
                 queue.put_nowait(event_data)
                 dispatched += 1
             except asyncio.QueueFull:
-                logger.warning("Subscriber queue is full; dropping event for slow client")
+                logger.warning("Subscriber queue is full; evicting slow/dead client to prevent memory leak")
+                dead_queues.append(queue)
+
+        if dead_queues:
+            async with self._lock:
+                for dq in dead_queues:
+                    self._subscribers.discard(dq)
+                logger.info(
+                    "Evicted %d dead/full subscriber queue(s); total subscribers: %d",
+                    len(dead_queues),
+                    len(self._subscribers),
+                )
         return dispatched
 
     async def replay_events_since(

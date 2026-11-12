@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -45,6 +46,7 @@ from neural.exceptions import (
     QuotaExceededError,
     UnsupportedExecutionModeError,
 )
+from neural.llm.cost import CostTracker
 from neural.security.approval_gates import HumanApprovalGate
 from neural.security.kill_switch import get_kill_switch
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,17 +113,45 @@ async def submit_objective(
         if payload.project_budget_usd is not None
         else payload.budget_usd
     )
-    if effective_budget is not None:
+    reservation = None
+    project_id = str(uuid.uuid4())
+    if effective_budget is not None and effective_budget > 0:
         month_scope = f"organization-month:{datetime.now(timezone.utc):%Y-%m}"
-        available_quota = await budget_repo.get_available_quota(month_scope)
+        month_account = await budget_repo.get_account(month_scope)
+        month_cap = (
+            month_account.cap_usd
+            if month_account is not None
+            else Decimal(str(CostTracker().monthly_hard_cap_usd))
+        )
+        available_quota = await budget_repo.get_available_quota(
+            month_scope,
+            default_cap=month_cap,
+        )
         if Decimal(str(effective_budget)) > available_quota:
             raise HTTPException(
                 status_code=429,
                 detail={
                     "code": "budget_limit_exceeded",
-                    "message": f"Requested project budget ${effective_budget} exceeds available monthly quota ${available_quota}",
+                    "message": (
+                        f"Requested project budget ${effective_budget} exceeds available "
+                        f"monthly quota ${available_quota}"
+                    ),
                 },
             )
+        try:
+            reservation = await budget_repo.reserve(
+                idempotency_key=f"objective-preflight:{project_id}",
+                reserved_usd=min(Decimal(str(effective_budget)), Decimal("1.00")),
+                scope_caps={month_scope: month_cap},
+            )
+        except QuotaExceededError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "budget_limit_exceeded",
+                    "message": f"Requested project budget ${effective_budget} exceeds available monthly quota: {exc}",
+                },
+            ) from exc
 
     employees_before = await employee_repo.list_all()
     existing_ids = {employee.employee_id for employee in employees_before}
@@ -138,27 +168,83 @@ async def submit_objective(
             budget_usd=effective_budget,
             project_budget_usd=effective_budget,
             clarifications=payload.clarifications,
+            project_id=project_id,
+            month_pre_reserved=True,
         )
     except ClarificationRequiredError as exc:
+        if reservation is not None:
+            try:
+                await budget_repo.release_after_confirmed_no_charge(
+                    reservation.id,
+                    provider_confirmed_unbilled=True,
+                    reason=f"Planning aborted due to required clarification: {exc}",
+                )
+            except Exception:
+                pass
         raise HTTPException(
             status_code=409,
             detail={"code": "clarification_required", "questions": exc.questions},
         ) from exc
     except UnsupportedExecutionModeError as exc:
+        if reservation is not None:
+            try:
+                await budget_repo.release_after_confirmed_no_charge(
+                    reservation.id,
+                    provider_confirmed_unbilled=True,
+                    reason=f"Planning aborted due to unsupported execution mode: {exc}",
+                )
+            except Exception:
+                pass
         raise HTTPException(
             status_code=503,
             detail={"code": "execution_mode_unavailable", "message": str(exc)},
         ) from exc
     except ModelProviderError as exc:
+        if reservation is not None:
+            try:
+                await budget_repo.release_after_confirmed_no_charge(
+                    reservation.id,
+                    provider_confirmed_unbilled=True,
+                    reason=f"Planning aborted due to provider error: {exc}",
+                )
+            except Exception:
+                pass
         raise HTTPException(
             status_code=503,
             detail={"code": "planning_unavailable", "message": str(exc)},
         ) from exc
     except QuotaExceededError as exc:
+        if reservation is not None:
+            try:
+                await budget_repo.release_after_confirmed_no_charge(
+                    reservation.id,
+                    provider_confirmed_unbilled=True,
+                    reason=f"Planning aborted due to quota exceeded: {exc}",
+                )
+            except Exception:
+                pass
         raise HTTPException(
             status_code=429,
             detail={"code": "budget_limit_exceeded", "message": str(exc)},
         ) from exc
+    except Exception:
+        if reservation is not None:
+            try:
+                await budget_repo.release_after_confirmed_no_charge(
+                    reservation.id,
+                    provider_confirmed_unbilled=True,
+                    reason="Planning aborted due to unexpected failure",
+                )
+            except Exception:
+                pass
+        raise
+
+    if reservation is not None:
+        await budget_repo.release_after_confirmed_no_charge(
+            reservation.id,
+            provider_confirmed_unbilled=True,
+            reason="Planning completed; provider usage is separately reserved and settled by the LLM gateway.",
+        )
 
     employees_after = await employee_repo.list_all()
     recruited_ids = sorted(
@@ -378,7 +464,7 @@ async def trigger_boss_emergency_resume(
     session: AsyncSession = Depends(get_db_session),
     task_repo: TaskRepository = Depends(get_task_repo),
     resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
-    actor: str = Depends(require_boss_or_owner_identity),
+    actor: str = Depends(require_owner_identity),
 ) -> dict[str, object]:
     """
     NEURO-12: Boss Emergency Resume.
@@ -404,5 +490,3 @@ async def trigger_boss_emergency_resume(
             detail="Emergency-stop state could not be persisted; system remains halted.",
         ) from exc
     return receipt
-
-

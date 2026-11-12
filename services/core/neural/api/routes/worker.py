@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -39,6 +38,7 @@ from neural.exceptions import (
     SecurityViolationError,
 )
 from neural.execution.contracts import CapabilityPolicyEnforcer
+from neural.llm.budget import load_budget_scope_caps
 from neural.llm.gateway import LLMGateway
 from neural.logger import get_logger
 from neural.security.kill_switch import get_kill_switch
@@ -217,15 +217,12 @@ async def plan_terminal_task(
     project = await session.get(Project, task.project_id)
     if project is None:
         raise HTTPException(status_code=409, detail="Task project is missing; metered inference is blocked.")
-    project_plan = project.execution_plan if isinstance(project.execution_plan, dict) else {}
-    project_cap = project_plan.get("budget_usd", gateway.cost_tracker.max_project_budget_usd)
-    task_cap = resource_budget.get("max_cost_usd", gateway.cost_tracker.max_task_budget_usd)
-    month_scope = datetime.now(timezone.utc).strftime("%Y-%m")
-    budget_scope_caps = {
-        f"organization-month:{month_scope}": gateway.cost_tracker.monthly_hard_cap_usd,
-        f"project:{project.id}": project_cap,
-        f"task:{task.task_id}": task_cap,
-    }
+    budget_scope_caps = await load_budget_scope_caps(
+        session,
+        gateway.cost_tracker,
+        project_id=project.id,
+        task_id=task.task_id,
+    )
     base_prompt = (
         "Produce a short, bounded sequence of terminal argv commands to complete this task "
         "inside the employee workspace. Commands run directly without a shell in a disposable, "

@@ -13,7 +13,7 @@ from neural.config import get_settings
 from neural.db.repositories import BudgetRepository
 from neural.exceptions import ModelProviderError, QuotaExceededError, RateLimitError
 from neural.llm.cost import CostTracker
-from neural.llm.retry import CircuitBreaker, retry_with_backoff
+from neural.llm.retry import CircuitBreaker, CircuitState, retry_with_backoff
 from neural.logger import get_logger
 
 logger = get_logger("ancos.llm.gateway")
@@ -23,6 +23,23 @@ T = TypeVar("T", bound=BaseModel)
 
 class BudgetSettlementError(RuntimeError):
     """A provider returned, but durable spend settlement could not be confirmed."""
+
+
+def sanitize_error_message(message: str) -> str:
+    """
+    Sanitizes exception messages by stripping URL query parameters (e.g. ?key=...)
+    so that API keys and query secrets are never leaked to HTTP clients or logs.
+    """
+    if not message:
+        return ""
+    text = str(message)
+    # Strip full query strings attached to URLs (http://... or https://...)
+    text = re.sub(r"(https?://[^\s\"'<>`\)\]\}?]+)\?[^\s\"'<>`\)\]\}]+", r"\1", text)
+    # Strip standalone query parameters like ?key=... or &key=...
+    text = re.sub(r"[?&][a-zA-Z0-9_]+=[^\s\"'<>`\)\]\}&]+", "", text)
+    # Strip any remaining ?key=... patterns
+    text = re.sub(r"\?key=[^\s\"'<>`\)\]\}]+", "", text)
+    return text
 
 
 def extract_json_from_text(text: str) -> dict[str, Any]:
@@ -287,6 +304,8 @@ class LLMGateway:
             ])
 
             if not has_keys:
+                if self.settings.APP_ENV == "production" or os.getenv("APP_ENV") == "production":
+                    raise ModelProviderError("No live model provider configured in production.")
                 # Simulated offline development response if no API keys are present
                 in_tok = max(10, len(prompt.split()))
                 out_tok = 50
@@ -349,9 +368,10 @@ class LLMGateway:
                 "provider": self._model_provider(model) or provider
             }
         except Exception as e:
+            sanitized_e = sanitize_error_message(str(e))
             if self._is_rate_limit(e):
-                raise RateLimitError(f"Rate limit exceeded for {model}: {e}") from e
-            raise ModelProviderError(f"Provider invocation error for {model}: {e}") from e
+                raise RateLimitError(f"Rate limit exceeded for {model}: {sanitized_e}") from e
+            raise ModelProviderError(f"Provider invocation error for {model}: {sanitized_e}") from e
 
     async def generate(
         self,
@@ -402,7 +422,7 @@ class LLMGateway:
         last_error: Optional[Exception] = None
         attempted_models: list[str] = []
 
-        for candidate_model in candidates:
+        for candidate_idx, candidate_model in enumerate(candidates):
             breaker = self.get_circuit_breaker(candidate_model)
             if not breaker.can_execute():
                 logger.warning(
@@ -428,6 +448,10 @@ class LLMGateway:
                     idempotency_key=f"llm:{uuid.uuid4().hex}",
                     reserved_usd=reserve_amount,
                     scope_caps=budget_scope_caps,
+                )
+            elif self.cost_tracker.enforce_budgets:
+                self.cost_tracker.check_budget_ceiling(
+                    0.0, task_id=task_id, project_id=project_id
                 )
             start_time = time.time()
 
@@ -522,21 +546,37 @@ class LLMGateway:
                     metadata={"attempted_models": attempted_models}
                 )
 
-            except (QuotaExceededError, BudgetSettlementError):
+            except (QuotaExceededError, BudgetSettlementError) as budget_err:
+                breaker.record_failure(budget_err)
                 raise
             except Exception as err:
                 last_error = err
                 breaker.record_failure(err)
+                has_fallback = candidate_idx < len(candidates) - 1
+                if reservation is not None and has_fallback and db_session is not None:
+                    try:
+                        await BudgetRepository(db_session).release_after_confirmed_no_charge(
+                            reservation.id,
+                            provider_confirmed_unbilled=True,
+                            reason=f"Provider {candidate_model} failed ({sanitize_error_message(str(err))}); failing over to fallback candidate",
+                        )
+                    except Exception as rel_err:
+                        logger.warning(
+                            "Could not release budget reservation after provider failover",
+                            reservation_id=reservation.id,
+                            error=str(rel_err)
+                        )
                 logger.warning(
                     "Model invocation failed; falling back to next candidate",
                     model=candidate_model,
                     tier=effective_tier,
-                    error=str(err)
+                    error=sanitize_error_message(str(err))
                 )
 
+        sanitized_last_err = sanitize_error_message(str(last_error)) if last_error else "None"
         raise ModelProviderError(
             f"All candidate models failed for tier '{effective_tier}'. "
-            f"Attempted: {attempted_models}. Last error: {last_error}"
+            f"Attempted: {attempted_models}. Last error: {sanitized_last_err}"
         )
 
     async def generate_structured(
@@ -614,8 +654,9 @@ class LLMGateway:
                     error=str(gen_err)
                 )
 
+        sanitized_struct_err = sanitize_error_message(str(last_error)) if last_error else "None"
         raise ModelProviderError(
-            f"Failed to extract structured response for {response_model.__name__}: {last_error}"
+            f"Failed to extract structured response for {response_model.__name__}: {sanitized_struct_err}"
         )
 
 

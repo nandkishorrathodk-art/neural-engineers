@@ -454,7 +454,14 @@ def test_broker_captures_bounded_manifest_through_read_only_sandbox(monkeypatch)
     assert manifest["files"][0]["sha256"] == "a" * 64
     assert calls["run"]["volumes"]["ancos-workspace-anc-emp-verify"]["mode"] == "ro"
     assert calls["run"]["network_disabled"] is True
-    assert calls["exec"]["cmd"][:4] == ["/usr/bin/timeout", "300s", "python3", "-c"]
+    assert calls["exec"]["cmd"][:6] == [
+        "/usr/bin/timeout",
+        "300s",
+        "python3",
+        "-I",
+        "-P",
+        "-c",
+    ]
     assert "max_files=2000" in calls["exec"]["cmd"][-1]
     assert calls["removed"] == {"force": True}
 

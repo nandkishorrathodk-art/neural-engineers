@@ -33,6 +33,9 @@ class SandboxConfig:
     temp_dir_prefix: str = "ancos_sandbox_"
     enforce_network_perimeter: bool = True
     enforce_syscall_filtering: bool = True
+    allow_unconfined_host: bool = False
+    require_container_isolation: bool = False
+    disallow_unconfined_host: bool = False
     restricted_patterns: list[str] = field(
         default_factory=lambda: [
             "__import__('os').system",

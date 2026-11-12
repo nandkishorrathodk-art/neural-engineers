@@ -17,7 +17,8 @@ class ModelCheckpointMetadata(BaseModel):
     name: str
     version: str
     task_types: list[str] = Field(default_factory=list)
-    sha256_hash: str
+    sha256_hash: Optional[str] = None
+    status: str = "available"
     runtime: ModelRuntime = ModelRuntime.FALLBACK
     model_path: Optional[str] = None
     onnx_path: Optional[str] = None
@@ -32,11 +33,13 @@ DEFAULT_CHECKPOINTS: dict[str, ModelCheckpointMetadata] = {
         name="Laya-English-Base",
         version="1.0.0",
         task_types=["routing", "choice"],
-        sha256_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        sha256_hash=None,
+        status="missing",
+        model_path="convaiinnovations/laya",
         runtime=ModelRuntime.FALLBACK,
         target_latency_ms=30.0,
         input_modality="structured_prompt_text",
-        description="Fast English-only routing and choice selection (25ms - 35ms)",
+        description="Fast English-only routing and choice selection (25ms - 35ms) [HuggingFace: convaiinnovations/laya]",
     ),
     "Laya-Multilingual": ModelCheckpointMetadata(
         name="Laya-Multilingual",
@@ -126,6 +129,10 @@ class ModelRegistry:
 
     def verify_checkpoint_hash(self, name: str, artifact_bytes: bytes) -> bool:
         ckpt = self.get_checkpoint(name)
+        if not ckpt.sha256_hash:
+            raise ModelCheckpointError(
+                f"Checkpoint '{name}' has status '{ckpt.status}' and no valid SHA-256 hash configured"
+            )
         computed_hash = hashlib.sha256(artifact_bytes).hexdigest()
         if computed_hash != ckpt.sha256_hash:
             raise ModelCheckpointError(
@@ -136,6 +143,10 @@ class ModelRegistry:
 
     def verify_checkpoint_file(self, name: str, file_path: str) -> bool:
         ckpt = self.get_checkpoint(name)
+        if not ckpt.sha256_hash:
+            raise ModelCheckpointError(
+                f"Checkpoint '{name}' has status '{ckpt.status}' and no valid SHA-256 hash configured"
+            )
         if not os.path.exists(file_path):
             raise ModelCheckpointError(f"Model file '{file_path}' does not exist for checkpoint '{name}'")
         hasher = hashlib.sha256()

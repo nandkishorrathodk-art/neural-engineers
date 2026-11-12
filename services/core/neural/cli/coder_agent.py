@@ -7,10 +7,12 @@ and autonomously diagnoses and fixes bugs until exit code 0.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -63,6 +65,8 @@ class TerminalCoderAgent:
         employee_id: str = "ANC-EMP-CODER",
         model_tier: str = "deepseek-coder",
         console: Optional[Console] = None,
+        llm_gateway: Optional[Any] = None,
+        llm_repair_invoker: Optional[Callable[[str, str], Optional[str]]] = None,
     ) -> None:
         self.repo_root = Path(repo_root).resolve() if repo_root else Path.cwd()
         self.employee_id = employee_id
@@ -74,6 +78,9 @@ class TerminalCoderAgent:
         self.last_diff_summary: Optional[DiffSummary] = None
         self.session_diffs: list[DiffSummary] = []
         self.execution_history: list[CoderExecutionReport] = []
+        self.last_test_result: Optional[SubprocessResult] = None
+        self.llm_gateway = llm_gateway
+        self.llm_repair_invoker = llm_repair_invoker
 
     def explore_context(
         self,
@@ -199,14 +206,45 @@ class TerminalCoderAgent:
 
         return plans
 
+    @staticmethod
+    def _atomic_write(file_path: Path, content: str) -> None:
+        """
+        Atomically writes content to file_path by writing to a temporary file in the
+        same directory and renaming via os.replace to prevent zero-byte truncation on interruption.
+        """
+        parent_dir = file_path.parent
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=parent_dir,
+            delete=False,
+            prefix=f".{file_path.name}.",
+            suffix=".tmp",
+        )
+        temp_path = Path(temp_file.name)
+        try:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_file.close()
+            os.replace(temp_path, file_path)
+        except Exception:
+            temp_file.close()
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+            raise
+
     def apply_plans(self, plans: list[FileEditPlan]) -> list[DiffSummary]:
         """
         Applies file edit plans to disk and renders live syntax-highlighted diffs.
         """
         diff_summaries: list[DiffSummary] = []
         for plan in plans:
-            plan.file_path.parent.mkdir(parents=True, exist_ok=True)
-            plan.file_path.write_text(plan.updated_content, encoding="utf-8")
+            self._atomic_write(plan.file_path, plan.updated_content)
 
             rel_str = str(plan.file_path.relative_to(self.repo_root)).replace("\\", "/")
             diff = DiffViewer.compute_diff(
@@ -282,6 +320,7 @@ class TerminalCoderAgent:
             on_stdout_line=_stream_out if streaming else None,
             on_stderr_line=_stream_err if streaming else None,
         )
+        self.last_test_result = result
 
         if result.success:
             self.console.print(f"[bold green]✔ Tests passed cleanly in {result.duration_seconds:.2f}s (exit code 0)[/bold green]")
@@ -307,6 +346,7 @@ class TerminalCoderAgent:
         notes: list[str] = []
         current_result = failed_result
 
+        attempts_executed = 0
         for attempt in range(1, max_attempts + 1):
             self.console.print(
                 f"[bold yellow]🔧 Autonomous Diagnosis & Self-Fix Loop (Attempt {attempt}/{max_attempts})...[/bold yellow]"
@@ -321,11 +361,12 @@ class TerminalCoderAgent:
             else:
                 new_code = self._default_error_remediation(old_code, error_output)
 
-            if new_code == old_code:
+            if not new_code or not new_code.strip() or new_code.strip() == old_code.strip():
                 notes.append("Diagnosis could not derive new changes; stopping repair loop.")
                 break
 
-            target_file.write_text(new_code, encoding="utf-8")
+            attempts_executed = attempt
+            self._atomic_write(target_file, new_code)
             pycache = target_file.parent / "__pycache__"
             if pycache.is_dir():
                 import shutil
@@ -343,11 +384,13 @@ class TerminalCoderAgent:
 
             # Re-run tests
             current_result = self.run_tests(test_command=test_command, streaming=True)
+            self.last_test_result = current_result
             if current_result.success:
                 notes.append(f"Attempt {attempt}: Repair succeeded, tests are passing with exit code 0!")
                 return True, attempt, notes
 
-        return False, max_attempts, notes
+        self.last_test_result = current_result
+        return False, attempts_executed, notes
 
     def execute_instruction(
         self,
@@ -412,13 +455,7 @@ class TerminalCoderAgent:
             )
             repair_attempts = attempts
             repair_notes = notes
-            if repaired:
-                final_result = SubprocessResult(
-                    exit_code=0,
-                    stdout="Repaired and passed",
-                    stderr="",
-                    duration_seconds=0.1,
-                )
+            final_result = self.last_test_result or test_result
 
         overall_success = final_result.success
         report = CoderExecutionReport(
@@ -469,105 +506,135 @@ class TerminalCoderAgent:
 
     def _default_error_remediation(self, code: str, error_output: str) -> str:
         """
-        Generic rule-based bug repair assistant for common test assertions & tracebacks.
+        Genuine automated error remediation:
+        Attempts genuine code repair using LLM prompt synthesis or custom repair invoker.
+        Fails closed (returns original code unchanged) when genuine repair cannot be derived,
+        strictly prohibiting test-gaming regex assertion swapping, / 0 -> / 1 substitutions,
+        or synthetic pass results.
         """
-        lines = code.splitlines()
-
-        # Check for pytest 'where' value: E + where <val> = <call>
-        dyn_val = None
-        where_match = re.search(r"where\s+([0-9a-zA-Z_\.\'\"]+)\s*=", error_output)
-        if where_match:
-            dyn_val = where_match.group(1).strip()
-
-        # Discrepancy pattern: E assert actual == expected or assert 41 == 42
-        match = re.search(r"E\s+assert\s+([^\n=]+?)\s*==\s*([^\n]+)", error_output) or re.search(
-            r"assert\s+([0-9a-zA-Z_\'\"]+)\s*==\s*([0-9a-zA-Z_\'\"]+)", error_output
-        )
-        if match:
-            v1 = match.group(1).strip()
-            v2 = match.group(2).strip()
-
-            # Align actual vs expected using dynamic where value if available
-            if dyn_val:
-                if dyn_val == v1:
-                    actual_val, expected_val = v1, v2
-                elif dyn_val == v2:
-                    actual_val, expected_val = v2, v1
-                else:
-                    actual_val, expected_val = v1, v2
-            else:
-                actual_val, expected_val = v1, v2
-
-            # Try replacing in return statements
-            for idx, line in enumerate(lines):
-                if f"return {actual_val}" in line:
-                    lines[idx] = line.replace(f"return {actual_val}", f"return {expected_val}")
-                    return "\n".join(lines) + "\n"
-
-            # Try direct replacement
-            for idx, line in enumerate(lines):
-                if actual_val in line and "def " not in line and "class " not in line:
-                    lines[idx] = line.replace(actual_val, expected_val, 1)
-                    return "\n".join(lines) + "\n"
-
-            # Check if actual / expected can be scaled by 10, 100, 0.1, 0.01
+        if self.llm_repair_invoker is not None:
             try:
-                act_f = float(actual_val)
-                exp_f = float(expected_val)
-                for scale in (10.0, 100.0, 0.1, 0.01):
-                    act_ratio = str(round(act_f / scale, 4)).rstrip("0").rstrip(".")
-                    exp_ratio = str(round(exp_f / scale, 4)).rstrip("0").rstrip(".")
-                    for idx, line in enumerate(lines):
-                        if act_ratio in line and "def " not in line and "class " not in line:
-                            lines[idx] = line.replace(act_ratio, exp_ratio, 1)
-                            return "\n".join(lines) + "\n"
-            except (ValueError, ZeroDivisionError):
-                pass
+                synthesized = self.llm_repair_invoker(code, error_output)
+                if synthesized and synthesized.strip() and synthesized.strip() != code.strip():
+                    return synthesized
+            except Exception as e:
+                logger.warning("Custom LLM repair invoker error: %s", e)
 
-        # Boolean assertion inversion: assert False (or where False = ...)
-        if "assert False" in error_output or "where False" in error_output:
-            for idx, line in enumerate(lines):
-                if "return False" in line:
-                    lines[idx] = line.replace("return False", "return True")
-                    return "\n".join(lines) + "\n"
-        elif "assert True" in error_output or "where True" in error_output:
-            for idx, line in enumerate(lines):
-                if "return True" in line:
-                    lines[idx] = line.replace("return True", "return False")
-                    return "\n".join(lines) + "\n"
+        # Attempt synthesis via LLMGateway if available
+        synthesized = self._synthesize_llm_repair(code, error_output)
+        if synthesized and synthesized.strip() and synthesized.strip() != code.strip():
+            return synthesized
 
-        # Missing import pattern: NameError: name 'XYZ' is not defined
-        name_err = re.search(r"NameError: name '(\w+)' is not defined", error_output)
-        if name_err:
-            missing_name = name_err.group(1)
-            standard_modules = {
-                "np": "import numpy as np",
-                "pd": "import pandas as pd",
-                "re": "import re",
-                "sys": "import sys",
-                "os": "import os",
-                "json": "import json",
-                "math": "import math",
-                "time": "import time",
-            }
-            if missing_name in standard_modules:
-                return f"{standard_modules[missing_name]}\n" + code
-            return f"{missing_name} = None\n" + code
-
-        # AttributeError: type object 'X' has no attribute 'Y' or 'X' object has no attribute 'Y'
-        attr_err = re.search(r"AttributeError:.*has no attribute '(\w+)'", error_output)
-        if attr_err:
-            missing_attr = attr_err.group(1)
-            return code + f"\n\n    def {missing_attr}(self, *args, **kwargs):\n        return True\n"
-
-        # KeyError
-        key_err = re.search(r"KeyError:\s*'([^']+)'", error_output)
-        if key_err:
-            missing_key = key_err.group(1)
-            return code.replace(f"['{missing_key}']", f".get('{missing_key}')")
-
-        # ZeroDivisionError guard
-        if "ZeroDivisionError" in error_output:
-            return "# Guarded division\n" + code.replace("/ 0", "/ 1")
-
+        # Fail closed: do not attempt regex test-gaming assertion hacks
         return code
+
+    def _synthesize_llm_repair(self, code: str, error_output: str) -> Optional[str]:
+        """
+        Synthesizes code repair using configured LLM gateway.
+        Fails closed (returns None) if no provider credentials exist, invocation fails,
+        or generated output is invalid.
+        """
+        gateway = self.llm_gateway
+        is_real_gateway = False
+        try:
+            from neural.llm.gateway import LLMGateway
+            if gateway is None:
+                gateway = LLMGateway()
+            is_real_gateway = isinstance(gateway, LLMGateway)
+        except Exception:
+            if gateway is None:
+                return None
+
+        if is_real_gateway:
+            settings = getattr(gateway, "settings", None)
+            has_credentials = bool(getattr(gateway, "custom_invoker", None)) or any([
+                getattr(settings, "OPENAI_API_KEY", None) if settings else None,
+                getattr(settings, "ANTHROPIC_API_KEY", None) if settings else None,
+                getattr(settings, "GEMINI_API_KEY", None) if settings else None,
+                getattr(settings, "NVIDIA_API_KEY", None) if settings else None,
+                os.getenv("OPENAI_API_KEY"),
+                os.getenv("ANTHROPIC_API_KEY"),
+                os.getenv("GEMINI_API_KEY"),
+                os.getenv("NVIDIA_API_KEY"),
+            ])
+            if not has_credentials:
+                return None
+        elif not callable(getattr(gateway, "generate", None)):
+            return None
+
+        prompt = (
+            "You are an expert autonomous software engineer for ANCOS. "
+            "A test failed for the source code below. Analyze the error output and provide "
+            "the complete, corrected Python source code.\n"
+            "Requirements:\n"
+            "1. Output ONLY the corrected Python source code inside a single ```python ``` block.\n"
+            "2. Do not include explanatory prose before or after the code block.\n"
+            "3. Fix the underlying bug correctly rather than gaming the test assertion.\n\n"
+            f"SOURCE CODE:\n```python\n{code}\n```\n\n"
+            f"TEST FAILURE ERROR OUTPUT:\n{error_output}\n"
+        )
+
+        try:
+            import asyncio
+            import inspect
+
+            result_or_awaitable = gateway.generate(
+                prompt=prompt,
+                route="coding",
+                employee_id=self.employee_id,
+            )
+            if inspect.isawaitable(result_or_awaitable):
+                async def _resolve(aw: Any) -> Any:
+                    return await aw
+
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop and loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        resp = pool.submit(asyncio.run, _resolve(result_or_awaitable)).result(timeout=60)
+                else:
+                    resp = asyncio.run(_resolve(result_or_awaitable))
+            else:
+                resp = result_or_awaitable
+
+            if resp is None:
+                return None
+            content = resp.content if hasattr(resp, "content") else str(resp)
+            if not isinstance(content, str) or not content.strip():
+                return None
+            extracted = self._extract_code_from_llm_response(content)
+            if extracted and extracted.strip() and extracted.strip() != code.strip():
+                return extracted
+        except Exception as e:
+            logger.warning("LLM prompt synthesis for code repair failed: %s", e)
+
+        return None
+
+    @staticmethod
+    def _extract_code_from_llm_response(text: str) -> Optional[str]:
+        """Extracts valid python source code from markdown fences or raw text."""
+        import ast
+
+        clean = text.strip()
+        if not clean:
+            return None
+        match = re.search(r"```(?:python)?\s*([\s\S]*?)\s*```", clean)
+        if match:
+            extracted = match.group(1).strip()
+            if extracted:
+                try:
+                    ast.parse(extracted)
+                    return extracted + "\n"
+                except SyntaxError:
+                    return None
+            return None
+        try:
+            ast.parse(clean)
+            return clean + "\n"
+        except SyntaxError:
+            pass
+        return None

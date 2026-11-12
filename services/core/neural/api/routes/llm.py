@@ -4,7 +4,7 @@ from neural.api.schemas.requests import LLMGenerateRequest
 from neural.api.schemas.responses import LLMTelemetryResponse
 from neural.db.engine import get_db_session
 from neural.exceptions import ModelProviderError
-from neural.llm.gateway import LLMGateway
+from neural.llm.gateway import LLMGateway, sanitize_error_message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(prefix="/llm", tags=["LLM Gateway"])
@@ -95,4 +95,4 @@ async def generate_completion(
             "metadata": response.metadata
         }
     except ModelProviderError as err:
-        raise HTTPException(status_code=502, detail=str(err))
+        raise HTTPException(status_code=502, detail=sanitize_error_message(str(err)))

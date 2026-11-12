@@ -61,6 +61,9 @@ class CircuitBreaker:
             if self._half_open_trial_count < self.half_open_trials:
                 self._half_open_trial_count += 1
                 return True
+            # All trial requests consumed without success; trip back to OPEN
+            # to break deadlock and allow recovery timeout to eventually reset.
+            self.record_failure(RuntimeError(f"Trial request limit exceeded in HALF_OPEN state for {self.name}"))
             return False
         # OPEN
         return False

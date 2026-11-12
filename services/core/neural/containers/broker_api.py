@@ -600,16 +600,21 @@ def capture_verification_manifest(payload: VerificationManifestRequest) -> dict[
     )
     try:
         result = verifier_container.exec_run(
-            cmd=["/usr/bin/timeout", "300s", "python3", "-c", manifest_script],
+            cmd=["/usr/bin/timeout", "300s", "python3", "-I", "-P", "-c", manifest_script],
             user="1000:1000",
             workdir="/home/employee/workspace",
+            demux=True,
             environment={
                 "HOME": "/tmp",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "TMPDIR": "/tmp",
             },
         )
-        output = result.output.decode("utf-8", errors="replace") if result.output else ""
+        if isinstance(result.output, tuple):
+            stdout_bytes, stderr_bytes = result.output
+        else:
+            stdout_bytes, stderr_bytes = result.output, None
+        output = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
         if result.exit_code != 0:
             raise HTTPException(status_code=503, detail="Workspace manifest command failed.")
         import json

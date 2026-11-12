@@ -11,7 +11,9 @@ def infer_desk_role(department: str = "", title: str = "") -> str:
     d = (department or "").lower()
     t = (title or "").lower()
 
-    if any(k in d or k in t for k in ("exec", "ceo", "boss", "chief")):
+    # Refine "chief" check so "Chief Architect" or "Chief Scientist" does not map to "boss"
+    is_non_boss_chief = "chief" in t and any(nb in t for nb in ("architect", "scientist", "research"))
+    if not is_non_boss_chief and any(k in d or k in t for k in ("exec", "ceo", "boss", "chief")):
         return "boss"
     if any(k in d or k in t for k in ("qa", "quality", "test", "verification")):
         return "qa"
@@ -21,8 +23,8 @@ def infer_desk_role(department: str = "", title: str = "") -> str:
         return "research"
     if any(k in d or k in t for k in ("creative", "design", "ux", "art", "product")):
         return "creative"
-    if "frontend" in d or "frontend" in t or "ui" in t:
-        return "frontend"
+    if "frontend" in d or "frontend" in t or "ui" in d or "ui" in t:
+        return "swe"
     return "swe"
 
 
@@ -58,7 +60,7 @@ class WorkstationAssignmentService:
         if isinstance(title, (set, list, tuple)) and occupied_desks is None:
             occupied = set(title)
             if department in {"boss", "swe", "frontend", "qa", "devops", "research", "creative"}:
-                role = department
+                role = "swe" if department == "frontend" else department
                 dept_name = ""
             else:
                 role = infer_desk_role(department, "")
@@ -80,7 +82,7 @@ class WorkstationAssignmentService:
         if dept_lower:
             dept_matching = [
                 w for w in CANONICAL_WORKSTATIONS
-                if w["department"].lower() in dept_lower and w["id"] not in occupied
+                if w["department"].lower() in dept_lower and w["id"] != "WS-BOSS" and w["id"] not in occupied
             ]
             if dept_matching:
                 chosen = dept_matching[0]["id"]

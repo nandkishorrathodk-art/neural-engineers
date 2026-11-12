@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from neural.db.models import Project, Task
+from neural.db.models import BudgetAccount, Project, Task
 from neural.llm.cost import CostTracker
 
 
@@ -31,8 +31,14 @@ async def load_budget_scope_caps(
 
     project = await session.get(Project, project_id) if project_id else None
 
+    month_scope = f"organization-month:{datetime.now(timezone.utc):%Y-%m}"
+    month_account = await session.get(BudgetAccount, month_scope)
     caps: dict[str, Any] = {
-        f"organization-month:{datetime.now(timezone.utc):%Y-%m}": cost_tracker.monthly_hard_cap_usd,
+        month_scope: (
+            month_account.cap_usd
+            if month_account is not None
+            else cost_tracker.monthly_hard_cap_usd
+        ),
     }
     if project is not None:
         project_plan = project.execution_plan if isinstance(project.execution_plan, dict) else {}

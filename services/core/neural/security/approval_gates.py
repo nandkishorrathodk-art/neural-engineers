@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from neural.constants import ApprovalStatus, DestructiveOperationType
@@ -8,8 +9,13 @@ from neural.db.models import Approval
 from neural.db.repositories import ApprovalRepository
 from neural.exceptions import HumanApprovalRequiredError
 from neural.logger import get_logger
+from neural.security.kill_switch import get_kill_switch
 
 logger = get_logger("ancos.security.approval_gates")
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class HumanApprovalGate:
@@ -133,12 +139,23 @@ class HumanApprovalGate:
         return approval
 
     @classmethod
-    async def check_authorized(cls, approval_id: str, approval_repo: ApprovalRepository) -> bool:
-        """Returns True if the approval request exists and has been APPROVED by an operator."""
+    async def check_authorized(
+        cls,
+        approval_id: str,
+        approval_repo: ApprovalRepository,
+        action_type: Optional[str] = None,
+    ) -> bool:
+        """Returns True if the approval request exists, has status APPROVED, matches action_type, and is unconsumed."""
         app = await approval_repo.get_by_id(approval_id)
         if not app:
             return False
-        return app.status == ApprovalStatus.APPROVED
+        if app.status != ApprovalStatus.APPROVED:
+            return False
+        if action_type is not None and app.action_type != action_type:
+            return False
+        if app.consumed_at is not None:
+            return False
+        return True
 
     @classmethod
     async def decide(
@@ -194,6 +211,8 @@ class HumanApprovalGate:
         det = details or {}
 
         if cls.is_destructive(action_type, det):
+            get_kill_switch().guard_active()
+
             if not approval_id:
                 if approval_repo:
                     app = await cls.request_approval(
@@ -220,12 +239,56 @@ class HumanApprovalGate:
                     action_type,
                     f"Destructive operation cannot verify approval '{approval_id}' without an approval repository.",
                 )
-            is_auth = await cls.check_authorized(approval_id, approval_repo)
+
+            app = await approval_repo.get_by_id(approval_id)
+            if not app:
+                raise HumanApprovalRequiredError(
+                    action_type,
+                    f"Approval request '{approval_id}' was not found. Execution blocked.",
+                )
+            if app.status != ApprovalStatus.APPROVED:
+                raise HumanApprovalRequiredError(
+                    action_type,
+                    f"Approval request '{approval_id}' is not approved (status={app.status.value}). Execution blocked.",
+                )
+            if app.action_type != action_type:
+                raise HumanApprovalRequiredError(
+                    action_type,
+                    f"Approval request '{approval_id}' action_type '{app.action_type}' does not match requested '{action_type}'. Execution blocked.",
+                )
+            if app.consumed_at is not None:
+                raise HumanApprovalRequiredError(
+                    action_type,
+                    f"Approval request '{approval_id}' has already been consumed at {app.consumed_at}. Execution blocked.",
+                )
+
+            is_auth = await cls.check_authorized(approval_id, approval_repo, action_type=action_type)
             if not is_auth:
                 raise HumanApprovalRequiredError(
                     action_type,
-                    f"Approval request '{approval_id}' is not approved. Execution blocked.",
+                    f"Approval request '{approval_id}' is not authorized. Execution blocked.",
                 )
+
+            # Consume the approval immediately using approval_repo to prevent multi-use replay
+            consumed = None
+            if hasattr(approval_repo, "consume_once"):
+                consumed = await approval_repo.consume_once(
+                    approval_id=approval_id,
+                    action_type=action_type,
+                    expected_details=det,
+                    consumed_by=requested_by,
+                )
+            if not consumed:
+                app = await approval_repo.get_by_id(approval_id)
+                if not app or app.status != ApprovalStatus.APPROVED or app.consumed_at is not None or app.action_type != action_type:
+                    raise HumanApprovalRequiredError(
+                        action_type,
+                        f"Approval request '{approval_id}' cannot be consumed. Execution blocked.",
+                    )
+                app.consumed_at = utc_now()
+                app.consumed_by = requested_by
+                if hasattr(approval_repo, "session") and hasattr(approval_repo.session, "commit"):
+                    await approval_repo.session.commit()
 
         # Execute the authorized operation
         logger.info("Executing authorized gated operation", action_type=action_type, actor=requested_by)

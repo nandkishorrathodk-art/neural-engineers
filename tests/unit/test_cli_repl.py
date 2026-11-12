@@ -114,3 +114,63 @@ def test_repl_command_history(tmp_path: Path):
     output = console.export_text()
     assert "Recent Command History" in output
     assert "Add rate limiting" in output
+
+
+def test_repl_disconnected_stdin_runtime_error(tmp_path: Path):
+    """
+    Verifies that when input_fn raises RuntimeError('lost sys.stdin'), the REPL
+    exits cleanly without entering an infinite busy loop.
+    """
+    def broken_input(_: str):
+        raise RuntimeError("lost sys.stdin")
+
+    console = Console(record=True, width=120)
+    repl = InteractiveCoderREPL(
+        repo_root=tmp_path,
+        console=console,
+        input_fn=broken_input,
+    )
+    repl.run()
+    assert repl.running is False
+    text = console.export_text()
+    assert "Exiting ANCOS REPL" in text or "disconnected" in text
+
+
+def test_repl_eof_error(tmp_path: Path):
+    """
+    Verifies that when input_fn raises EOFError, the REPL exits cleanly.
+    """
+    def eof_input(_: str):
+        raise EOFError("EOF reached")
+
+    console = Console(record=True, width=120)
+    repl = InteractiveCoderREPL(
+        repo_root=tmp_path,
+        console=console,
+        input_fn=eof_input,
+    )
+    repl.run()
+    assert repl.running is False
+    text = console.export_text()
+    assert "Exiting ANCOS REPL" in text
+
+
+def test_repl_keyboard_interrupt(tmp_path: Path):
+    """
+    Verifies that when input_fn raises KeyboardInterrupt on disconnected stream,
+    the REPL exits cleanly.
+    """
+    def interrupt_input(_: str):
+        raise KeyboardInterrupt()
+
+    console = Console(record=True, width=120)
+    repl = InteractiveCoderREPL(
+        repo_root=tmp_path,
+        console=console,
+        input_fn=interrupt_input,
+    )
+    repl.run()
+    assert repl.running is False
+    text = console.export_text()
+    assert "Exiting ANCOS REPL" in text
+

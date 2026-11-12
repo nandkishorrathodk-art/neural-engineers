@@ -61,11 +61,10 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
     # Model Defaults
-    BOSS_MODEL: str = "openai/gpt-5.6-sol"
+    BOSS_MODEL: str = "openai/gpt-6.1-sol"
     BOSS_TEMPERATURE: float = 0.2
     EMPLOYEE_DEFAULT_MODEL: str = "openai/gpt-6-luna"
-    CODE_AGENT_MODEL: str = "openai/gpt-5.6-sol"
-    CYBER_AGENT_MODEL: str = "openai/gpt-5.6-sol"
+    CODE_AGENT_MODEL: str = "anthropic/claude-sonnet-5-5"
 
     # Quotas & Limits
     MAX_CONCURRENT_EMPLOYEES: int = 10

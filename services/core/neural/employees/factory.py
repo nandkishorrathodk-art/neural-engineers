@@ -228,6 +228,9 @@ class EmployeeFactory:
 
         # Allocate desk if not explicitly provided, or validate explicit desk
         assigned_desk = desk_id
+        if assigned_desk is not None and not WorkstationAssignmentService.is_valid_desk_id(assigned_desk):
+            raise ValueError(f"Invalid workstation desk '{assigned_desk}'")
+
         if hasattr(self.repo, "list_occupied_desks"):
             occupied = await self.repo.list_occupied_desks()
             if assigned_desk is not None:
@@ -322,6 +325,24 @@ class EmployeeFactory:
         )
         return employee
 
+    async def _resolve_dynamic_identity(
+        self,
+        role_title: str = "Software Engineer",
+        department: str = "Engineering",
+        name: Optional[str] = None,
+    ) -> dict[str, str]:
+        persona = self.generate_dynamic_identity(role_title=role_title, department=department)
+        if name:
+            persona["name"] = name
+        else:
+            existing_names = {
+                employee.name.strip().casefold()
+                for employee in await self.repo.list_all()
+            }
+            if persona["name"].strip().casefold() in existing_names:
+                persona["name"] = f"{persona['name']} {uuid.uuid4().hex[:4].upper()}"
+        return persona
+
     async def recruit_for_skill(self, skill_name: str, name: Optional[str] = None) -> Employee:
         """
         Dynamically recruits an employee role that possesses the requested skill.
@@ -342,21 +363,27 @@ class EmployeeFactory:
             role_id = matched_role["id"]
             title = matched_role.get("title", "Software Engineer")
             dept = matched_role.get("department", "Engineering")
-            emp_name = name or f"Agent {matched_role['title'].split()[0]}"
+            persona = await self._resolve_dynamic_identity(role_title=title, department=dept, name=name)
             return await self.hire_employee(
-                name=emp_name,
+                name=persona["name"],
                 title=title,
                 department=dept,
-                role_id=role_id
+                role_id=role_id,
+                personality=persona["personality"],
+                communication_style=persona["communication_style"],
             )
 
         # Generic recruit fallback
-        emp_name = name or f"Specialist {skill_name}"
+        title = f"{skill_name} Engineer"
+        dept = "Engineering"
+        persona = await self._resolve_dynamic_identity(role_title=title, department=dept, name=name)
         return await self.hire_employee(
-            name=emp_name,
-            title=f"{skill_name} Engineer",
-            department="Engineering",
-            initial_skills=[skill_name, "Software Engineering"]
+            name=persona["name"],
+            title=title,
+            department=dept,
+            personality=persona["personality"],
+            communication_style=persona["communication_style"],
+            initial_skills=[skill_name, "Software Engineering"],
         )
 
     async def recruit_for_role(self, role_id: str, name: Optional[str] = None) -> Employee:
@@ -364,12 +391,14 @@ class EmployeeFactory:
         role_cfg = self._load_role_config(role_id)
         title = role_cfg.get("title", role_id.replace("-", " ").title()) if role_cfg else role_id.replace("-", " ").title()
         dept = role_cfg.get("department", "Engineering") if role_cfg else "Engineering"
-        emp_name = name or f"Assigned {title}"
+        persona = await self._resolve_dynamic_identity(role_title=title, department=dept, name=name)
         return await self.hire_employee(
-            name=emp_name,
+            name=persona["name"],
             title=title,
             department=dept,
-            role_id=role_id
+            role_id=role_id,
+            personality=persona["personality"],
+            communication_style=persona["communication_style"],
         )
 
     @classmethod
@@ -422,13 +451,7 @@ class EmployeeFactory:
         """
         Recruits an employee with a fully dynamic, unique identity (Requirement 7).
         """
-        persona = self.generate_dynamic_identity(role_title=role_title, department=department)
-        existing_names = {
-            employee.name.strip().casefold()
-            for employee in await self.repo.list_all()
-        }
-        if persona["name"].strip().casefold() in existing_names:
-            persona["name"] = f"{persona['name']} {uuid.uuid4().hex[:4].upper()}"
+        persona = await self._resolve_dynamic_identity(role_title=role_title, department=department)
         return await self.hire_employee(
             name=persona["name"],
             title=persona["title"],
@@ -488,8 +511,10 @@ class EmployeeFactory:
     async def bootstrap_initial_workforce(self) -> list[Employee]:
         """
         Creates a dynamic backend/QA starting team for explicit local bootstrap.
-        Names and employee identities are generated; no fictional staff profiles
-        are pre-populated. Repeated calls reuse only records created by this helper.
+        Names, employee identities, and personas are dynamically generated via
+        generate_dynamic_identity(); no static or hardcoded staff profiles
+        (such as 'Alex Morgan' or 'Maya Chen') are used. Repeated calls reuse
+        only records created by this helper.
         """
         existing = await self.repo.list_all()
         bootstrapped = {

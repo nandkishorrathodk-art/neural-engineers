@@ -61,6 +61,7 @@ class PTYExecutionGuard:
         env: Optional[dict[str, str]] = None,
         on_stdout_line: Optional[Callable[[str], None]] = None,
         on_stderr_line: Optional[Callable[[str], None]] = None,
+        stdin: Any = subprocess.DEVNULL,
     ) -> SubprocessResult:
         """
         Executes a command synchronously with streaming pipe draining and timeout guard.
@@ -98,6 +99,7 @@ class PTYExecutionGuard:
                 deduped_ppath.append(p)
         run_env["PYTHONPATH"] = os.pathsep.join(deduped_ppath)
         run_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        run_env["PYTHONUNBUFFERED"] = "1"
 
         if "VIRTUAL_ENV" not in run_env:
             venv_dir = repo_root / ".venv"
@@ -113,6 +115,7 @@ class PTYExecutionGuard:
 
         proc = subprocess.Popen(
             command,
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=run_cwd,

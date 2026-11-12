@@ -14,6 +14,7 @@ from neural.evolution.models import (
     SelfEvolutionProposal,
     SelfEvolutionVerificationReceipt,
     is_protected_path,
+    utc_now,
 )
 from neural.exceptions import HumanApprovalRequiredError
 from neural.logger import get_logger
@@ -133,13 +134,20 @@ class SelfEvolutionPromotionManager:
                     f"Production code modifications fail closed without explicit approval."
                 ),
             )
+        if approval.consumed_at is not None:
+            raise HumanApprovalRequiredError(
+                action_type=DestructiveOperationType.SELF_EVOLUTION_PROMOTION.value,
+                details=(
+                    f"Human approval token '{approval_id}' has already been consumed at {approval.consumed_at}. "
+                    f"Replay of consumed approvals is strictly prohibited."
+                ),
+            )
 
         # 2. Verify approval details match proposal and verification receipt
         appr_details = approval.details or {}
-        appr_proposal = appr_details.get("proposal_id")
-        if appr_proposal and appr_proposal != proposal_id:
+        if "proposal_id" not in appr_details or appr_details["proposal_id"] != proposal_id:
             raise PromotionGateError(
-                f"Approval '{approval_id}' targets proposal '{appr_proposal}', but promotion requested for '{proposal_id}'."
+                f"Approval '{approval_id}' must strictly contain proposal_id matching '{proposal_id}'."
             )
         appr_verif_id = appr_details.get("verification_receipt_id")
         if appr_verif_id and appr_verif_id != verification_receipt.receipt_id:
@@ -147,6 +155,27 @@ class SelfEvolutionPromotionManager:
                 f"Approval '{approval_id}' was granted for verification receipt '{appr_verif_id}', "
                 f"but candidate presented receipt '{verification_receipt.receipt_id}'."
             )
+
+        # Mark the approval as consumed so it cannot be reused
+        consumed = None
+        if hasattr(approval_repo, "consume_once"):
+            consumed = await approval_repo.consume_once(
+                approval_id=approval_id,
+                action_type=approval.action_type,
+                expected_details={"proposal_id": proposal_id},
+                consumed_by=requested_by,
+            )
+        if not consumed:
+            app = await approval_repo.get_by_id(approval_id)
+            if not app or app.consumed_at is not None:
+                raise HumanApprovalRequiredError(
+                    action_type=DestructiveOperationType.SELF_EVOLUTION_PROMOTION.value,
+                    details=f"Human approval token '{approval_id}' could not be consumed or has already been consumed.",
+                )
+            app.consumed_at = utc_now()
+            app.consumed_by = requested_by
+            if hasattr(approval_repo, "session") and hasattr(approval_repo.session, "commit"):
+                await approval_repo.session.commit()
 
         # 3. Verify live candidate worktree matches verification receipt (anti-tamper / anti-drift)
         staging_receipt = self.candidate_manager.verify_candidate_receipt(proposal_id)
@@ -267,3 +296,6 @@ class SelfEvolutionPromotionManager:
             receipt_id=prom_receipt.receipt_id,
         )
         return prom_receipt
+
+    # Alias for sovereign approval check and promotion
+    check_promotion_authorization_and_promote = execute_promotion

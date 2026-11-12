@@ -153,6 +153,7 @@ class SelfEvolutionMultiGateVerifier:
         proposal: SelfEvolutionProposal,
         test_command: Optional[list[str]] = None,
         candidate_benchmark_metrics: Optional[dict[str, Any]] = None,
+        benchmark_command: Optional[list[str]] = None,
     ) -> SelfEvolutionVerificationReceipt:
         """
         Executes the complete multi-gate independent verification suite on a staged candidate.
@@ -214,10 +215,12 @@ class SelfEvolutionMultiGateVerifier:
         if not ast_passed:
             diagnostic_notes.append(f"AST Security Gate Failed: {ast_notes}")
 
-        # Gate 4: Benchmark Comparison Gate
+        # Gate 4: Benchmark Comparison Gate (runs empirical checks, guards against unexecuted/blind trust)
         benchmark_passed, benchmark_comparison, bench_notes = self._run_benchmark_gate(
             proposal=proposal,
             candidate_metrics=candidate_benchmark_metrics,
+            candidate_path=candidate_path,
+            benchmark_command=benchmark_command,
         )
         if not benchmark_passed:
             diagnostic_notes.append(f"Benchmark Gate Failed: {bench_notes}")
@@ -266,17 +269,8 @@ class SelfEvolutionMultiGateVerifier:
         )
         return verif_receipt
 
-    def _run_regression_gate(
-        self,
-        candidate_path: Path,
-        test_command: Optional[list[str]] = None,
-    ) -> tuple[bool, str]:
-        """Runs candidate test suite in candidate worktree."""
-        cmd = list(test_command or [sys.executable, "-m", "pytest", "-v"])
-        if cmd and cmd[0] in ("python", "python3"):
-            cmd[0] = sys.executable
-
-        # Build clean environment with absolute PYTHONPATH entries
+    def _build_worktree_env(self, candidate_path: Path) -> dict[str, str]:
+        """Builds clean execution environment with candidate repository paths in PYTHONPATH."""
         env = os.environ.copy()
         pythonpath_entries: list[str] = [str(candidate_path.resolve())]
         if (candidate_path / "services" / "core").is_dir():
@@ -291,6 +285,19 @@ class SelfEvolutionMultiGateVerifier:
                 if resolved_p not in pythonpath_entries:
                     pythonpath_entries.append(resolved_p)
         env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+        return env
+
+    def _run_regression_gate(
+        self,
+        candidate_path: Path,
+        test_command: Optional[list[str]] = None,
+    ) -> tuple[bool, str]:
+        """Runs candidate test suite in candidate worktree."""
+        cmd = list(test_command or [sys.executable, "-m", "pytest", "-v"])
+        if cmd and cmd[0] in ("python", "python3"):
+            cmd[0] = sys.executable
+
+        env = self._build_worktree_env(candidate_path)
 
         try:
             res = subprocess.run(
@@ -389,27 +396,98 @@ class SelfEvolutionMultiGateVerifier:
         self,
         proposal: SelfEvolutionProposal,
         candidate_metrics: Optional[dict[str, Any]] = None,
+        candidate_path: Optional[Path] = None,
+        benchmark_command: Optional[list[str]] = None,
     ) -> tuple[bool, dict[str, Any], str]:
         """
         Compares candidate metrics against baseline metrics and validates target goals.
+        Runs empirical benchmark execution checks and validates that empirical benchmarks
+        were truly executed rather than blindly trusting client-supplied metrics.
         """
+        import time
+
         baseline = proposal.baseline_metrics
         target = proposal.target_goals
 
         comparison: dict[str, Any] = {
             "baseline": baseline,
             "target_goals": target,
-            "candidate": candidate_metrics or {},
+            "candidate": dict(candidate_metrics) if candidate_metrics else {},
         }
 
-        if not candidate_metrics:
-            # If no empirical benchmark was measured or provided, benchmark gate fails
-            return False, comparison, "No empirical benchmark metrics provided for candidate."
+        if not candidate_metrics and not benchmark_command:
+            # If no empirical benchmark was measured or provided, benchmark gate fails closed
+            return False, comparison, "No empirical benchmark metrics or benchmark command provided (fail-closed)."
+
+        # 1. Run empirical benchmark command if provided
+        if benchmark_command and candidate_path:
+            try:
+                env = self._build_worktree_env(candidate_path)
+                cmd = list(benchmark_command)
+                if cmd and cmd[0] in ("python", "python3"):
+                    cmd[0] = sys.executable
+
+                t_bench_start = time.perf_counter()
+                res = subprocess.run(
+                    cmd,
+                    cwd=str(candidate_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env=env,
+                )
+                t_bench_elapsed_ms = (time.perf_counter() - t_bench_start) * 1000.0
+
+                if res.returncode != 0:
+                    return (
+                        False,
+                        comparison,
+                        f"Empirical benchmark command failed with code {res.returncode}: {res.stderr.strip()[:300]}",
+                    )
+
+                comparison["empirical_benchmark_command"] = cmd
+                comparison["empirical_measured_time_ms"] = round(t_bench_elapsed_ms, 2)
+                comparison["empirical_check_passed"] = True
+
+                if not candidate_metrics:
+                    candidate_metrics = {"execution_time_ms": round(t_bench_elapsed_ms, 2)}
+                    comparison["candidate"] = candidate_metrics
+            except Exception as exc:
+                return False, comparison, f"Empirical benchmark execution failed: {exc}"
+
+        # 2. Guard against blind trust of client-supplied metrics:
+        # Require verification that metrics represent real execution and not fabricated or simulated placeholders
+        if candidate_metrics:
+            # Reject explicitly unexecuted, mock, or simulated metrics
+            if candidate_metrics.get("executed") is False:
+                return False, comparison, "Benchmark gate rejected: candidate metrics explicitly flagged as unexecuted."
+            if candidate_metrics.get("simulated") is True:
+                return False, comparison, "Benchmark gate rejected: simulated metrics are prohibited."
+            if candidate_metrics.get("unverified") is True:
+                return False, comparison, "Benchmark gate rejected: metrics marked as unverified."
+
+            # Sanity validation on numeric fields: reject non-numbers, negative, NaN
+            for metric_key in ("execution_time_ms", "latency_ms", "benchmark_throughput_ops_sec", "throughput_tokens_sec"):
+                val = candidate_metrics.get(metric_key)
+                if val is not None:
+                    if not isinstance(val, (int, float)) or val < 0 or (val != val):
+                        return False, comparison, f"Candidate metric '{metric_key}' has invalid non-numeric value: {val}"
+
+            cand_err_val = candidate_metrics.get("error_rate")
+            if cand_err_val is not None:
+                if not isinstance(cand_err_val, (int, float)) or not (0.0 <= cand_err_val <= 1.0) or (cand_err_val != cand_err_val):
+                    return False, comparison, f"Candidate error_rate must be a valid float in [0.0, 1.0], got: {cand_err_val}"
+
+        # 3. Must have a valid execution time or latency metric
+        cand_time = candidate_metrics.get("execution_time_ms") or candidate_metrics.get("latency_ms") if candidate_metrics else None
+        if cand_time is None and "empirical_measured_time_ms" in comparison:
+            cand_time = comparison["empirical_measured_time_ms"]
+
+        if cand_time is None:
+            return False, comparison, "Benchmark gate failed: no measurable execution time or latency found (fail-closed)."
 
         # Evaluate execution time / latency improvement
         base_time = baseline.get("execution_time_ms") or baseline.get("latency_ms")
-        cand_time = candidate_metrics.get("execution_time_ms") or candidate_metrics.get("latency_ms")
-
         speedup = 1.0
         if base_time and cand_time and cand_time > 0:
             speedup = round(float(base_time) / float(cand_time), 2)
@@ -422,7 +500,7 @@ class SelfEvolutionMultiGateVerifier:
 
         # Check error rate reduction
         base_err = baseline.get("error_rate")
-        cand_err = candidate_metrics.get("error_rate")
+        cand_err = candidate_metrics.get("error_rate") if candidate_metrics else None
         target_err = target.get("error_rate")
         if target_err is not None and cand_err is not None:
             if cand_err > target_err:
@@ -432,7 +510,11 @@ class SelfEvolutionMultiGateVerifier:
 
         # Check throughput improvement
         base_tp = baseline.get("benchmark_throughput_ops_sec") or baseline.get("throughput_tokens_sec")
-        cand_tp = candidate_metrics.get("benchmark_throughput_ops_sec") or candidate_metrics.get("throughput_tokens_sec")
+        cand_tp = (
+            candidate_metrics.get("benchmark_throughput_ops_sec") or candidate_metrics.get("throughput_tokens_sec")
+            if candidate_metrics
+            else None
+        )
         if base_tp and cand_tp:
             tp_improvement = round(((cand_tp - base_tp) / base_tp) * 100, 2)
             comparison["throughput_improvement_pct"] = tp_improvement

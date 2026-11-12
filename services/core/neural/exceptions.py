@@ -8,7 +8,7 @@ class ConfigurationError(ANCOSError):
     pass
 
 
-class SecurityViolationError(ANCOSError):
+class SecurityViolationError(ANCOSError, PermissionError):
     """Raised when an operation violates sandbox or security policy."""
     pass
 
@@ -66,6 +66,16 @@ class ModelProviderError(ANCOSError):
 
 class UnsupportedExecutionModeError(ANCOSError):
     """Raised when a plan requires a task mode without a running worker consumer."""
+    pass
+
+
+class ExecutionModeNotSupportedError(UnsupportedExecutionModeError):
+    """Raised when an execution mode is not supported by the execution fabric or no runner is configured."""
+    pass
+
+
+class WorkstationNotAvailableError(ContainerError):
+    """Raised when container workstation or desktop environment is not available for execution."""
     pass
 
 

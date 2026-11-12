@@ -14,6 +14,10 @@ def utc_now() -> datetime:
 
 
 PROHIBITED_SELF_EVOLUTION_PATHS: frozenset[str] = frozenset({
+    "services/core/neural/evolution",
+    "services/core/neural/governance",
+    "neural/evolution",
+    "neural/governance",
     "services/core/neural/security/approval_gates.py",
     "services/core/neural/security/kill_switch.py",
     "services/core/neural/security/network.py",
@@ -47,6 +51,10 @@ _PROTECTED_SUBSTRINGS: tuple[str, ...] = (
     "neural/security",
     "neural\\security",
     "audit.py",
+    "neural/evolution",
+    "neural\\evolution",
+    "neural/governance",
+    "neural\\governance",
 )
 
 
@@ -54,7 +62,7 @@ def is_protected_path(path: str | Path) -> bool:
     """
     Evaluates whether a target file path falls under protected core invariants.
     Self-evolution code changes are strictly prohibited from touching root policy engines,
-    human approval gates, or emergency halt latches.
+    human approval gates, verifiers, security scanners, or emergency halt latches.
     """
     raw_str = str(path).strip()
     if not raw_str:
@@ -71,10 +79,16 @@ def is_protected_path(path: str | Path) -> bool:
     if filename in {"approval_gates.py", "kill_switch.py", "broker_api.py", "gui_action_policy.py", "audit.py"}:
         return True
 
-    # Exact or suffix match in prohibited paths
+    # Exact, prefix, directory or suffix match in prohibited paths
     for p in PROHIBITED_SELF_EVOLUTION_PATHS:
-        p_norm = p.lower()
-        if norm_str == p_norm or norm_str.endswith("/" + p_norm) or norm_str.endswith(p_norm):
+        p_norm = p.lower().rstrip("/")
+        if (
+            norm_str == p_norm
+            or norm_str.startswith(p_norm + "/")
+            or f"/{p_norm}/" in f"/{norm_str}/"
+            or norm_str.endswith("/" + p_norm)
+            or norm_str.endswith(p_norm)
+        ):
             return True
 
     # Check protected keywords & policy directories

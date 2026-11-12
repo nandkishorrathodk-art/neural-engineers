@@ -49,12 +49,44 @@ class RestrictedDockerBroker:
         workspace_base: str = "./data/workspaces",
         allowed_image_prefixes: Optional[list[str]] = None,
     ) -> None:
-        self.workspace_base = os.path.abspath(workspace_base)
+        self.workspace_base = os.path.realpath(workspace_base)
         self.allowed_image_prefixes = allowed_image_prefixes or [
             "ancos/employee-",
             "ancos/desktop-",
             "employee-",
         ]
+
+    def validate_workspace_path(self, path: str) -> str:
+        """
+        Validates that any workspace directory or requested path, after os.path.realpath(),
+        strictly starts with os.path.realpath(self.workspace_base) + os.sep
+        (or equals os.path.realpath(self.workspace_base)).
+        Raises SecurityViolationError if it does not.
+        """
+        real_base = os.path.realpath(self.workspace_base)
+        real_path = os.path.realpath(path)
+        base_prefix = real_base if real_base.endswith(os.sep) else (real_base + os.sep)
+
+        # Check prohibited host paths
+        for forbidden in PROHIBITED_HOST_PATHS:
+            forb_real = os.path.realpath(forbidden)
+            if forbidden in ("/", "C:\\") or forb_real in ("/", "C:\\"):
+                if real_path == forb_real:
+                    raise SecurityViolationError(
+                        f"Prohibited volume mount: cannot mount host system path '{path}' into container."
+                    )
+            else:
+                forb_prefix = forb_real if forb_real.endswith(os.sep) else (forb_real + os.sep)
+                if real_path == forb_real or real_path.startswith(forb_prefix):
+                    raise SecurityViolationError(
+                        f"Prohibited volume mount: cannot mount host system path '{path}' into container."
+                    )
+
+        if not (real_path == real_base or real_path.startswith(base_prefix)):
+            raise SecurityViolationError(
+                f"Volume mount violation: '{path}' is outside designated workspace base '{self.workspace_base}'."
+            )
+        return real_path
 
     def validate_container_id(self, docker_id: str) -> None:
         """Ensures container ID strictly adheres to approved employee workstation schema."""
@@ -78,27 +110,31 @@ class RestrictedDockerBroker:
         Ensures volume mounts are strictly confined to the employee's isolated workspace.
         Prohibits mounting /var/run/docker.sock or host root/system paths.
         """
+        real_base = os.path.realpath(self.workspace_base)
+        base_prefix = real_base if real_base.endswith(os.sep) else (real_base + os.sep)
+
         for host_path, mount_cfg in volumes.items():
-            abs_host = os.path.abspath(host_path)
+            real_host = os.path.realpath(host_path)
 
             # Check prohibited host paths
             for forbidden in PROHIBITED_HOST_PATHS:
-                forb_abs = os.path.abspath(forbidden)
-                if abs_host == forb_abs or abs_host.startswith(forb_abs + os.sep):
-                    raise SecurityViolationError(
-                        f"Prohibited volume mount: cannot mount host system path '{host_path}' into container."
-                    )
+                forb_real = os.path.realpath(forbidden)
+                if forbidden in ("/", "C:\\") or forb_real in ("/", "C:\\"):
+                    if real_host == forb_real:
+                        raise SecurityViolationError(
+                            f"Prohibited volume mount: cannot mount host system path '{host_path}' into container."
+                        )
+                else:
+                    forb_prefix = forb_real if forb_real.endswith(os.sep) else (forb_real + os.sep)
+                    if real_host == forb_real or real_host.startswith(forb_prefix):
+                        raise SecurityViolationError(
+                            f"Prohibited volume mount: cannot mount host system path '{host_path}' into container."
+                        )
 
             # Check that mount is strictly within the workspace base (prevent prefix and traversal bypass)
-            try:
-                rel = os.path.relpath(abs_host, self.workspace_base)
-                if rel.startswith("..") or os.path.isabs(rel) or abs_host == self.workspace_base:
-                    raise SecurityViolationError(
-                        f"Volume mount violation: '{host_path}' is outside designated workspace base '{self.workspace_base}'."
-                    )
-            except ValueError:
+            if not (real_host == real_base or real_host.startswith(base_prefix)):
                 raise SecurityViolationError(
-                    f"Volume mount violation: '{host_path}' is on different drive from workspace base '{self.workspace_base}'."
+                    f"Volume mount violation: '{host_path}' is outside designated workspace base '{self.workspace_base}'."
                 )
 
             # Check container mount target

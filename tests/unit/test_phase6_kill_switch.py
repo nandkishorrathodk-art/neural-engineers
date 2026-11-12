@@ -195,3 +195,53 @@ async def test_kill_switch_blocks_boss_brain_and_scheduler(async_session: AsyncS
     # Scheduler dispatch_ready_tasks returns empty list immediately
     dispatched = await scheduler.dispatch_ready_tasks("proj-any")
     assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_kill_switch_resume_validates_auth_token(monkeypatch):
+    """
+    Validates that resume(auth_token) strictly authenticates against configured secrets:
+    - Invalid tokens are rejected with SecurityViolationError.
+    - Valid owner and security reviewer tokens are accepted.
+    - Bearer prefix is stripped properly.
+    """
+    from neural.config import get_settings
+    from neural.exceptions import SecurityViolationError
+
+    owner_secret = "test-owner-secret-token-" + "x" * 32
+    sec_secret = "test-sec-reviewer-token-" + "y" * 32
+    monkeypatch.setenv("OWNER_API_TOKEN", owner_secret)
+    monkeypatch.setenv("SECURITY_REVIEWER_API_TOKEN", sec_secret)
+    get_settings.cache_clear()
+
+    ks = get_kill_switch()
+
+    # 1. Reject invalid token
+    await ks.emergency_halt(reason="Token test 1", actor="admin")
+    assert ks.is_halted is True
+
+    with pytest.raises(SecurityViolationError):
+        await ks.resume(actor="attacker", auth_token="forged-token-xyz")
+
+    assert ks.is_halted is True
+
+    # 2. Reject bearer-prefixed invalid token
+    with pytest.raises(SecurityViolationError):
+        await ks.resume(actor="attacker", auth_token="Bearer forged-token-xyz")
+
+    assert ks.is_halted is True
+
+    # 3. Accept valid owner token
+    resume_owner = await ks.resume(actor="owner", auth_token=owner_secret)
+    assert resume_owner["resumed"] is True
+    assert ks.is_halted is False
+
+    # 4. Accept valid security reviewer token with Bearer prefix
+    await ks.emergency_halt(reason="Token test 2", actor="admin")
+    assert ks.is_halted is True
+
+    resume_sec = await ks.resume(actor="sec_reviewer", auth_token=f"Bearer {sec_secret}")
+    assert resume_sec["resumed"] is True
+    assert ks.is_halted is False
+
+    get_settings.cache_clear()

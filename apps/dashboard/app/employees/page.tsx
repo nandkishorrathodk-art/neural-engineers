@@ -91,11 +91,21 @@ export default function EmployeesPage() {
     }
   };
 
-  const handleProvisionWorkstation = async (employeeId: string) => {
+  const handleProvisionWorkstation = async (employeeId: string, approvalId?: string) => {
+    let appVal = approvalId;
+    if (!appVal && typeof window !== 'undefined') {
+      const entered = window.prompt(`Enter approval ID to provision workstation for ${employeeId}:`);
+      if (!entered) return;
+      appVal = entered.trim();
+    }
+    if (!appVal) {
+      setError('An approved approval ID is required to provision a workstation.');
+      return;
+    }
     try {
       setActionLoadingId(employeeId);
       setError(null);
-      const ws = await provisionWorkstation(employeeId);
+      const ws = await provisionWorkstation(employeeId, appVal);
       await loadData();
       // Auto-open live stream preview
       const emp = employees.find((e) => e.employee_id === employeeId);
@@ -115,11 +125,21 @@ export default function EmployeesPage() {
     }
   };
 
-  const handleTerminateWorkstation = async (employeeId: string) => {
+  const handleTerminateWorkstation = async (employeeId: string, approvalId?: string) => {
+    let appVal = approvalId;
+    if (!appVal && typeof window !== 'undefined') {
+      const entered = window.prompt(`Enter approval ID to terminate workstation for ${employeeId}:`);
+      if (!entered) return;
+      appVal = entered.trim();
+    }
+    if (!appVal) {
+      setError('An approved approval ID is required to terminate a workstation.');
+      return;
+    }
     try {
       setActionLoadingId(employeeId);
       setError(null);
-      await terminateWorkstation(employeeId);
+      await terminateWorkstation(employeeId, appVal);
       if (selectedWorkstation?.employee.employee_id === employeeId) {
         setSelectedWorkstation(null);
       }

@@ -241,11 +241,19 @@ class InteractiveCoderREPL:
         self.running = True
 
         while self.running:
+            # Stdin disconnected check
+            if self.input_fn is input:
+                import sys
+                if sys.stdin is None or getattr(sys.stdin, "closed", False):
+                    self.console.print("\n[dim]Standard input disconnected. Exiting ANCOS REPL.[/dim]")
+                    break
+
             try:
                 prompt_str = "ancos > "
                 user_input = self._read_multiline_input(prompt_str)
                 if user_input is None:
-                    # EOF encountered
+                    # EOF or disconnected input stream encountered
+                    self.console.print("\n[dim]Input stream disconnected / EOF received. Exiting ANCOS REPL.[/dim]")
                     break
 
                 cleaned = user_input.strip()
@@ -262,10 +270,8 @@ class InteractiveCoderREPL:
                     # Natural language agentic coding instruction
                     self.coder_agent.execute_instruction(cleaned)
 
-            except KeyboardInterrupt:
-                self.console.print("\n[dim]Action cancelled. (Type /exit or Ctrl+D to quit)[/dim]")
-            except EOFError:
-                self.console.print("\n[dim]EOF received. Exiting.[/dim]")
+            except (EOFError, KeyboardInterrupt, RuntimeError) as e:
+                self.console.print(f"\n[dim]{type(e).__name__} received (stream disconnected). Exiting ANCOS REPL.[/dim]")
                 break
             except Exception as e:
                 self.console.print(f"[bold red]Error in REPL:[/bold red] {e}")
@@ -273,11 +279,15 @@ class InteractiveCoderREPL:
         self.running = False
         self._save_history()
 
+    def run(self) -> None:
+        """Alias for run_session."""
+        self.run_session()
+
     def _read_multiline_input(self, prompt: str) -> Optional[str]:
         """Reads input with support for multiline continuation."""
         try:
             line = self.input_fn(prompt)
-        except (EOFError, StopIteration):
+        except (EOFError, StopIteration, RuntimeError, KeyboardInterrupt):
             return None
 
         lines = [line]
@@ -292,7 +302,7 @@ class InteractiveCoderREPL:
                     else:
                         lines.append(sub)
                         break
-                except (EOFError, StopIteration):
+                except (EOFError, StopIteration, RuntimeError, KeyboardInterrupt):
                     break
         elif line.startswith('"""') and not (line.endswith('"""') and len(line) > 3):
             while True:
@@ -301,7 +311,7 @@ class InteractiveCoderREPL:
                     lines.append(sub)
                     if '"""' in sub:
                         break
-                except (EOFError, StopIteration):
+                except (EOFError, StopIteration, RuntimeError, KeyboardInterrupt):
                     break
 
         return "\n".join(lines)
