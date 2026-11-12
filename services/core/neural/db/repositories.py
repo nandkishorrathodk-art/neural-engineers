@@ -3268,7 +3268,7 @@ class ActionItemRepository:
             update(ActionItem)
             .where(ActionItem.id == item.id, ActionItem.status == item.status)
             .values(status=status)
-            .execution_options(synchronize_session="evaluate")
+            .execution_options(synchronize_session=False)
         )
         if result.rowcount != 1:
             await self.session.rollback()
@@ -3318,7 +3318,7 @@ class ActionItemRepository:
                 update(ActionItem)
                 .where(ActionItem.id == item.id, ActionItem.status == item.status)
                 .values(**values)
-                .execution_options(synchronize_session="evaluate")
+                .execution_options(synchronize_session=False)
             )
             if result.rowcount != 1:
                 await self.session.rollback()
@@ -3346,7 +3346,7 @@ class ActionItemRepository:
             update(ActionItem)
             .where(ActionItem.id == item.id, ActionItem.status == item.status)
             .values(status=ActionItemStatus.OPEN)
-            .execution_options(synchronize_session="evaluate")
+            .execution_options(synchronize_session=False)
         )
         if result.rowcount != 1:
             await self.session.rollback()
