@@ -44,7 +44,7 @@ from neural.logger import get_logger
 from neural.security.kill_switch import get_kill_switch
 from neural.verification.test_commands import validate_test_plan, validate_workspace_artifact_plan
 from neural.verification.workspace_manifest import valid_workspace_manifest
-from neural.workers.terminal import TerminalCommandPlan
+from neural.workers.terminal import TerminalCommandPlan, TerminalPlan
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(
@@ -224,29 +224,31 @@ async def plan_terminal_task(
         task_id=task.task_id,
     )
     base_prompt = (
-        "Produce a short, bounded sequence of terminal argv commands to complete this task "
-        "inside the employee workspace. Commands run directly without a shell in a disposable, "
-        "non-root employee container. Do not access secrets, the host, Docker, or external services. "
-        "Do not use destructive commands. Use only python, python3, pytest, npm, or npx. "
-        "Return `commands` as a JSON array of argv arrays; every command must be a nested array of "
-        "separate argument strings, never a shell command string. For example, use "
-        "`{\"commands\":[[\"python3\",\"-c\",\"from pathlib import Path; Path('example.py').write_text('value = 1\\n')\"],[\"python3\",\"-m\",\"unittest\",\"-v\"]]}`. "
-        "A short `python3 -c` command may write source or test content into workspace files, but the "
-        "deliverable must persist in those files; never implement or test it only in memory. For a "
-        "requested named source/test file, at least one command must write that exact path before a "
-        "separate replayable test command. Do not put function/class definitions or test assertions "
-        "directly in a command without writing them to a workspace file. Do not inline test definitions "
-        "in the test-running command. If acceptance requires tests to pass, include a replayable command "
-        "such as `python3 -m unittest -v`, `pytest -q`, or `npm test` "
-        "that reads the persisted workspace files. Commands must not claim success unless their exit "
-        "codes are zero.\n\n"
+        "Produce a short, bounded plan to complete this task inside the employee workspace. "
+        "Commands run directly without a shell in a disposable, non-root employee container. "
+        "Do not access secrets, the host, Docker, or external services. Do not use destructive "
+        "commands. Use only python, python3, pytest, npm, or npx.\n\n"
+        "Return two fields:\n"
+        "- `files`: every file the task asks you to create, as objects with `path` and `content`. "
+        "Put the COMPLETE raw file contents here, source and tests together; never embed file "
+        "contents inside a command string.\n"
+        "- `commands`: the commands to run after those files exist. Return `commands` as a JSON "
+        "array of argv arrays; every command must be a nested array of separate argument strings, "
+        "never a shell command string. Do not put function/class definitions or test assertions "
+        "directly in a command, and do not inline test definitions in the test-running command. "
+        "If acceptance requires tests to pass, `commands` must include a separate replayable test "
+        "runner that reads the persisted files, and it must use the module form such as "
+        "`[\"python3\",\"-m\",\"unittest\",\"-v\"]` or `[\"python3\",\"-m\",\"pytest\",\"-q\"]`; "
+        "never run a test file directly as `[\"python3\",\"file.py\"]`. Commands must not claim "
+        "success unless their exit codes are zero.\n\n"
         f"Title: {task.title}\nObjective: {task.objective}\nScope: {task.scope}\n"
         f"Acceptance criteria: {task.acceptance_criteria}"
     )
     system_prompt = (
         "You are a terminal-mode software engineering employee. Return only valid JSON matching the "
-        "provided schema. The commands property is a list of argv arrays, not a list of shell strings. "
-        "Persist requested files in the workspace and run tests against those persisted files."
+        "provided schema. Put complete file contents in the `files` field, not inside commands. The "
+        "commands property is a list of argv arrays, not a list of shell strings. Persist requested "
+        "files in the workspace and run tests against those persisted files."
     )
     plan: TerminalCommandPlan
     response: Any
@@ -256,14 +258,14 @@ async def plan_terminal_task(
             correction = ""
             if validation_error is not None:
                 correction = (
-                    "\n\nYour previous command plan was rejected before execution: "
-                    f"{validation_error} Return a corrected plan that writes every requested workspace file "
-                    "to its exact path and then runs a separate replayable test command. Do not execute the "
-                    "implementation or tests only inside `python3 -c`."
+                    "\n\nYour previous plan was rejected before execution: "
+                    f"{validation_error} Return a corrected plan that lists every requested workspace file "
+                    "under `files` with its exact path and full contents, then runs a separate replayable "
+                    "test command such as `[\"python3\",\"-m\",\"unittest\",\"-v\"]`."
                 )
-            plan, response = await gateway.generate_structured(
+            provider_plan, response = await gateway.generate_structured(
                 prompt=base_prompt + correction,
-                response_model=TerminalCommandPlan,
+                response_model=TerminalPlan,
                 route="code_generation",
                 system_prompt=system_prompt,
                 employee_id=task.assigned_to,
@@ -274,6 +276,17 @@ async def plan_terminal_task(
                 db_session=session,
                 budget_scope_caps=budget_scope_caps,
             )
+            try:
+                plan = provider_plan.materialize()
+            except ValueError as exc:
+                validation_error = exc
+                logger.warning(
+                    "Terminal plan could not be materialized",
+                    task_id=task.task_id,
+                    planning_attempt=planning_attempt + 1,
+                    reason=str(exc),
+                )
+                continue
             try:
                 validate_test_plan(task.acceptance_criteria, plan.commands)
                 task_context = "\n".join((task.title or "", task.objective or "", task.scope or ""))

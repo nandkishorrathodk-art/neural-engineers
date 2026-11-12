@@ -650,6 +650,42 @@ class ContainerManager:
             raise ContainerError("Live workstation screenshot is not a PNG image.")
         return image_bytes
 
+    async def get_or_issue_vnc_token(self, docker_id: str, *, rotate: bool = False) -> dict[str, Any]:
+        """Issue (or fetch) a workstation's noVNC token through the broker.
+
+        The broker owns the token file the gateway reads and the only Docker
+        connection that can repair the gateway bridge, so tokens must be minted
+        there. Minting them in the core API's own filesystem produced URLs the
+        gateway could never validate.
+        """
+        self.broker.validate_container_id(docker_id)
+        if self._get_client() is None:
+            return await self._broker_request(
+                "POST",
+                f"/v1/containers/{docker_id}/vnc-token",
+                params={"rotate": "true"} if rotate else None,
+            )
+        from neural.containers.broker_api import read_vnc_token, write_vnc_token
+
+        token = read_vnc_token(docker_id)
+        if not token or rotate:
+            token = write_vnc_token(docker_id)
+        password = (self._containers.get(docker_id) or {}).get("vnc_password")
+        suffix = f"&password={password}" if password else ""
+        novnc_port = (self._containers.get(docker_id) or {}).get("novnc_port") or 12003
+        return {
+            "docker_id": docker_id,
+            "token": token,
+            "ws_path": f"websockify?token={token}",
+            "desktop_url": (
+                f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&path=websockify%3Ftoken%3D{token}{suffix}"
+            ),
+            "read_only_desktop_url": (
+                f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&view_only=true"
+                f"&path=websockify%3Ftoken%3D{token}{suffix}"
+            ),
+        }
+
     async def rotate_vnc_password(self, docker_id: str) -> str:
         """Rotates one workstation's VNC credential and returns it once to the caller."""
         self.broker.validate_container_id(docker_id)

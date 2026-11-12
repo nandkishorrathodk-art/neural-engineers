@@ -191,3 +191,57 @@ async def test_vnc_token_api_endpoint_roundtrip(
         assert len(view_audits) >= 1
         assert len(interactive_audits) >= 1
 
+
+@pytest.mark.asyncio
+async def test_vnc_token_api_preserves_broker_desktop_url_with_password(
+    async_session: AsyncSession,
+    tmp_path,
+    monkeypatch,
+):
+    """The broker-minted URLs (carrying the VNC password) must survive the route."""
+    monkeypatch.setattr("neural.containers.broker_api.token_file_path", lambda: tmp_path / "tokens")
+
+    emp_repo = EmployeeRepository(async_session)
+    factory = EmployeeFactory(emp_repo)
+    employee = await factory.hire_employee(
+        name="Broker URL Tester",
+        title="Platform Engineer",
+        department="Engineering",
+        desk_id="WS-ENG-02",
+    )
+    docker_id = f"ancos-desktop-{employee.employee_id.lower()}"
+    broker_urls = {
+        "token": "broker-token",
+        "desktop_url": "http://localhost:12003/vnc.html?autoconnect=true&path=x&password=abc12345",
+        "read_only_desktop_url": "http://localhost:12003/vnc.html?view_only=true&password=abc12345",
+    }
+
+    class FakeContainerManager:
+        async def get_desktop_by_employee_id(self, emp_id, **kwargs):
+            if emp_id != employee.employee_id:
+                return None
+            return {"docker_id": docker_id, "status": "running", "novnc_port": 12003}
+
+        async def get_or_issue_vnc_token(self, target_docker_id, *, rotate=False):
+            assert target_docker_id == docker_id
+            return broker_urls
+
+    app = create_app()
+
+    async def override_get_db_session():
+        yield async_session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[require_owner_identity] = lambda: "test-owner"
+    app.dependency_overrides[get_container_manager] = lambda: FakeContainerManager()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        res = await client.get(f"/employees/{employee.employee_id}/workstation/vnc-token")
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["token"] == "broker-token"
+    assert data["desktop_url"] == broker_urls["desktop_url"]
+    assert data["read_only_desktop_url"] == broker_urls["read_only_desktop_url"]
+    assert "password=abc12345" in data["read_only_desktop_url"]
+

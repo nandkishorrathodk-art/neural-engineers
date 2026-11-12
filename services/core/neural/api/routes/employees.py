@@ -42,6 +42,31 @@ from neural.workstations.layout import CANONICAL_WORKSTATIONS
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
 
+async def _issue_workstation_vnc_token(
+    container_mgr: ContainerManager,
+    docker_id: str,
+    *,
+    rotate: bool = False,
+) -> dict:
+    """Mint a workstation's noVNC token, preferring the broker that owns it.
+
+    The broker holds both the token file the gateway validates against and the
+    Docker connection needed to repair the gateway bridge. Tests inject a fake
+    container manager without that method, so fall back to the in-process token
+    helpers when it is absent.
+    """
+    issue = getattr(container_mgr, "get_or_issue_vnc_token", None)
+    if issue is not None:
+        return await issue(docker_id, rotate=rotate)
+
+    from neural.containers.broker_api import read_vnc_token, write_vnc_token
+
+    token = read_vnc_token(docker_id)
+    if not token or rotate:
+        token = write_vnc_token(docker_id)
+    return {"token": token}
+
+
 def serialize_employee_model(emp, desktop_url: Optional[str] = None) -> EmployeeResponse:
     skills_data = [
         {"name": s.skill_name, "level": s.level.value if hasattr(s.level, "value") else str(s.level), "verified": s.verified}
@@ -378,8 +403,6 @@ async def get_or_issue_vnc_token(
     container_mgr: ContainerManager = Depends(get_container_manager),
     actor: str = Depends(require_owner_identity),
 ):
-    from neural.containers.broker_api import read_vnc_token, write_vnc_token
-
     employee = await employee_repo.get_by_employee_id(employee_id)
     if not employee:
         raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
@@ -395,16 +418,16 @@ async def get_or_issue_vnc_token(
     if workstation.get("status") != "running":
         raise HTTPException(status_code=409, detail="Workstation container must be running to issue a VNC token")
 
-    token = read_vnc_token(workstation["docker_id"])
-    if not token or interactive:
-        token = write_vnc_token(workstation["docker_id"])
+    docker_id = workstation["docker_id"]
+    issued = await _issue_workstation_vnc_token(container_mgr, docker_id, rotate=interactive)
+    token = str(issued["token"])
 
     view_only = not interactive
     novnc_port = workstation.get("novnc_port", 12003)
-    desktop_url = (
+    desktop_url = issued.get("desktop_url") or (
         f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&path=websockify%3Ftoken%3D{token}"
     )
-    read_only_desktop_url = (
+    read_only_desktop_url = issued.get("read_only_desktop_url") or (
         f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&view_only=true&path=websockify%3Ftoken%3D{token}"
     )
 

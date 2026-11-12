@@ -34,6 +34,7 @@ import {
   TILE_WIDTH,
   TILE_HEIGHT,
 } from './IsometricMath';
+import { toIngressDesktopUrl } from '@/lib/desktopUrl';
 import {
   drawFloorAndArchitecture,
   drawCentralAIHub,
@@ -118,8 +119,8 @@ export const IsometricCompanyWorld: React.FC = () => {
     setVncError(null);
     try {
       const data = await fetchWorkstationVncToken(employeeId, interactive);
-      const url = interactive ? data.desktop_url : (data.read_only_desktop_url || data.desktop_url);
-      setVncTokenUrl(url);
+      const raw = interactive ? data.desktop_url : (data.read_only_desktop_url || data.desktop_url);
+      setVncTokenUrl(toIngressDesktopUrl(raw));
     } catch {
       setVncTokenUrl(null);
       setVncError('Workstation container offline or token unavailable.');

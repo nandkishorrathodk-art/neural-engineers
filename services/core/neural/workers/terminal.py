@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import shlex
 import signal
@@ -12,10 +13,19 @@ from pydantic import BaseModel, Field, field_validator
 
 from neural.containers.execution_limits import WORKER_COMMAND_REQUEST_TIMEOUT_SECONDS
 
+# Argument ceiling shared with the worker/verifier command contracts. Each
+# materialized write command is bounded to this so a file's contents never
+# overflow a single argv entry.
+COMMAND_ARGUMENT_MAX_LENGTH = 8192
+# Base64 payload carried by one materialized write command; leaves headroom for
+# the surrounding ``python3 -c`` script within the argument ceiling.
+WRITE_CHUNK_LENGTH = 4000
+MAX_PLAN_COMMANDS = 24
+
 
 class TerminalCommandPlan(BaseModel):
-    commands: list[list[Annotated[str, Field(min_length=1, max_length=8192)]]] = Field(
-        ..., min_length=1, max_length=12
+    commands: list[list[Annotated[str, Field(min_length=1, max_length=COMMAND_ARGUMENT_MAX_LENGTH)]]] = Field(
+        ..., min_length=1, max_length=MAX_PLAN_COMMANDS
     )
 
     @field_validator("commands", mode="before")
@@ -43,6 +53,70 @@ class TerminalCommandPlan(BaseModel):
             if not command or len(command) > 64 or command[0] not in allowed:
                 raise ValueError("Plan contains an unsupported terminal command.")
         return commands
+
+
+class WorkspaceFile(BaseModel):
+    """A file the plan persists into the employee workspace."""
+
+    path: str = Field(..., min_length=1, max_length=512)
+    content: str = Field(default="", max_length=200_000)
+
+    @field_validator("path")
+    @classmethod
+    def confine_to_workspace(cls, path: str) -> str:
+        normalized = path.replace("\\", "/").strip()
+        if not normalized or normalized.startswith("/") or ".." in normalized.split("/"):
+            raise ValueError("Workspace file paths must be relative and stay inside the workspace.")
+        return normalized
+
+
+class TerminalPlan(BaseModel):
+    """Provider plan: workspace files plus the commands that run against them.
+
+    Asking the model for file contents as plain strings (instead of embedding a
+    whole source file inside a ``python3 -c`` string inside a JSON string) keeps
+    quoting correct and lets the platform materialize the writes itself.
+    """
+
+    files: list[WorkspaceFile] = Field(default_factory=list, max_length=8)
+    commands: list[list[Annotated[str, Field(min_length=1, max_length=COMMAND_ARGUMENT_MAX_LENGTH)]]] = Field(
+        default_factory=list, max_length=12
+    )
+
+    @field_validator("commands", mode="before")
+    @classmethod
+    def normalize_argv_commands(cls, commands: Any) -> Any:
+        return TerminalCommandPlan.normalize_argv_commands(commands)
+
+    @field_validator("commands")
+    @classmethod
+    def restrict_commands(cls, commands: list[list[str]]) -> list[list[str]]:
+        return TerminalCommandPlan.restrict_commands(commands)
+
+    def materialize(self) -> TerminalCommandPlan:
+        writes: list[list[str]] = []
+        for workspace_file in self.files:
+            writes.extend(_write_commands(workspace_file.path, workspace_file.content))
+        return TerminalCommandPlan(commands=[*writes, *self.commands])
+
+
+def _write_commands(path: str, content: str) -> list[list[str]]:
+    """Encode a file as argv ``python3 -c`` writes that persist to ``path``.
+
+    Contents travel base64-encoded so no byte needs shell or quote escaping.
+    Chunks append in order, and the first command truncates, so the final file
+    always matches ``content`` exactly.
+    """
+    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    chunks = [encoded[index:index + WRITE_CHUNK_LENGTH] for index in range(0, len(encoded), WRITE_CHUNK_LENGTH)]
+    if not chunks:
+        chunks = [""]
+    commands: list[list[str]] = []
+    for index, chunk in enumerate(chunks):
+        mode = "wb" if index == 0 else "ab"
+        script = f"import base64; open({path!r}, {mode!r}).write(base64.b64decode({chunk!r}))"
+        commands.append(["python3", "-c", script])
+    return commands
 
 
 class TerminalWorker:

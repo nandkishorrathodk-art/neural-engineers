@@ -158,6 +158,24 @@ def generate_vnc_password() -> str:
     return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
 
 
+def container_vnc_password(container: Any) -> str | None:
+    """Return the workstation's VNC password from its immutable container config.
+
+    The entrypoint unsets ``VNC_PASSWORD`` before starting TigerVNC, but Docker
+    retains the original value in the container spec, so the broker can hand it
+    to the authenticated dashboard without ever writing it to disk.
+    """
+    try:
+        environment = container.attrs.get("Config", {}).get("Env") or []
+    except Exception:
+        return None
+    for entry in environment:
+        key, separator, value = str(entry).partition("=")
+        if separator and key == "VNC_PASSWORD" and value:
+            return value
+    return None
+
+
 def validate_container_id(container_id: str) -> None:
     if not re.fullmatch(r"ancos-desktop-anc-emp-[0-9a-z_-]+", container_id, re.IGNORECASE):
         raise HTTPException(status_code=400, detail="Only ANCOS employee workstations are addressable.")
@@ -165,6 +183,33 @@ def validate_container_id(container_id: str) -> None:
 
 def employee_network_name(employee_id: str) -> str:
     return f"{settings.EMPLOYEE_NETWORK}-{employee_id.lower()}"
+
+
+def ensure_gateway_attached(client: Any, network: Any, employee_id: str) -> Any:
+    """Attach the workstation gateway to an employee network if it is missing.
+
+    The gateway is the only bridge from the public noVNC relay to a workstation,
+    so every network that hosts a desktop must also hold the gateway. Docker
+    drops that attachment whenever the gateway container is recreated, and a
+    desktop can outlive the gateway it was provisioned with, so this runs on the
+    provisioning path and again whenever a client requests a desktop token.
+    """
+    try:
+        gateway = client.containers.get("ancos-workstation-gateway")
+    except NotFound as exc:
+        raise HTTPException(status_code=503, detail="Workstation gateway is unavailable.") from exc
+    if hasattr(gateway, "reload"):
+        gateway.reload()
+    gateway_state = ((getattr(gateway, "attrs", {}) or {}).get("State") or {})
+    gateway_health = gateway_state.get("Health") or {}
+    if gateway_state.get("Status") != "running" or gateway_health.get("Status") != "healthy":
+        raise HTTPException(status_code=503, detail="Workstation gateway is not healthy.")
+    if hasattr(network, "reload"):
+        network.reload()
+    attached = (getattr(network, "attrs", {}) or {}).get("Containers") or {}
+    if gateway.id not in attached:
+        network.connect(gateway, aliases=["ancos-egress-gateway"])
+    return gateway
 
 
 def ensure_network(client: Any, employee_id: str) -> Any:
@@ -196,19 +241,7 @@ def ensure_network(client: Any, employee_id: str) -> Any:
             status_code=409,
             detail="Employee network must be Docker-internal; refusing workstation provisioning.",
         )
-    try:
-        gateway = client.containers.get("ancos-workstation-gateway")
-    except NotFound as exc:
-        raise HTTPException(status_code=503, detail="Workstation gateway is unavailable.") from exc
-    if hasattr(gateway, "reload"):
-        gateway.reload()
-    gateway_state = ((getattr(gateway, "attrs", {}) or {}).get("State") or {})
-    gateway_health = gateway_state.get("Health") or {}
-    if gateway_state.get("Status") != "running" or gateway_health.get("Status") != "healthy":
-        raise HTTPException(status_code=503, detail="Workstation gateway is not healthy.")
-    attached = (getattr(network, "attrs", {}) or {}).get("Containers") or {}
-    if gateway.id not in attached:
-        network.connect(gateway, aliases=["ancos-egress-gateway"])
+    ensure_gateway_attached(client, network, employee_id)
     return network
 
 
@@ -361,6 +394,32 @@ def serialize_container(container: Any, employee_id: str | None = None) -> dict[
             f"websockify%3Ftoken%3D{token}"
         )
     return result
+
+
+def _ensure_container_gateway_bridge(container: Any) -> None:
+    """Re-attach the gateway to the container's network if the link is missing.
+
+    Recreating the gateway container detaches it from every employee network,
+    which silently breaks the noVNC relay for workstations that are still
+    running. Repairing here means the first token request after a gateway
+    restart restores reachability without reprovisioning the desktop.
+    """
+    employee_id = (container.labels or {}).get("ancos.employee_id")
+    if not employee_id:
+        return
+    client = docker_client()
+    try:
+        network = client.networks.get(employee_network_name(employee_id))
+    except NotFound:
+        return
+    try:
+        ensure_gateway_attached(client, network, employee_id)
+    except HTTPException as exc:
+        logger.warning(
+            "Could not re-attach workstation gateway to employee network",
+            employee_id=employee_id,
+            detail=str(exc.detail),
+        )
 
 
 @app.middleware("http")
@@ -724,19 +783,29 @@ def remove_verification_sandbox(verifier_container: Any) -> None:
 
 @app.get("/v1/containers/{container_id}/vnc-token")
 @app.post("/v1/containers/{container_id}/vnc-token")
-def issue_or_get_vnc_token(container_id: str) -> dict[str, Any]:
+def issue_or_get_vnc_token(container_id: str, rotate: bool = False) -> dict[str, Any]:
     validate_container_id(container_id)
     container = get_managed_container(container_id)
+    _ensure_container_gateway_bridge(container)
     token = read_vnc_token(container.name)
-    if not token:
+    if not token or rotate:
         token = write_vnc_token(container.name)
     novnc_port = 12003
+    password = container_vnc_password(container)
+    desktop_url = f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&path=websockify%3Ftoken%3D{token}"
+    read_only_desktop_url = (
+        f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&view_only=true&path=websockify%3Ftoken%3D{token}"
+    )
+    if password:
+        suffix = f"&password={password}"
+        desktop_url += suffix
+        read_only_desktop_url += suffix
     return {
         "docker_id": container_id,
         "token": token,
         "ws_path": f"websockify?token={token}",
-        "desktop_url": f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&path=websockify%3Ftoken%3D{token}",
-        "read_only_desktop_url": f"http://localhost:{novnc_port}/vnc.html?autoconnect=true&view_only=true&path=websockify%3Ftoken%3D{token}",
+        "desktop_url": desktop_url,
+        "read_only_desktop_url": read_only_desktop_url,
     }
 
 

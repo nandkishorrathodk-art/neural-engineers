@@ -64,3 +64,6 @@ screenshots/
 .DS_Store
 Thumbs.db
 
+# Machine-local compose overrides (sandbox port bindings, local experiments)
+docker-compose.override.yml
+

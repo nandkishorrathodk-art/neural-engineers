@@ -1,6 +1,12 @@
 import httpx
 import pytest
-from neural.workers.terminal import TerminalCommandPlan, TerminalWorker
+from neural.workers.terminal import (
+    TerminalCommandPlan,
+    TerminalPlan,
+    TerminalWorker,
+    WorkspaceFile,
+    _write_commands,
+)
 
 
 @pytest.mark.asyncio
@@ -123,3 +129,39 @@ def test_terminal_command_plan_normalizes_plain_strings_to_argv_without_shell():
 def test_terminal_command_plan_rejects_shell_command_strings_after_tokenization():
     with pytest.raises(ValueError):
         TerminalCommandPlan(commands=["echo hello > result.txt"])
+
+
+def test_terminal_plan_materializes_files_as_persisted_argv_writes():
+    plan = TerminalPlan(
+        files=[WorkspaceFile(path="test_clamp.py", content="value = 'a\\nb'\n")],
+        commands=[["python3", "-m", "unittest", "-v"]],
+    ).materialize()
+
+    assert plan.commands[-1] == ["python3", "-m", "unittest", "-v"]
+    writes = plan.commands[:-1]
+    assert writes and all(command[0] == "python3" and command[1] == "-c" for command in writes)
+
+    # Replaying the writes reproduces the exact file contents, byte for byte.
+    import pathlib
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as workspace:
+        for command in writes:
+            script = command[2].replace("'test_clamp.py'", repr(f"{workspace}/test_clamp.py"))
+            exec(script)
+        assert pathlib.Path(workspace, "test_clamp.py").read_text() == "value = 'a\\nb'\n"
+
+
+def test_terminal_plan_materializes_large_files_in_bounded_chunks():
+    content = "x" * 20_000
+    writes = _write_commands("big.txt", content)
+
+    assert len(writes) > 1
+    assert all(len(command[2]) <= 8192 for command in writes)
+
+
+def test_terminal_plan_rejects_files_outside_the_workspace():
+    with pytest.raises(ValueError):
+        WorkspaceFile(path="../escape.py", content="value = 1")
+    with pytest.raises(ValueError):
+        WorkspaceFile(path="/etc/passwd", content="value = 1")

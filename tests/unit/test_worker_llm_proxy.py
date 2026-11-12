@@ -12,6 +12,7 @@ from neural.db.repositories import (
     ProjectRepository,
     TaskRepository,
 )
+from neural.workers.terminal import TerminalPlan, WorkspaceFile, _write_commands
 
 WORKER_ID = "worker-llm-proxy-test"
 WORKER_TOKEN = "worker-llm-proxy-test-" + "w" * 40
@@ -73,15 +74,11 @@ async def test_terminal_plan_is_generated_by_api_for_current_fenced_worker(
     class GatewayStub:
         calls = []
         plans = [
-            [["python3", "-c", "class TestClamp: pass"], ["python3", "-m", "unittest", "-v"]],
-            [
-                [
-                    "python3",
-                    "-c",
-                    "from pathlib import Path; Path('test_clamp.py').write_text('value = 1')",
-                ],
-                ["python3", "-m", "unittest", "-v"],
-            ],
+            TerminalPlan(commands=[["python3", "-c", "class TestClamp: pass"]]),
+            TerminalPlan(
+                files=[WorkspaceFile(path="test_clamp.py", content="value = 1")],
+                commands=[["python3", "-m", "unittest", "-v"]],
+            ),
         ]
         cost_tracker = SimpleNamespace(
             max_project_budget_usd=150.0,
@@ -91,10 +88,8 @@ async def test_terminal_plan_is_generated_by_api_for_current_fenced_worker(
 
         async def generate_structured(self, **kwargs):
             self.calls.append(kwargs)
-            from neural.workers.terminal import TerminalCommandPlan
-
-            commands = self.plans[len(self.calls) - 1]
-            return TerminalCommandPlan(commands=commands), SimpleNamespace(
+            plan = self.plans[len(self.calls) - 1]
+            return plan, SimpleNamespace(
                 provider="test-provider",
                 model="test-model",
                 input_tokens=10,
@@ -121,7 +116,7 @@ async def test_terminal_plan_is_generated_by_api_for_current_fenced_worker(
     assert response.status_code == 200
     assert response.json()["plan"] == {
         "commands": [
-            ["python3", "-c", "from pathlib import Path; Path('test_clamp.py').write_text('value = 1')"],
+            *_write_commands("test_clamp.py", "value = 1"),
             ["python3", "-m", "unittest", "-v"],
         ]
     }
@@ -132,10 +127,10 @@ async def test_terminal_plan_is_generated_by_api_for_current_fenced_worker(
     assert gateway.calls[0]["max_tokens"] == 500
     assert gateway.calls[0]["db_session"] is async_session
     assert "Return `commands` as a JSON array of argv arrays" in gateway.calls[0]["prompt"]
-    assert "A short `python3 -c` command may write source or test content into workspace files" in gateway.calls[0]["prompt"]
-    assert "Do not inline test definitions in the test-running command" in gateway.calls[0]["prompt"]
-    assert "commands property is a list of argv arrays, not a list of shell strings" in gateway.calls[0]["system_prompt"]
-    assert "previous command plan was rejected before execution" in gateway.calls[1]["prompt"]
+    assert "Put the COMPLETE raw file contents here" in gateway.calls[0]["prompt"]
+    assert "do not inline test definitions in the test-running command" in gateway.calls[0]["prompt"]
+    assert "Put complete file contents in the `files` field" in gateway.calls[0]["system_prompt"]
+    assert "previous plan was rejected before execution" in gateway.calls[1]["prompt"]
 
 
 @pytest.mark.asyncio

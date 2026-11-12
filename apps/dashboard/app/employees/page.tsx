@@ -6,11 +6,13 @@ import { DashboardShell } from '@/components/layout/DashboardShell';
 import {
   fetchBossStatus,
   fetchEmployees,
+  fetchWorkstationVncToken,
   submitObjective,
   provisionWorkstation,
   terminateWorkstation,
 } from '@/lib/api';
 import { BossChatInterface } from '@/components/boss/BossChatInterface';
+import { toIngressDesktopUrl } from '@/lib/desktopUrl';
 import { Employee, Workstation } from '@/types';
 
 export default function EmployeesPage() {
@@ -38,6 +40,27 @@ export default function EmployeesPage() {
 
   // Action loading state
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+
+  const openDesktop = async (employeeId: string) => {
+    try {
+      setError(null);
+      const data = await fetchWorkstationVncToken(employeeId, false);
+      const url = toIngressDesktopUrl(data.read_only_desktop_url || data.desktop_url);
+      const emp = employees.find((e) => e.employee_id === employeeId);
+      if (!emp || !url) {
+        setError('Workstation is offline or its desktop token is unavailable.');
+        return;
+      }
+      setSelectedWorkstation({
+        employee: emp,
+        desktopUrl: url,
+        novncPort: data.novnc_port,
+        dockerId: data.docker_id,
+      });
+    } catch (err: any) {
+      setError(err.message || `Failed to open desktop for ${employeeId}`);
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -112,7 +135,7 @@ export default function EmployeesPage() {
       if (emp && ws.desktop_url) {
         setSelectedWorkstation({
           employee: emp,
-          desktopUrl: ws.desktop_url,
+          desktopUrl: toIngressDesktopUrl(ws.desktop_url) ?? ws.desktop_url,
           vncPort: ws.vnc_port,
           novncPort: ws.novnc_port,
           dockerId: ws.docker_id,
@@ -403,14 +426,12 @@ export default function EmployeesPage() {
                           </div>
                           <div className="flex justify-between text-[10px] text-slate-400">
                             <span>Desktop URL:</span>
-                            <a
-                              href={emp.desktop_url!}
-                              target="_blank"
-                              rel="noreferrer"
+                            <button
+                              onClick={() => openDesktop(emp.employee_id)}
                               className="text-sky-400 hover:underline truncate max-w-[150px]"
                             >
-                              {emp.desktop_url}
-                            </a>
+                              Tokenized noVNC relay
+                            </button>
                           </div>
                         </>
                       ) : (
@@ -426,12 +447,7 @@ export default function EmployeesPage() {
                     {hasWorkstation ? (
                       <div className="grid grid-cols-2 gap-2">
                         <button
-                          onClick={() =>
-                            setSelectedWorkstation({
-                              employee: emp,
-                              desktopUrl: emp.desktop_url!,
-                            })
-                          }
+                          onClick={() => openDesktop(emp.employee_id)}
                           className="w-full py-2 bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white font-bold text-xs rounded-xl shadow-[0_0_10px_rgba(56,189,248,0.25)] transition-all flex items-center justify-center space-x-1"
                         >
                           <span>🖥️</span>
@@ -494,7 +510,7 @@ export default function EmployeesPage() {
                     </span>
                   </h3>
                   <p className="text-[10px] text-slate-400 font-mono">
-                    {selectedWorkstation.employee.title} • Password: <strong className="text-amber-300">password123</strong>
+                    {selectedWorkstation.employee.title} • Secure tokenized access
                   </p>
                 </div>
               </div>
@@ -533,7 +549,7 @@ export default function EmployeesPage() {
               <div className="flex items-center space-x-4">
                 <span>Display: <strong className="text-slate-200">:1 (1280x800)</strong></span>
                 <span>User: <strong className="text-emerald-400">employee (uid 1000)</strong></span>
-                <span>URL: <strong className="text-sky-300">{selectedWorkstation.desktopUrl}</strong></span>
+                <span>URL: <strong className="text-sky-300">/vnc/vnc.html (tokenized relay)</strong></span>
               </div>
               <div className="flex items-center space-x-2">
                 <button

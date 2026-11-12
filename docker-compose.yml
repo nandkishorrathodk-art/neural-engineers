@@ -80,7 +80,7 @@ services:
     container_name: ancos-workstation-gateway
     restart: unless-stopped
     ports:
-      - "127.0.0.1:12003:6080"
+      - "${ANCOS_BIND_HOST:-127.0.0.1}:12003:6080"
     volumes:
       - vnc_tokens:/run/ancos-vnc-tokens:ro
     user: "13:13"
@@ -117,7 +117,7 @@ services:
     container_name: ancos-core-api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:12000:12000"
+      - "${ANCOS_BIND_HOST:-127.0.0.1}:12000:12000"
     environment:
       - APP_ENV=${APP_ENV:-development}
       - HOST=0.0.0.0
@@ -225,8 +225,6 @@ services:
       dockerfile: Dockerfile
     container_name: ancos-dashboard
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:12001:3000"
     environment:
       - NODE_ENV=production
       - ANCOS_API_URL=http://core-api:12000
@@ -235,6 +233,29 @@ services:
       - core-api
     networks:
       - ancos-network
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  ingress:
+    image: nginxinc/nginx-unprivileged:alpine
+    container_name: ancos-ingress
+    restart: unless-stopped
+    ports:
+      - "${ANCOS_BIND_HOST:-127.0.0.1}:12001:12001"
+    volumes:
+      - ./docker/nginx-ancos.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - dashboard
+      - workstation-gateway
+    networks:
+      - ancos-network
+      - workstation-egress
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
     cap_drop:
       - ALL
     security_opt:

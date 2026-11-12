@@ -152,6 +152,44 @@ def test_token_file_scopes_mapping_and_removes_it_on_revocation(tmp_path, monkey
     assert broker_api.read_vnc_token("ancos-desktop-anc-emp-two") == two
 
 
+def _detached_desktop(employee_id: str):
+    return type(
+        "Container",
+        (),
+        {"name": f"ancos-desktop-{employee_id.lower()}", "labels": {"ancos.employee_id": employee_id}},
+    )()
+
+
+def test_gateway_bridge_repairs_detached_employee_network(monkeypatch):
+    """Recreating the gateway detaches it; a token request must re-attach it."""
+    employee_id = "ANC-EMP-GW-5"
+    monkeypatch.setattr(broker_api, "NotFound", MissingNetwork)
+    monkeypatch.setattr(broker_api.settings, "EMPLOYEE_NETWORK", "test-employee")
+    # Internal network that still hosts a running desktop but lost the gateway
+    # attachment (Docker drops it when the gateway container is recreated).
+    network = Network(employee_id)
+    client = Docker(employee_id, network=network)
+    monkeypatch.setattr(broker_api, "docker_client", lambda: client)
+
+    broker_api._ensure_container_gateway_bridge(_detached_desktop(employee_id))
+
+    assert network.connected[0][1] == ["ancos-egress-gateway"]
+
+
+def test_gateway_bridge_is_idempotent_when_already_attached(monkeypatch):
+    employee_id = "ANC-EMP-GW-6"
+    monkeypatch.setattr(broker_api, "NotFound", MissingNetwork)
+    monkeypatch.setattr(broker_api.settings, "EMPLOYEE_NETWORK", "test-employee")
+    network = Network(employee_id)
+    network.attrs["Containers"]["gateway-id"] = {}
+    client = Docker(employee_id, network=network)
+    monkeypatch.setattr(broker_api, "docker_client", lambda: client)
+
+    broker_api._ensure_container_gateway_bridge(_detached_desktop(employee_id))
+
+    assert network.connected == []
+
+
 def test_gateway_token_mapping_routes_to_internal_vnc_only(tmp_path, monkeypatch):
     monkeypatch.setattr(broker_api.settings, "VNC_TOKEN_DIR", str(tmp_path))
     token = broker_api.write_vnc_token("ancos-desktop-anc-emp-one")
@@ -159,3 +197,19 @@ def test_gateway_token_mapping_routes_to_internal_vnc_only(tmp_path, monkeypatch
     assert (tmp_path / "tokens").read_text(encoding="utf-8") == (
         f"{token}: ancos-desktop-anc-emp-one:5901\n"
     )
+
+
+class _ConfigContainer:
+    def __init__(self, env):
+        self.attrs = {"Config": {"Env": env}}
+
+
+def test_container_vnc_password_reads_immutable_container_config():
+    container = _ConfigContainer(["DISPLAY=:1", "VNC_PASSWORD=s3cret-pw", "PATH=/usr/bin"])
+
+    assert broker_api.container_vnc_password(container) == "s3cret-pw"
+
+
+def test_container_vnc_password_is_none_without_credential():
+    assert broker_api.container_vnc_password(_ConfigContainer(["DISPLAY=:1"])) is None
+    assert broker_api.container_vnc_password(object()) is None
