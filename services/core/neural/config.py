@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     BOSS_LLM_PLANNING_ENABLED: bool = False
     OLLAMA_BASE_URL: str = "http://localhost:11434"
 
+    # Execution modes the Boss planner is allowed to emit. A mode may only appear
+    # here when a long-running worker actually consumes it; otherwise planned tasks
+    # are rejected before any project or employee is persisted.
+    BOSS_SUPPORTED_EXECUTION_MODES: list[str] = ["terminal"]
+
     # Model Defaults
     BOSS_MODEL: str = "openai/gpt-6.1-sol"
     BOSS_TEMPERATURE: float = 0.2

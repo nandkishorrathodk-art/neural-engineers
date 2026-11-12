@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 from neural.constants import ExecutionMode
 from neural.exceptions import ModelProviderError, UnsupportedExecutionModeError
 from neural.llm.gateway import LLMGateway
+from neural.logger import get_logger
 from neural.verification.test_commands import TEST_ONLY_ACCEPTANCE, normalize_acceptance_criteria
+
+logger = get_logger("ancos.boss.planner")
 
 # Canonical acceptance contract the independent verifier replays. Every terminal
 # task must carry it, otherwise the verifier fails closed and no task can ever
@@ -148,7 +151,42 @@ class TaskPlanner:
         supported_modes: Optional[set[ExecutionMode]] = None,
     ) -> None:
         self.llm_gateway = llm_gateway
+        if supported_modes is None and llm_gateway is not None:
+            supported_modes = self._modes_from_settings(llm_gateway)
         self.supported_modes = supported_modes
+
+    @staticmethod
+    def _modes_from_settings(gateway: LLMGateway) -> set[ExecutionMode]:
+        """Resolve the planner's allowed modes from configuration.
+
+        Defaults to terminal-only so a deployment with no GUI worker never plans
+        GUI work it cannot run; operators opt in by adding ``gui``/``hybrid`` to
+        ``BOSS_SUPPORTED_EXECUTION_MODES`` once the corresponding worker is up.
+        """
+        raw = getattr(gateway.settings, "BOSS_SUPPORTED_EXECUTION_MODES", None) or ["terminal"]
+        modes: set[ExecutionMode] = set()
+        for name in raw:
+            try:
+                modes.add(ExecutionMode.normalize(name))
+            except Exception:
+                logger.warning("Ignoring unknown BOSS_SUPPORTED_EXECUTION_MODES entry", value=name)
+        return modes or {ExecutionMode.TERMINAL}
+
+    def _mode_guidance(self) -> str:
+        """Prompt guidance describing which execution modes this deployment can run."""
+        supported = self.supported_modes or {ExecutionMode.TERMINAL, ExecutionMode.TERMINAL_ONLY}
+        if ExecutionMode.normalize("gui") not in supported and ExecutionMode.normalize("hybrid") not in supported:
+            return (
+                "In this deployment, only terminal tasks have a long-running worker consumer. "
+                "Do not assign gui, hybrid, or authorized_tools unless the objective cannot be met safely "
+                "through terminal work; those modes will be rejected before any project or employee is persisted. "
+            )
+        names = ", ".join(sorted(mode.value for mode in supported))
+        return (
+            f"This deployment runs these execution modes: {names}. "
+            "Choose the mode that genuinely matches each task: use gui for visible desktop "
+            "interaction, terminal for command-line work, and hybrid when a task needs both. "
+        )
 
     @staticmethod
     def _has_configured_provider(gateway: LLMGateway) -> bool:
@@ -194,10 +232,8 @@ class TaskPlanner:
             "employee persist the deliverable to the workspace and include a test that verifies it, "
             "then run that test. "
             "Every task must declare its execution_mode as one of gui, terminal, hybrid, or authorized_tools. "
-            "In this deployment, only terminal tasks have a long-running worker consumer. "
-            "Do not assign gui, hybrid, or authorized_tools unless the objective cannot be met safely "
-            "through terminal work; those modes will be rejected before any project or employee is persisted. "
-            "Dependencies must reference task_id values in this plan, point only "
+            + self._mode_guidance()
+            + "Dependencies must reference task_id values in this plan, point only "
             "to earlier tasks, and form an acyclic graph. Do not claim work is "
             "already completed.\n\nOBJECTIVE:\n" + objective
         )

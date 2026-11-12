@@ -80,6 +80,35 @@ def required_execution_capabilities(mode: object) -> frozenset[ExecutionCapabili
     return _MODE_CAPABILITIES.get(ExecutionMode.normalize(mode), frozenset({ExecutionCapability.TERMINAL}))
 
 
+class ExecutionTarget(str, Enum):
+    """Concrete environment a task step must be executed against.
+
+    Modes are declarative intent; targets are the actual environments required.
+    A terminal task needs only an execution environment; a GUI task additionally
+    needs a live graphical desktop. Keeping them separate is what lets terminal
+    work run without a desktop.
+    """
+
+    TERMINAL = "terminal"
+    GUI = "gui"
+
+
+def required_execution_targets(mode: object) -> frozenset[ExecutionTarget]:
+    """Return the execution targets a task in ``mode`` genuinely requires."""
+    capabilities = required_execution_capabilities(mode)
+    targets: set[ExecutionTarget] = set()
+    if ExecutionCapability.TERMINAL in capabilities:
+        targets.add(ExecutionTarget.TERMINAL)
+    if ExecutionCapability.GUI in capabilities:
+        targets.add(ExecutionTarget.GUI)
+    return frozenset(targets)
+
+
+def mode_requires_gui(mode: object) -> bool:
+    """True when a task in ``mode`` requires a live graphical desktop."""
+    return ExecutionTarget.GUI in required_execution_targets(mode)
+
+
 class ProjectStatus(str, Enum):
     PLANNING = "planning"
     ACTIVE = "active"

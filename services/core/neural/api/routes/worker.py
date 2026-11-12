@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,10 +18,12 @@ from neural.api.schemas.requests import (
     WorkerClaimRequest,
     WorkerCommandRequest,
     WorkerFailureRequest,
+    WorkerGuiPlanRequest,
+    WorkerGuiStepRequest,
     WorkerLeaseRequest,
     WorkerSubmitRequest,
 )
-from neural.constants import EmployeeStatus, ExecutionMode
+from neural.constants import EmployeeStatus, ExecutionMode, mode_requires_gui
 from neural.containers.manager import ContainerManager
 from neural.db.engine import get_db_session
 from neural.db.models import Project
@@ -38,6 +41,13 @@ from neural.exceptions import (
     SecurityViolationError,
 )
 from neural.execution.contracts import CapabilityPolicyEnforcer
+from neural.gui_intelligence.runtime.errors import DesktopRuntimeUnavailable
+from neural.gui_intelligence.runtime.planner import derive_gui_steps
+from neural.gui_intelligence.worker import (
+    GuiStepPlan,
+    GuiWorkerExecutionError,
+    build_gui_worker_engine,
+)
 from neural.llm.budget import load_budget_scope_caps
 from neural.llm.gateway import LLMGateway
 from neural.logger import get_logger
@@ -82,6 +92,10 @@ async def claim_next_task(
     get_kill_switch().guard_active()
     task = await task_repo.claim_next_task(worker_id, execution_modes=request.execution_modes)
     if task:
+        # Execution-target requirement is mode-specific: every task needs a live
+        # execution environment (the employee container), while only GUI-bearing
+        # modes additionally need a reachable graphical desktop. Terminal tasks
+        # must not be blocked merely because no desktop is running.
         workstation = await container_manager.get_desktop_by_employee_id(
             task["employee_id"],
             container_repo=container_repo,
@@ -92,9 +106,9 @@ async def claim_next_task(
                 task["task_id"],
                 worker_id,
                 task["fencing_token"],
-                "Assigned employee workstation is not live and available.",
+                "Assigned employee execution environment is not live and available.",
             )
-            return {"task": None, "status": "workstation_unavailable"}
+            return {"task": None, "status": "execution_environment_unavailable"}
     return {"task": task, "status": "claimed" if task else "idle"}
 
 
@@ -373,6 +387,131 @@ async def execute_terminal_command(
         "stdout": str(result.get("stdout", ""))[-16000:],
         "stderr": str(result.get("stderr", ""))[-4000:],
     }
+
+
+@router.post("/tasks/{task_id}/gui/plan")
+async def plan_gui_task(
+    task_id: str,
+    request: WorkerLeaseRequest,
+    worker_id: str = Depends(require_worker_token),
+    task_repo: TaskRepository = Depends(get_task_repo),
+):
+    """Generate concrete GUI steps for a task from its objective.
+
+    Steps reference on-screen text so the live-desktop OCR grounder can locate
+    them. This is planning only; nothing is dispatched to the screen.
+    """
+    get_kill_switch().guard_active()
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if not mode_requires_gui(task.execution_mode):
+        raise HTTPException(status_code=409, detail="This endpoint accepts GUI-bearing tasks only.")
+    if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
+        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+    steps = derive_gui_steps(task.title or "", task.objective or "", task.scope or "")
+    return {"task_id": task_id, "fencing_token": request.fencing_token, "steps": steps}
+
+
+@router.post("/tasks/{task_id}/gui/execute")
+async def execute_gui_plan(
+    task_id: str,
+    request: WorkerGuiPlanRequest,
+    worker_id: str = Depends(require_worker_token),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_manager: ContainerManager = Depends(get_container_manager),
+):
+    """Execute a GUI plan against the employee's live graphical desktop.
+
+    The desktop lives inside the employee container; the core API orchestrates by
+    running scrot/xdotool there through the restricted broker. Terminal-only tasks
+    are rejected here; GUI and hybrid tasks are accepted.
+    """
+    get_kill_switch().guard_active()
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if not mode_requires_gui(task.execution_mode):
+        raise HTTPException(status_code=409, detail="This endpoint accepts GUI-bearing tasks only.")
+    try:
+        CapabilityPolicyEnforcer.validate_action(task.execution_mode, "gui_action", {"steps": len(request.steps)})
+    except SecurityViolationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
+        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    if not employee:
+        raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
+    workstation = await container_manager.get_desktop_by_employee_id(
+        employee.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    if not workstation or workstation.get("status") != "running":
+        raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
+
+    steps = [GuiStepPlan(**step.model_dump()) for step in request.steps]
+    try:
+        engine = build_gui_worker_engine(container_manager, display=request.display or ":1")
+        result = await asyncio.to_thread(
+            engine.execute,
+            employee_id=employee.employee_id,
+            docker_id=workstation["docker_id"],
+            steps=steps,
+            expected_text=request.expected_text,
+            expected_postcondition=request.expected_postcondition,
+        )
+    except DesktopRuntimeUnavailable as exc:
+        raise HTTPException(status_code=409, detail=f"Live desktop unavailable: {exc}") from exc
+    except GuiWorkerExecutionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"task_id": task_id, "fencing_token": request.fencing_token, "result": result.to_dict()}
+
+
+@router.post("/tasks/{task_id}/gui/step")
+async def execute_gui_step(
+    task_id: str,
+    request: WorkerGuiStepRequest,
+    worker_id: str = Depends(require_worker_token),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_manager: ContainerManager = Depends(get_container_manager),
+):
+    """Execute a single GUI step against the live desktop (per-step control)."""
+    get_kill_switch().guard_active()
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if not mode_requires_gui(task.execution_mode):
+        raise HTTPException(status_code=409, detail="This endpoint accepts GUI-bearing tasks only.")
+    if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
+        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    if not employee:
+        raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
+    workstation = await container_manager.get_desktop_by_employee_id(
+        employee.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    if not workstation or workstation.get("status") != "running":
+        raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
+    try:
+        engine = build_gui_worker_engine(container_manager, display=request.display or ":1")
+        result = await asyncio.to_thread(
+            engine.execute,
+            employee_id=employee.employee_id,
+            docker_id=workstation["docker_id"],
+            steps=[GuiStepPlan(**request.step.model_dump())],
+        )
+    except DesktopRuntimeUnavailable as exc:
+        raise HTTPException(status_code=409, detail=f"Live desktop unavailable: {exc}") from exc
+    except GuiWorkerExecutionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"task_id": task_id, "fencing_token": request.fencing_token, "result": result.to_dict()}
 
 
 @router.post("/tasks/{task_id}/submit")

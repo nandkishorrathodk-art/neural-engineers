@@ -20,7 +20,35 @@ class FailureCategory(str, Enum):
     CODE_QUALITY = "code_quality"
     ENVIRONMENT = "environment"
     SECURITY = "security"
+    INFRASTRUCTURE = "infrastructure"
     FATAL = "fatal"
+
+
+# Markers that identify a *pure infrastructure* failure: the execution
+# environment (workstation/desktop/broker) was unavailable, so the task's own
+# code never got a fair chance. These must not consume the task's execution
+# retry budget; the task is requeued/reassigned instead.
+INFRASTRUCTURE_FAILURE_MARKERS: tuple[str, ...] = (
+    "workstation is not live",
+    "workstation is absent",
+    "workstation_unavailable",
+    "desktop session",
+    "desktop is not",
+    "no live desktop",
+    "live desktop",
+    "vnc",
+    "execution environment",
+    "container is not running",
+    "broker unavailable",
+    "runtime_unavailable",
+    "screenshot capture failed",
+)
+
+
+def is_infrastructure_failure(error: Union[str, Exception]) -> bool:
+    """True when the error describes an unavailable execution environment."""
+    err_lower = str(error).lower()
+    return any(marker in err_lower for marker in INFRASTRUCTURE_FAILURE_MARKERS)
 
 
 @dataclass
@@ -55,6 +83,20 @@ def classify_failure(
     """
     err_str = str(error).strip()
     err_lower = err_str.lower()
+
+    # 0. Pure infrastructure failures: the execution environment was unavailable.
+    #    These are recovered by requeue/reassignment and must not be charged to
+    #    the task's code-failure retry budget.
+    if is_infrastructure_failure(err_str):
+        return FailureClassification(
+            category=FailureCategory.INFRASTRUCTURE,
+            error_message=err_str,
+            exit_code=exit_code,
+            is_retryable=True,
+            severity="low",
+            recommended_action="requeue_on_infrastructure",
+            diagnostic_feedback=f"Execution environment unavailable: {err_str}. Requeued without consuming the retry budget.",
+        )
 
     # 1. Security policy violations (NEVER retryable, critical severity)
     if "security" in err_lower or "forbidden" in err_lower or "unauthorized" in err_lower or "eval(" in err_lower:

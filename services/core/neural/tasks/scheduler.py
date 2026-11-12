@@ -210,9 +210,12 @@ class TaskScheduler:
                     task.assigned_to = assignee.id
                     task.status = TaskStatus.RUNNING
                 else:
-                    # No employee available, mark assigned to keep slot ready or leave pending
-                    await self.task_repo.update_status(task.task_id, TaskStatus.RUNNING)
-                    task.status = TaskStatus.RUNNING
+                    # Ownership invariant: never fabricate a RUNNING row with no
+                    # assignee. The task stays PENDING (queued) while this scheduler
+                    # executes it in-process; registering it in ``_active_task_ids``
+                    # keeps ``get_ready_tasks`` from re-selecting it, which is what
+                    # prevents the re-dispatch livelock and duplicate execution.
+                    task.status = TaskStatus.PENDING
 
                 self._active_task_ids.add(task.task_id)
                 dispatched.append(task)

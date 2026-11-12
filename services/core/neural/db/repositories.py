@@ -31,6 +31,7 @@ from neural.constants import (
     TaskStatus,
     VerificationStatus,
     VoteChoice,
+    mode_requires_gui,
     required_execution_capabilities,
 )
 from neural.db.models import (
@@ -98,6 +99,11 @@ def _employee_has_execution_capabilities(employee: Employee, mode: object) -> bo
     if not declared:
         declared = {ExecutionCapability.TERMINAL.value}
     return all(capability.value in declared for capability in required)
+
+
+def _employee_needs_desktop(mode: object) -> bool:
+    """True when a task in ``mode`` requires a live graphical desktop."""
+    return mode_requires_gui(mode)
 
 
 def get_session_lock(session: AsyncSession) -> asyncio.Lock:
@@ -808,7 +814,6 @@ class TaskRepository:
                 select(Task)
                 .options(selectinload(Task.assignee).selectinload(Employee.container))
                 .where(
-                    Task.assigned_to.is_not(None),
                     Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
                 )
                 .order_by(*_task_dispatch_order())
@@ -820,17 +825,50 @@ class TaskRepository:
         for task in stranded:
             employee = task.assignee
             if not employee:
+                # Invariant: a task must never sit RUNNING/ASSIGNED without a live
+                # owner. Release the orphaned row so a qualified employee can claim it.
+                released = await self.session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task.id,
+                        Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
+                        Task.assigned_to.is_(None),
+                    )
+                    .values(
+                        status=TaskStatus.PENDING,
+                        fencing_token=Task.fencing_token + 1,
+                    )
+                )
+                if released.rowcount != 1:
+                    await self.session.rollback()
+                    continue
+                await self.session.commit()
+                recovered.append(
+                    {
+                        "task_id": task.task_id,
+                        "previous_assignee": None,
+                        "reason": "task was assigned to no employee",
+                    }
+                )
                 continue
+            # A task is only stranded when the environment its *mode* actually needs
+            # is unavailable. Both terminal and GUI steps run inside the employee's
+            # execution container; a GUI step additionally requires that container to
+            # be a live graphical desktop, which the worker claim route enforces. A
+            # terminal task must therefore not be treated as stranded merely because
+            # no desktop is reachable.
+            needs_desktop = _employee_needs_desktop(task.execution_mode)
             container = employee.container
-            has_running_desktop = container is not None and container.status == ContainerStatus.RUNNING
+            has_running_exec_env = container is not None and container.status == ContainerStatus.RUNNING
             has_capability = _employee_has_execution_capabilities(employee, task.execution_mode)
-            if has_running_desktop and has_capability:
+            if has_running_exec_env and has_capability:
                 continue
-            reason = (
-                "assignee lacks required execution capability"
-                if not has_capability
-                else "assignee workstation is absent or not running"
-            )
+            if not has_capability:
+                reason = "assignee lacks required execution capability"
+            elif needs_desktop:
+                reason = "assignee workstation is absent or not running"
+            else:
+                reason = "assignee execution environment is absent or not running"
             released = await self.session.execute(
                 update(Task)
                 .where(
@@ -1099,11 +1137,15 @@ class TaskRepository:
         task = await self._get_task_for_worker(task_id)
         if not task or task.fencing_token != fencing_token or task.status != TaskStatus.RUNNING:
             return None
-        from neural.boss.recovery import classify_failure
+        from neural.boss.recovery import classify_failure, is_infrastructure_failure
 
         classification = classify_failure(error_message)
-        should_retry = classification.is_retryable and task.retry_count < task.max_retries
-        retry_count = task.retry_count + (1 if should_retry else 0)
+        is_infra = is_infrastructure_failure(error_message)
+        # Infrastructure failures are requeued/reassigned but never charged to the
+        # task's code-failure retry budget.
+        should_retry = is_infra or (classification.is_retryable and task.retry_count < task.max_retries)
+        consume_retry = should_retry and not is_infra
+        retry_count = task.retry_count + (1 if consume_retry else 0)
         retry_delay_seconds = min(2 ** task.retry_count, 60) if should_retry else 0
         async with get_session_lock(self.session):
             previous_assignee_id = task.assigned_to
@@ -1150,7 +1192,7 @@ class TaskRepository:
                 .values(
                     status=TaskStatus.ASSIGNED if should_retry else TaskStatus.FAILED,
                     assigned_to=(alternate_assignee.id if alternate_assignee else task.assigned_to),
-                    retry_count=Task.retry_count + (1 if should_retry else 0),
+                    retry_count=Task.retry_count + (1 if consume_retry else 0),
                     completed_at=None if should_retry else now,
                     fencing_token=Task.fencing_token + 1,
                 )

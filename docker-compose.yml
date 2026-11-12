@@ -134,6 +134,10 @@ services:
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
       - NVIDIA_API_BASE=${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
       - BOSS_LLM_PLANNING_ENABLED=${BOSS_LLM_PLANNING_ENABLED:-true}
+      # Comma/JSON list of modes a worker actually consumes. Keep terminal-only
+      # until the gui-worker profile is running, otherwise GUI objectives are
+      # rejected at plan time.
+      - BOSS_SUPPORTED_EXECUTION_MODES=${BOSS_SUPPORTED_EXECUTION_MODES:-["terminal"]}
       - DOCKER_BROKER_URL=http://docker-broker:12002
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
       - ANCOS_MAX_ACTIVE_DESKTOPS=${ANCOS_MAX_ACTIVE_DESKTOPS:-1}
@@ -169,6 +173,36 @@ services:
     environment:
       - ANCOS_CORE_API_URL=http://core-api:12000
       - ANCOS_WORKER_ID=${ANCOS_WORKER_ID:-terminal-worker}
+      - ANCOS_WORKER_POLL_SECONDS=${ANCOS_WORKER_POLL_SECONDS:-3}
+      - WORKER_API_TOKEN=${WORKER_API_TOKEN:-}
+    depends_on:
+      core-api:
+        condition: service_started
+    networks:
+      - ancos-network
+    read_only: true
+    cpus: 1.0
+    mem_limit: 2g
+    pids_limit: 128
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  gui-worker:
+    profiles: ["workers"]
+    image: ancos-core-api:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.core
+    container_name: ancos-gui-worker
+    restart: unless-stopped
+    command: ["python", "-m", "neural.workers.gui"]
+    environment:
+      - ANCOS_CORE_API_URL=http://core-api:12000
+      - ANCOS_WORKER_ID=${ANCOS_GUI_WORKER_ID:-gui-worker}
       - ANCOS_WORKER_POLL_SECONDS=${ANCOS_WORKER_POLL_SECONDS:-3}
       - WORKER_API_TOKEN=${WORKER_API_TOKEN:-}
     depends_on:

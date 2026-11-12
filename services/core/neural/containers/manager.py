@@ -617,6 +617,59 @@ class ContainerManager:
             json={"employee_id": employee_id, "command": command},
         )
 
+    def execute_command_sync(
+        self,
+        docker_id: str,
+        command: str | list[str],
+        workdir: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Synchronous variant of :meth:`execute_command` for thread-bound drivers.
+
+        The GUI execution loop is synchronous, so it runs in a worker thread; this
+        blocks that thread (never the event loop) while the command runs inside the
+        employee container through the same restricted-broker path.
+        """
+        self.broker.validate_container_id(docker_id)
+        client = self._get_client()
+        if client is None:
+            if not self._has_remote_broker():
+                raise ContainerError("Restricted Docker broker is not configured.")
+            import httpx
+
+            headers = {"Authorization": f"Bearer {self.settings.DOCKER_BROKER_TOKEN}"}
+            try:
+                with httpx.Client(timeout=float(BROKER_COMMAND_REQUEST_TIMEOUT_SECONDS)) as http:
+                    response = http.post(
+                        f"{self.settings.DOCKER_BROKER_URL.rstrip('/')}/v1/containers/{docker_id}/exec",
+                        headers=headers,
+                        json={"command": command, "workdir": workdir or "/home/employee/workspace"},
+                    )
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise ContainerError("Restricted Docker broker returned an invalid response.")
+                return data
+            except httpx.HTTPStatusError as exc:
+                raise DockerBrokerRequestError(
+                    f"Restricted Docker broker rejected operation: {exc.response.text}",
+                    status_code=exc.response.status_code,
+                ) from exc
+            except (httpx.HTTPError, ValueError) as exc:
+                raise ContainerError(f"Restricted Docker broker request failed: {exc}") from exc
+
+        try:
+            container = client.containers.get(docker_id)
+            exec_res = container.exec_run(
+                cmd=command_with_timeout(command),
+                user="1000:1000",
+                workdir=workdir or "/home/employee/workspace",
+            )
+            stdout = exec_res.output.decode("utf-8", errors="replace") if exec_res.output else ""
+            return {"exit_code": exec_res.exit_code, "stdout": stdout, "stderr": ""}
+        except Exception as e:
+            logger.warning("Docker exec failed", docker_id=docker_id, error=str(e))
+            raise ContainerError(f"Command was not executed in container {docker_id}: {e}") from e
+
     async def capture_verifier_manifest(self, employee_id: str) -> dict[str, Any]:
         """Capture path, size, and SHA-256 metadata through the restricted broker."""
         return await self._broker_request(

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from neural.constants import ActionItemStatus, ExecutionMode, MeetingType, ProposalType, VoteChoice
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -263,6 +263,39 @@ class WorkerSubmitRequest(WorkerLeaseRequest):
 
 class WorkerFailureRequest(WorkerLeaseRequest):
     error_message: str = Field(..., min_length=1, max_length=4000)
+
+
+class WorkerGuiStep(BaseModel):
+    action_type: Literal[
+        "MOUSE_MOVE",
+        "MOUSE_CLICK",
+        "MOUSE_DOUBLE_CLICK",
+        "MOUSE_RIGHT_CLICK",
+        "MOUSE_DRAG",
+        "MOUSE_SCROLL",
+        "KEY_PRESS",
+        "KEY_TYPE",
+        "KEY_HOTKEY",
+        "WAIT_SETTLE",
+    ]
+    target: Optional[str] = Field(None, description="Text/descriptor to ground on the live screen")
+    text: Optional[str] = Field(None, description="Text to type")
+    key_code: Optional[str] = Field(None, description="Key or hotkey specification")
+    coordinates: Optional[tuple[int, int]] = Field(None, description="Explicit pixel coordinates")
+    confidence: float = Field(default=0.95, ge=0.0, le=1.0)
+    expected_postcondition: Optional[str] = None
+
+
+class WorkerGuiPlanRequest(WorkerLeaseRequest):
+    steps: list[WorkerGuiStep] = Field(..., min_length=1, max_length=200)
+    expected_text: Optional[str] = Field(None, description="Text that must be visible after execution")
+    expected_postcondition: Optional[str] = None
+    display: Optional[str] = Field(None, description="X display to drive; defaults to the worker environment")
+
+
+class WorkerGuiStepRequest(WorkerLeaseRequest):
+    step: WorkerGuiStep
+    display: Optional[str] = None
 
 
 class VerificationDecisionRequest(BaseModel):
