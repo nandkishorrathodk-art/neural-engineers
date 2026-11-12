@@ -71,6 +71,9 @@ class VerificationWorker:
         execution_receipt = item.get("execution_receipt")
         if not isinstance(execution_receipt, dict):
             execution_receipt = {}
+        mode = str(item.get("execution_mode", "terminal")).lower()
+        if mode in {"gui", "gui_only", "hybrid"}:
+            return await self.verify_gui_item(item, execution_receipt)
         workspace_manifest_before = item.get("workspace_manifest_before")
         baseline_valid = valid_workspace_manifest(workspace_manifest_before, allow_empty=True)
 
@@ -201,6 +204,132 @@ class VerificationWorker:
             },
         )
 
+    async def verify_gui_item(self, item: dict[str, Any], execution_receipt: dict[str, Any]) -> dict[str, Any] | None:
+        """Independently verify a GUI or hybrid task from live visual evidence.
+
+        The worker's receipt is a *claim*: it reports before/after pixel hashes and
+        per-step receipts. Independent verification re-observes the same live desktop
+        itself, requires the worker's post-action frame hash to match the frame the
+        verifier captures, and re-runs the worker's declared terminal verification
+        commands (hybrid tasks) against the workspace. A worker that never touched the
+        screen, or that fabricated a hash, cannot satisfy the live-hash match.
+        """
+        task_id = str(item["task_id"])
+        attempt_id = str(item["attempt_id"])
+        fence = int(item["fencing_token"])
+        gui_receipt = execution_receipt.get("gui")
+        if not isinstance(gui_receipt, dict):
+            gui_receipt = {}
+        verification = gui_receipt.get("verification") if isinstance(gui_receipt.get("verification"), dict) else {}
+        worker_hash = gui_receipt.get("screen_hash_after")
+        if not isinstance(worker_hash, str) or not worker_hash:
+            worker_hash = verification.get("screenshot_hash")
+        worker_passed = execution_receipt.get("passed") is True
+
+        checks: list[dict[str, Any]] = []
+        evidence_refs: list[str] = []
+
+        # 1. Independent live desktop observation (never trust the worker's hash).
+        live: dict[str, Any] = {}
+        try:
+            live = await self._post(
+                f"/internal/verifier/tasks/{task_id}/attempts/{attempt_id}/screenshot",
+                {"fencing_token": fence},
+            )
+        except httpx.HTTPError:
+            live = {}
+        live_captured = bool(live.get("captured"))
+        live_hash = str(live.get("screenshot_hash") or "")
+        hash_matches = bool(live_hash) and live_hash == worker_hash
+        checks.append(
+            {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": live_captured and hash_matches,
+                "evidence": {
+                    "live_captured": live_captured,
+                    "verifier_screenshot_hash": live_hash,
+                    "worker_screenshot_hash": worker_hash,
+                    "resolution": live.get("resolution"),
+                },
+            }
+        )
+        if live_hash:
+            evidence_refs.append(f"screen:sha256:{live_hash}")
+
+        # 2. The worker itself must have judged the GUI loop successful.
+        checks.append(
+            {
+                "name": "worker_gui_loop_reported_success",
+                "passed": worker_passed,
+                "evidence": {"worker_passed": worker_passed, "status": gui_receipt.get("status")},
+            }
+        )
+
+        # 3. Hybrid tasks must also expose a replayable terminal verification phase.
+        hybrid = str(item.get("execution_mode", "")).lower() == "hybrid"
+        tests_passed = True
+        if hybrid:
+            commands = replayable_test_commands(execution_receipt)
+            if commands:
+                runs: list[dict[str, Any]] = []
+                for index, command in enumerate(commands, start=1):
+                    result = await self._post(
+                        f"/internal/verifier/tasks/{task_id}/attempts/{attempt_id}/exec",
+                        {"fencing_token": fence, "command": command},
+                    )
+                    runs.append(
+                        {
+                            "command": command,
+                            "worker_exit_code": worker_test_exit_code(execution_receipt, command),
+                            "verifier_exit_code": result.get("exit_code"),
+                        }
+                    )
+                    evidence_refs.append(f"verifier:{attempt_id}:test:{index}")
+                tests_passed = all(
+                    run["worker_exit_code"] == 0 and run["verifier_exit_code"] == 0 for run in runs
+                )
+            else:
+                tests_passed = False
+            checks.append(
+                {
+                    "name": "hybrid_terminal_phase_independently_replayable",
+                    "passed": tests_passed,
+                    "evidence": {"replayable_commands": len(commands)},
+                }
+            )
+
+        passed = live_captured and hash_matches and worker_passed and tests_passed
+        notes = (
+            "Independent visual verification passed: the verifier observed the live employee desktop "
+            "itself and the captured frame hash matched the worker's post-action frame, and the worker's "
+            "GUI loop reported success."
+            + (" The hybrid terminal verification phase was independently replayed." if hybrid else "")
+            if passed
+            else "Independent visual verification failed closed: the live desktop could not be observed, "
+            "the independently captured frame did not match the worker's post-action frame, the worker's "
+            "GUI loop did not report success, or a hybrid terminal phase was not independently replayable."
+        )
+        if not evidence_refs:
+            evidence_refs = [f"verifier:{attempt_id}:no-visual-evidence"]
+        return await self._post(
+            f"/internal/verifier/tasks/{task_id}/attempts/{attempt_id}/review",
+            {
+                "passed": passed,
+                "notes": notes,
+                "evidence_refs": evidence_refs,
+                "checks": checks,
+                "test_summary": {
+                    "independent_screen_capture": live or {"captured": False},
+                    "worker_visual_receipt": {
+                        "screen_hash_before": gui_receipt.get("screen_hash_before"),
+                        "screen_hash_after": worker_hash,
+                        "steps_executed": gui_receipt.get("steps_executed"),
+                        "verification": verification,
+                    },
+                },
+            },
+        )
+
     async def run_once(self) -> int:
         response = await self.client.get("/internal/verifier/queue", params={"limit": 50})
         response.raise_for_status()
@@ -212,7 +341,7 @@ class VerificationWorker:
                 break
             if not isinstance(item, dict):
                 continue
-            if item.get("execution_mode") != "terminal":
+            if str(item.get("execution_mode", "")).lower() not in {"terminal", "terminal_only", "gui", "gui_only", "hybrid"}:
                 continue
             try:
                 await self.verify_item(item)

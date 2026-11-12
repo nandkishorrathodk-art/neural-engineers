@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from neural.boss.delegator import TaskDelegator
-from neural.constants import EmployeeStatus, TaskPriority, TaskStatus
+from neural.constants import EmployeeStatus, TaskPriority, TaskStatus, required_skills_satisfied
 from neural.db.models import Task
 from neural.db.repositories import EmployeeRepository, TaskRepository
 from neural.exceptions import TaskDependencyError
@@ -195,12 +195,8 @@ class TaskScheduler:
             for task in ready_tasks[:available_slots]:
                 # Find best matching employee using TaskDelegator (strictly prioritizes verified skills)
                 assignee = self.delegator.select_best_assignee(task, available_employees)
-                if assignee and task.required_capabilities:
-                    req_skills = {c.strip().lower() for c in task.required_capabilities if c.strip()}
-                    if req_skills:
-                        emp_skills = {s.skill_name.strip().lower() for s in getattr(assignee, "skills", [])}
-                        if not req_skills.intersection(emp_skills):
-                            assignee = None
+                if assignee and not required_skills_satisfied(assignee, task.required_capabilities):
+                    assignee = None
 
                 if assignee:
                     available_employees.remove(assignee)

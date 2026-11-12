@@ -1,3 +1,7 @@
+import hashlib
+import io
+
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from neural.api.deps import (
     get_container_manager,
@@ -14,7 +18,7 @@ from neural.api.schemas.requests import (
     VerifierCommandRequest,
     VerifierManifestRequest,
 )
-from neural.constants import EmployeeStatus, ExecutionMode
+from neural.constants import EmployeeStatus, ExecutionMode, mode_requires_gui
 from neural.containers.manager import ContainerManager
 from neural.db.repositories import (
     ContainerRepository,
@@ -23,6 +27,7 @@ from neural.db.repositories import (
     TaskRepository,
 )
 from neural.security.kill_switch import get_kill_switch
+from PIL import Image
 
 router = APIRouter(
     prefix="/internal/verifier",
@@ -122,6 +127,54 @@ async def capture_verifier_manifest(
     if not workstation or workstation.get("status") != "running":
         raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
     return await container_manager.capture_verifier_manifest(employee.employee_id)
+
+
+@router.post("/tasks/{task_id}/attempts/{attempt_id}/screenshot")
+async def capture_verifier_screenshot(
+    task_id: str,
+    attempt_id: str,
+    request: VerifierManifestRequest,
+    task_repo: TaskRepository = Depends(get_task_repo),
+    employee_repo: EmployeeRepository = Depends(get_employee_repo),
+    container_repo: ContainerRepository = Depends(get_container_repo),
+    container_manager: ContainerManager = Depends(get_container_manager),
+):
+    """Capture the live desktop independently of the GUI worker that acted on it.
+
+    The GUI worker reports before/after pixel hashes; an independent verifier must
+    observe the same live desktop itself rather than trust the worker's claim. This
+    returns only the frame hash and resolution, never the pixels, so verification
+    stays cheap while still proving the desktop was genuinely live.
+    """
+    get_kill_switch().guard_active()
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if not mode_requires_gui(task.execution_mode):
+        raise HTTPException(status_code=409, detail="Verifier screenshots only support GUI-bearing tasks.")
+    if not await task_repo.verification_attempt_is_current(task_id, attempt_id, request.fencing_token):
+        raise HTTPException(status_code=409, detail="Verification attempt is stale or no longer pending.")
+    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    if not employee:
+        raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
+    workstation = await container_manager.get_desktop_by_employee_id(
+        employee.employee_id,
+        container_repo=container_repo,
+        employee_repo=employee_repo,
+    )
+    if not workstation or workstation.get("status") != "running":
+        raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
+    png = await container_manager.capture_screenshot(workstation["docker_id"])
+    with Image.open(io.BytesIO(png)) as image:
+        pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    return {
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "fencing_token": request.fencing_token,
+        "resolution": [int(pixels.shape[1]), int(pixels.shape[0])],
+        "screenshot_hash": hashlib.sha256(pixels.tobytes()).hexdigest(),
+        "captured": True,
+    }
 
 
 @router.post("/tasks/{task_id}/attempts/{attempt_id}/review")

@@ -1,6 +1,6 @@
 from typing import Optional, Sequence
 
-from neural.constants import EmployeeStatus
+from neural.constants import EmployeeStatus, capabilities_cover_mode, required_skills_satisfied
 from neural.db.models import Employee, Task
 from neural.logger import get_logger
 
@@ -59,20 +59,42 @@ class TaskDelegator:
         1. Employees with VERIFIED skills matching task requirements.
         2. Fallback to employees with unverified declared skills.
         3. Fallback to any available idle employee.
+
+        Candidates whose declared execution capabilities cannot run the task's
+        mode, or whose skills do not satisfy the task's ``required_capabilities``,
+        are excluded outright. Every dispatcher and the worker claim route
+        re-apply the same two gates and silently drop a non-matching assignment;
+        returning such a candidate here would pin the task to an employee that
+        can never claim it, a permanent re-dispatch deadlock.
         """
         if not available_employees:
             return None
 
         # Never over-assign an employee who is already working or unavailable.
         idle_employees = [e for e in available_employees if e.status == EmployeeStatus.IDLE]
-        if not idle_employees:
+        capable_employees = [
+            e
+            for e in idle_employees
+            if capabilities_cover_mode(getattr(e, "execution_capabilities", None), task.execution_mode)
+        ]
+        if not capable_employees:
             return None
 
         required_caps = task.required_capabilities or []
 
+        # Required skills are a hard gate, not just a ranking signal: the claim
+        # route refuses a task when the assignee's skills do not intersect the
+        # requirement, so assigning a non-matching employee would strand it.
+        if required_caps:
+            capable_employees = [
+                e for e in capable_employees if required_skills_satisfied(e, required_caps)
+            ]
+            if not capable_employees:
+                return None
+
         # Sort candidates descending by (verified_matches, unverified_matches, total_skills, quality_score)
         sorted_candidates = sorted(
-            idle_employees,
+            capable_employees,
             key=lambda emp: self.score_employee_for_task(emp, required_caps),
             reverse=True
         )

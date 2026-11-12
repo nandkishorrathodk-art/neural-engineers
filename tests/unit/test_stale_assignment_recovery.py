@@ -161,6 +161,7 @@ async def test_live_assignment_is_not_recovered(tmp_path):
         )
         setup.add(employee)
         await setup.flush()
+        setup.add(EmployeeSkill(employee_id=employee.id, skill_name="Python", verified=True))
         setup.add(_task("TASK-LIVE-1", employee_id=employee.id))
         await setup.commit()
 

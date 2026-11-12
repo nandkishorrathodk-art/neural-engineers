@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     APPROVER_API_TOKEN: Optional[str] = None
     WORKER_API_TOKEN: Optional[str] = None
     WORKER_API_TOKENS: dict[str, str] = {}
+    # Execution modes each worker identity may run, as a JSON map of worker ID to
+    # mode list (e.g. {"gui-worker": ["gui", "hybrid"]}). Unlisted identities fall
+    # back to the mode hinted by their name; see worker_declared_modes.
+    WORKER_EXECUTION_MODES: dict[str, list[str]] = {}
     VERIFIER_API_TOKEN: Optional[str] = None
     SECURITY_REVIEWER_API_TOKEN: Optional[str] = None
     CORS_ORIGINS: list[str] = [
@@ -62,8 +66,10 @@ class Settings(BaseSettings):
 
     # Execution modes the Boss planner is allowed to emit. A mode may only appear
     # here when a long-running worker actually consumes it; otherwise planned tasks
-    # are rejected before any project or employee is persisted.
-    BOSS_SUPPORTED_EXECUTION_MODES: list[str] = ["terminal"]
+    # are rejected before any project or employee is persisted. The terminal, GUI,
+    # and hybrid workers ship in the "workers" Compose profile, so all three are
+    # enabled by default.
+    BOSS_SUPPORTED_EXECUTION_MODES: list[str] = ["terminal", "gui", "hybrid"]
 
     # Model Defaults
     BOSS_MODEL: str = "openai/gpt-6.1-sol"

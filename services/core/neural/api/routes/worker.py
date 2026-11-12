@@ -23,7 +23,8 @@ from neural.api.schemas.requests import (
     WorkerLeaseRequest,
     WorkerSubmitRequest,
 )
-from neural.constants import EmployeeStatus, ExecutionMode, mode_requires_gui
+from neural.config import get_settings
+from neural.constants import EmployeeStatus, ExecutionMode, mode_requires_gui, worker_declared_modes
 from neural.containers.manager import ContainerManager
 from neural.db.engine import get_db_session
 from neural.db.models import Project
@@ -126,18 +127,21 @@ async def start_task_attempt(
     if not await task_repo.worker_claim_is_current(task_id, worker_id, request.fencing_token):
         raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
     task = await task_repo.get_by_task_id(task_id)
-    if task and not ExecutionMode.is_terminal(task.execution_mode):
-        mode_str = getattr(task.execution_mode, "value", str(task.execution_mode))
-        await task_repo.release_task_claim(
-            task_id,
-            worker_id,
-            request.fencing_token,
-            f"Terminal worker cannot execute {mode_str}-mode tasks.",
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=f"Terminal worker cannot execute {mode_str}-mode tasks.",
-        )
+    if task:
+        declared_modes = worker_declared_modes(worker_id, get_settings().WORKER_EXECUTION_MODES)
+        normalized_mode = ExecutionMode.normalize(task.execution_mode)
+        if declared_modes is not None and normalized_mode not in declared_modes:
+            mode_str = getattr(task.execution_mode, "value", str(task.execution_mode))
+            await task_repo.release_task_claim(
+                task_id,
+                worker_id,
+                request.fencing_token,
+                f"Worker '{worker_id}' cannot execute {mode_str}-mode tasks.",
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Worker '{worker_id}' cannot execute {mode_str}-mode tasks.",
+            )
     employee = await employee_repo.get_by_employee_id(task.assigned_to) if task and task.assigned_to else None
     workstation = (
         await container_manager.get_desktop_by_employee_id(

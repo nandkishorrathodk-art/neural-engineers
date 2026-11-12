@@ -46,10 +46,29 @@ async def test_terminal_worker_releases_claim_for_unsupported_execution_mode(exe
         )
 
     assert rejected.value.status_code == 409
-    assert "Terminal worker cannot execute" in rejected.value.detail
+    assert "cannot execute" in rejected.value.detail
     assert task_repo.released == (
         "TASK-UNSUPPORTED-MODE",
         "terminal-worker",
         7,
-        f"Terminal worker cannot execute {execution_mode.value}-mode tasks.",
+        f"Worker 'terminal-worker' cannot execute {execution_mode.value}-mode tasks.",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "execution_mode",
+    [ExecutionMode.GUI, ExecutionMode.GUI_ONLY, ExecutionMode.HYBRID],
+)
+async def test_gui_worker_is_not_blocked_by_terminal_only_guard(execution_mode):
+    """A GUI-identity worker must be allowed to start GUI-bearing tasks.
+
+    The guard is per-identity: it used to reject every non-terminal task for every
+    caller, which stranded GUI tasks claimed by the GUI worker itself.
+    """
+    from neural.constants import worker_declared_modes
+
+    assert worker_declared_modes("gui-worker") is not None
+    assert execution_mode in worker_declared_modes("gui-worker")
+    # A generic identity names no mode family and stays unrestricted.
+    assert worker_declared_modes("worker-service") is None

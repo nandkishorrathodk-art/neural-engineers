@@ -138,6 +138,61 @@ class ContainerManager:
             spec["desktop_url"] = f"http://localhost:{spec['novnc_port']}/vnc.html?autoconnect=true"
         return spec
 
+    async def _reconcile_stale_workstations(
+        self,
+        container_repo: Optional[Any],
+        keep_docker_id: str,
+    ) -> None:
+        """Fail out DB workstations the broker no longer hosts before admission.
+
+        A process restart (or a wiped Docker daemon) leaves rows marked RUNNING
+        whose containers are gone. Those rows leak desktop capacity permanently:
+        admission counts them as active, yet they can never be reaped because the
+        broker already reports them absent. Confirm each candidate against the
+        broker and only ever demote a row the broker positively reports missing,
+        so an uncertain runtime never releases capacity.
+        """
+        if container_repo is None or self._get_client() is not None or not self._has_remote_broker():
+            return
+        try:
+            existing_records = await container_repo.list_all()
+        except Exception as exc:
+            logger.warning("Could not list workstation records for reconciliation", error=str(exc))
+            return
+        for row in existing_records:
+            docker_id = row.docker_id
+            if docker_id == keep_docker_id or not str(docker_id).startswith("ancos-desktop-"):
+                continue
+            status = row.status.value if hasattr(row.status, "value") else str(row.status)
+            if status not in {
+                ContainerStatus.PROVISIONING.value,
+                ContainerStatus.RUNNING.value,
+                ContainerStatus.STOPPED.value,
+            }:
+                continue
+            try:
+                await self._broker_request("GET", f"/v1/containers/{docker_id}")
+            except DockerBrokerRequestError as exc:
+                if exc.status_code != 404:
+                    continue
+                try:
+                    await container_repo.update_status(docker_id, ContainerStatus.FAILED)
+                except Exception as persist_error:
+                    logger.warning(
+                        "Failed to persist reconciled stale workstation status",
+                        docker_id=docker_id,
+                        error=str(persist_error),
+                    )
+                    continue
+                self._containers.pop(docker_id, None)
+                self._allocated_ports.pop(docker_id, None)
+                logger.warning(
+                    "Reconciled stale workstation row the broker no longer hosts",
+                    docker_id=docker_id,
+                )
+            except ContainerError:
+                continue
+
     def allocate_ports(self, identifier: str, used_vnc_ports: Optional[set[int]] = None) -> tuple[int, int]:
         """
         Allocates unique sequential ports:
@@ -239,6 +294,8 @@ class ContainerManager:
             workstation_limit = workstation_slot_limit()
         except ValueError as exc:
             raise ContainerError("ANCOS_MAX_ACTIVE_DESKTOPS must be a non-negative integer.") from exc
+        docker_id = f"ancos-desktop-{employee_id.lower()}"
+        await self._reconcile_stale_workstations(container_repo, docker_id)
         active_employees = {
             existing.get("employee_id")
             for existing in self._containers.values()
@@ -249,7 +306,6 @@ class ContainerManager:
                 f"Desktop capacity is full ({len(active_employees)}/{workstation_limit}).",
                 status_code=409,
             )
-        docker_id = f"ancos-desktop-{employee_id.lower()}"
         if container_repo:
             existing_records = await container_repo.list_all()
             active_db = [

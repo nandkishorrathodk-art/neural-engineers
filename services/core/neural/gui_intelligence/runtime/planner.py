@@ -15,6 +15,22 @@ from typing import Any
 _QUOTED = re.compile(r"['\"]([^'\"]{2,80})['\"]")
 _INTO_FIELD = re.compile(r"\binto\s+(?:the\s+)?(.+?)(?:\s+(?:field|box|input|area))?$", re.IGNORECASE)
 
+# Verbs that name a clickable on-screen target in a real objective.
+_CLICK_VERBS = ("click", "press", "open", "launch", "select")
+
+# A label ends at the first word that describes *where* the label is rather than
+# what it says ("the File Manager icon" -> "File Manager").
+_LABEL_BOUNDARY = re.compile(
+    r"\b(?:icon|button|menu|app|application|entry|item|window|dialog|field|box|input|"
+    r"area|from|into|to|and|then|on|in)\b",
+    re.IGNORECASE,
+)
+
+# Phrases that name the desktop's top-level application launcher. The real label
+# is read from pixels, so this maps the intent to the label the grounder matches.
+_MENU_HINTS = ("application menu", "applications menu", "start menu", "whisker menu")
+_MENU_LABEL = "Applications"
+
 
 def _first_quoted(text: str) -> str | None:
     match = _QUOTED.search(text)
@@ -29,6 +45,46 @@ def _quoted_after(text: str, marker: str) -> str | None:
     return _first_quoted(text[index:])
 
 
+def _clean_label(fragment: str) -> str | None:
+    """Reduce a verb's trailing words to the on-screen label it names."""
+    fragment = fragment.strip()
+    fragment = re.sub(r"^(?:on\s+)?(?:the|a|an)\s+", "", fragment, flags=re.IGNORECASE)
+    fragment = re.split(r"[.,;:!?()\n]", fragment, maxsplit=1)[0]
+    boundary = _LABEL_BOUNDARY.search(fragment)
+    if boundary:
+        fragment = fragment[: boundary.start()]
+    fragment = fragment.strip(" \t'\"")
+    return fragment[:80] if len(fragment) >= 2 else None
+
+
+def _label_after_verb(text: str, verbs: tuple[str, ...]) -> str | None:
+    """Return the first groundable label named after any of ``verbs``.
+
+    Real objectives write ``click the File Manager icon`` far more often than they
+    quote the label, so the unquoted noun phrase is the primary signal; quotes are
+    only a disambiguation aid.
+    """
+    lowered = text.lower()
+    for verb in verbs:
+        start = 0
+        while True:
+            index = lowered.find(verb, start)
+            if index < 0:
+                break
+            label = _clean_label(text[index + len(verb):])
+            if label:
+                return label
+            start = index + len(verb)
+    return None
+
+
+def _application_menu_label(text: str) -> str | None:
+    lowered = text.lower()
+    if any(hint in lowered for hint in _MENU_HINTS):
+        return _MENU_LABEL
+    return None
+
+
 def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[str, Any]]:
     """Return a list of GUI step dicts (see ``WorkerGuiStep``) for a task."""
     blob = " ".join(part for part in (title, objective, scope) if part).strip()
@@ -39,7 +95,15 @@ def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[s
     # Click tasks: "click <label>" / "open <label>". Emitted first so a click that
     # opens a window settles before any text entry targets the new window.
     click_label = _quoted_after(blob, "click") or _quoted_after(blob, "open")
-    if any(word in lowered for word in ("click", "press", "open", "launch", "select")) and click_label:
+    if click_label is None:
+        click_label = _label_after_verb(blob, _CLICK_VERBS)
+    menu_label = _application_menu_label(blob)
+    if menu_label and (click_label is None or menu_label.lower() != click_label.lower()):
+        # Opening the application menu is the first real step when the objective
+        # routes through it; the launcher must be open before its entries can be
+        # grounded on the following frame.
+        steps.append({"action_type": "MOUSE_CLICK", "target": menu_label, "confidence": 0.95})
+    if click_label and any(word in lowered for word in _CLICK_VERBS):
         steps.append(
             {
                 "action_type": "MOUSE_CLICK",

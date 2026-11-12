@@ -127,6 +127,9 @@ services:
       - APPROVER_API_TOKEN=${APPROVER_API_TOKEN:-}
       - WORKER_API_TOKEN=${WORKER_API_TOKEN:-}
       - WORKER_API_TOKENS=${WORKER_API_TOKENS:-{}}
+      # Optional JSON map of worker identity -> allowed execution modes. Unlisted
+      # identities fall back to the mode family in their name (gui-worker -> gui).
+      - WORKER_EXECUTION_MODES=${WORKER_EXECUTION_MODES:-{}}
       - VERIFIER_API_TOKEN=${VERIFIER_API_TOKEN:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
@@ -134,10 +137,10 @@ services:
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
       - NVIDIA_API_BASE=${NVIDIA_API_BASE:-https://integrate.api.nvidia.com/v1}
       - BOSS_LLM_PLANNING_ENABLED=${BOSS_LLM_PLANNING_ENABLED:-true}
-      # Comma/JSON list of modes a worker actually consumes. Keep terminal-only
-      # until the gui-worker profile is running, otherwise GUI objectives are
-      # rejected at plan time.
-      - BOSS_SUPPORTED_EXECUTION_MODES=${BOSS_SUPPORTED_EXECUTION_MODES:-["terminal"]}
+      # Comma/JSON list of modes a worker actually consumes. The terminal, gui,
+      # and hybrid workers all ship in the "workers" profile, so all three are
+      # enabled by default; drop gui/hybrid here if you run terminal-only.
+      - BOSS_SUPPORTED_EXECUTION_MODES=${BOSS_SUPPORTED_EXECUTION_MODES:-["terminal","gui","hybrid"]}
       - DOCKER_BROKER_URL=http://docker-broker:12002
       - DOCKER_BROKER_TOKEN=${DOCKER_BROKER_TOKEN:?Set DOCKER_BROKER_TOKEN in .env}
       - ANCOS_MAX_ACTIVE_DESKTOPS=${ANCOS_MAX_ACTIVE_DESKTOPS:-1}

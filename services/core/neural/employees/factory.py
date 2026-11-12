@@ -1,11 +1,11 @@
 import os
 import uuid
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import yaml
 
 from neural.config import get_settings
-from neural.constants import SkillLevel
+from neural.constants import SkillLevel, required_execution_capabilities
 from neural.db.models import Employee
 from neural.db.repositories import EmployeeRepository
 from neural.logger import get_logger
@@ -191,6 +191,7 @@ class EmployeeFactory:
         recruitment_origin: Optional[str] = None,
         desk_id: Optional[str] = None,
         avatar_config: Optional[dict[str, Any]] = None,
+        required_capabilities: Optional[Sequence[str]] = None,
     ) -> Employee:
         role_cfg = self._load_role_config(role_id) if role_id else None
 
@@ -217,9 +218,15 @@ class EmployeeFactory:
         # operate. Browser-approved roles gain GUI capability in addition to the
         # universal terminal capability; the capability set is what routing uses,
         # so a task requiring GUI is never matched to a terminal-only employee.
+        # A caller that knows the recruiting task's mode passes its capabilities
+        # explicitly, so the new hire can actually run the work it was hired for.
         execution_capabilities = ["terminal"]
         if "browser" in approved_tools:
             execution_capabilities.append("gui")
+        for capability in required_capabilities or []:
+            capability_value = str(getattr(capability, "value", capability)).lower()
+            if capability_value and capability_value not in execution_capabilities:
+                execution_capabilities.append(capability_value)
 
         model_config_data = {}
         if role_cfg:
@@ -456,6 +463,7 @@ class EmployeeFactory:
         role_id: Optional[str] = None,
         initial_skills: Optional[list[str]] = None,
         recruitment_origin: Optional[str] = None,
+        required_capabilities: Optional[Sequence[str]] = None,
     ) -> Employee:
         """
         Recruits an employee with a fully dynamic, unique identity (Requirement 7).
@@ -470,6 +478,7 @@ class EmployeeFactory:
             communication_style=persona["communication_style"],
             initial_skills=initial_skills,
             recruitment_origin=recruitment_origin,
+            required_capabilities=required_capabilities,
         )
 
     async def recruit_workforce_for_plan(
@@ -484,6 +493,7 @@ class EmployeeFactory:
         recruited: list[Employee] = []
         phases = plan.get("phases", [])
         needed_roles: dict[str, list[str]] = {}
+        role_capabilities: dict[str, set[str]] = {}
 
         for phase in phases:
             for task in phase.get("tasks", []):
@@ -494,6 +504,9 @@ class EmployeeFactory:
                 for s in skills:
                     if s not in needed_roles[req_role]:
                         needed_roles[req_role].append(s)
+                role_capabilities.setdefault(req_role, set()).update(
+                    capability.value for capability in required_execution_capabilities(task.get("execution_mode"))
+                )
 
         if skill_gaps is not None:
             needed_roles = skill_gaps
@@ -511,6 +524,7 @@ class EmployeeFactory:
                 department=dept,
                 role_id=role_id,
                 initial_skills=skills,
+                required_capabilities=sorted(role_capabilities.get(role_id, set())),
             )
             recruited.append(emp)
 

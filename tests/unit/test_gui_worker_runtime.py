@@ -73,6 +73,19 @@ def test_planner_click_only_task():
     assert steps == [{"action_type": "MOUSE_CLICK", "target": "Applications", "confidence": 0.95}]
 
 
+def test_planner_reads_unquoted_click_label():
+    steps = derive_gui_steps(
+        "Open File Manager from Application Menu",
+        "Using the graphical desktop only, open the application menu and click the "
+        "File Manager icon to open it, then confirm a window is visible.",
+        "Desktop GUI interaction to launch File Manager application.",
+    )
+    assert steps == [
+        {"action_type": "MOUSE_CLICK", "target": "Applications", "confidence": 0.95},
+        {"action_type": "MOUSE_CLICK", "target": "File Manager", "confidence": 0.95},
+    ]
+
+
 def test_planner_falls_back_to_settle_without_groundable_verb():
     steps = derive_gui_steps("Inspect", "Observe the current desktop state")
     assert steps == [{"action_type": "WAIT_SETTLE", "confidence": 0.99}]

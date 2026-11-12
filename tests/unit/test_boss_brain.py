@@ -195,8 +195,57 @@ async def test_boss_planner_rejects_modes_without_worker_consumers(monkeypatch):
 
     gateway = LLMGateway(provider_invoker=invoke)
     monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    # A deployment that only runs the terminal worker must still refuse GUI work;
+    # gui/hybrid are accepted only when their workers are configured.
+    monkeypatch.setattr(gateway.settings, "BOSS_SUPPORTED_EXECUTION_MODES", ["terminal"])
     with pytest.raises(UnsupportedExecutionModeError, match="gui"):
         await TaskPlanner(llm_gateway=gateway).decompose_objective("Use the desktop to verify this workflow")
+
+
+@pytest.mark.asyncio
+async def test_boss_planner_accepts_gui_when_gui_worker_is_configured(monkeypatch):
+    import json
+
+    from neural.boss.planner import TaskPlanner
+    from neural.constants import ExecutionMode
+    from neural.llm.gateway import LLMGateway
+
+    async def invoke(**_kwargs):
+        return {
+            "content": json.dumps({
+                "code_name": "GuiOnly",
+                "complexity": "low",
+                "requirements": ["Use the desktop"],
+                "technical_risks": [],
+                "mitigation_strategies": [],
+                "phases": [{
+                    "title": "Desktop work",
+                    "tasks": [{
+                        "task_id": "gui-task",
+                        "title": "Operate the desktop",
+                        "objective": "Complete the requested visible desktop workflow.",
+                        "scope": "GUI workflow",
+                        "role_required": "qa-engineer",
+                        "skills_required": ["Visual QA"],
+                        "execution_mode": "gui",
+                        "dependencies": [],
+                        "acceptance_criteria": "A visual verifier confirms the final desktop state.",
+                        "subtasks": [],
+                        "estimated_hours": 1,
+                        "max_tokens": 4000,
+                    }],
+                }],
+            }),
+            "input_tokens": 20,
+            "output_tokens": 100,
+            "provider": "test",
+        }
+
+    gateway = LLMGateway(provider_invoker=invoke)
+    monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    monkeypatch.setattr(gateway.settings, "BOSS_SUPPORTED_EXECUTION_MODES", ["terminal", "gui", "hybrid"])
+    plan = await TaskPlanner(llm_gateway=gateway).decompose_objective("Use the desktop to verify this workflow")
+    assert plan["phases"][0]["tasks"][0]["execution_mode"] == ExecutionMode.GUI
 
 
 def test_objective_schedule_requires_future_timezone_qualified_datetime():

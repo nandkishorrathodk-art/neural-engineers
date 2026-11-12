@@ -33,6 +33,7 @@ from neural.constants import (
     VoteChoice,
     mode_requires_gui,
     required_execution_capabilities,
+    required_skills_satisfied,
 )
 from neural.db.models import (
     ActionItem,
@@ -608,17 +609,10 @@ class TaskRepository:
                 continue
             if not employee.container or employee.container.status != ContainerStatus.RUNNING:
                 continue
-            if task.required_capabilities:
-                req_skills = {c.strip().lower() for c in task.required_capabilities if c.strip()}
-                if req_skills:
-                    emp_skills = {
-                        s.skill_name.strip().lower()
-                        for s in (employee.skills or [])
-                    }
-                    if not req_skills.intersection(emp_skills):
-                        continue
+            if not required_skills_satisfied(employee, task.required_capabilities):
+                continue
             retrying_same_assignment = bool(
-                latest_attempt and latest_attempt.status in {"failed", "rejected", "expired"}
+                latest_attempt and latest_attempt.status in {"failed", "rejected", "expired", "waiting"}
             )
             if employee.status != EmployeeStatus.IDLE and not (
                 employee.status == EmployeeStatus.WORKING and retrying_same_assignment
@@ -770,12 +764,8 @@ class TaskRepository:
                     continue
                 if not _employee_has_execution_capabilities(assignee, ready_task.execution_mode):
                     continue
-                if ready_task.required_capabilities:
-                    req_skills = {c.strip().lower() for c in ready_task.required_capabilities if c.strip()}
-                    if req_skills:
-                        emp_skills = {s.skill_name.strip().lower() for s in (assignee.skills or [])}
-                        if not req_skills.intersection(emp_skills):
-                            continue
+                if not required_skills_satisfied(assignee, ready_task.required_capabilities):
+                    continue
                 assigned = await self.session.execute(
                     update(Task)
                     .where(
@@ -812,7 +802,10 @@ class TaskRepository:
         stranded = (
             await self.session.execute(
                 select(Task)
-                .options(selectinload(Task.assignee).selectinload(Employee.container))
+                .options(
+                    selectinload(Task.assignee).selectinload(Employee.container),
+                    selectinload(Task.assignee).selectinload(Employee.skills),
+                )
                 .where(
                     Task.status.in_([TaskStatus.ASSIGNED, TaskStatus.RUNNING]),
                 )
@@ -861,10 +854,13 @@ class TaskRepository:
             container = employee.container
             has_running_exec_env = container is not None and container.status == ContainerStatus.RUNNING
             has_capability = _employee_has_execution_capabilities(employee, task.execution_mode)
-            if has_running_exec_env and has_capability:
+            has_skills = required_skills_satisfied(employee, task.required_capabilities)
+            if has_running_exec_env and has_capability and has_skills:
                 continue
             if not has_capability:
                 reason = "assignee lacks required execution capability"
+            elif not has_skills:
+                reason = "assignee lacks a required skill"
             elif needs_desktop:
                 reason = "assignee workstation is absent or not running"
             else:

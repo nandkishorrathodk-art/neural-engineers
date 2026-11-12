@@ -80,6 +80,22 @@ def required_execution_capabilities(mode: object) -> frozenset[ExecutionCapabili
     return _MODE_CAPABILITIES.get(ExecutionMode.normalize(mode), frozenset({ExecutionCapability.TERMINAL}))
 
 
+def capabilities_cover_mode(declared_capabilities: object, mode: object) -> bool:
+    """True when a declared capability set covers every capability ``mode`` needs.
+
+    An empty declaration is treated as terminal-capable for backward
+    compatibility with employees created before capabilities existed.
+    """
+    required = required_execution_capabilities(mode)
+    declared = {
+        str(capability).lower()
+        for capability in (declared_capabilities or [])
+    }
+    if not declared:
+        declared = {ExecutionCapability.TERMINAL.value}
+    return all(capability.value in declared for capability in required)
+
+
 class ExecutionTarget(str, Enum):
     """Concrete environment a task step must be executed against.
 
@@ -107,6 +123,66 @@ def required_execution_targets(mode: object) -> frozenset[ExecutionTarget]:
 def mode_requires_gui(mode: object) -> bool:
     """True when a task in ``mode`` requires a live graphical desktop."""
     return ExecutionTarget.GUI in required_execution_targets(mode)
+
+
+_TERMINAL_MODES: frozenset[ExecutionMode] = frozenset(
+    {ExecutionMode.TERMINAL, ExecutionMode.TERMINAL_ONLY}
+)
+_GUI_MODES: frozenset[ExecutionMode] = frozenset(
+    {ExecutionMode.GUI, ExecutionMode.GUI_ONLY, ExecutionMode.HYBRID}
+)
+
+
+def required_skills_satisfied(employee: object, required_capabilities: object) -> bool:
+    """True when the employee's skills intersect the task's required skills.
+
+    A task with no ``required_capabilities`` imposes no skill gate. When
+    requirements exist, the worker claim route refuses the task unless at least
+    one of the assignee's declared skills matches. Every assignment path must
+    apply the identical rule, or it can pin a task to an employee that can never
+    claim it.
+    """
+    req_set = {
+        str(skill).strip().lower()
+        for skill in (required_capabilities or [])
+        if str(skill).strip()
+    }
+    if not req_set:
+        return True
+    emp_skills = {
+        str(skill.skill_name).strip().lower()
+        for skill in (getattr(employee, "skills", None) or [])
+    }
+    return bool(req_set.intersection(emp_skills))
+
+
+def worker_declared_modes(
+    worker_id: str,
+    configured: dict[str, object] | None = None,
+) -> frozenset[ExecutionMode] | None:
+    """Resolve the execution modes a worker identity is allowed to run.
+
+    Worker identity comes from an authenticated bearer token, so it is the only
+    trustworthy statement of *what a worker is*. An explicit entry in
+    ``configured`` wins; otherwise the identity name is used as a hint. A worker
+    whose name names no mode family is treated as unrestricted (``None``) so
+    generic single-mode workers keep their previous behaviour.
+    """
+    worker_id = (worker_id or "").strip()
+    if configured and worker_id in configured:
+        declared = configured[worker_id]
+        if isinstance(declared, str):
+            declared = [part for part in declared.replace(",", " ").split() if part]
+        try:
+            return frozenset(ExecutionMode.normalize(mode) for mode in (declared or []))
+        except ValueError:
+            return None
+    name = worker_id.lower()
+    if "gui" in name:
+        return _GUI_MODES
+    if "terminal" in name:
+        return _TERMINAL_MODES
+    return None
 
 
 class ProjectStatus(str, Enum):

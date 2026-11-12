@@ -18,6 +18,7 @@ No synthetic pixels, no DOM, no accessibility tree, no hidden CLI shortcuts.
 from __future__ import annotations
 
 import hashlib
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -132,10 +133,13 @@ class GuiWorkerEngine:
         last_coordinates: Optional[tuple[int, int]] = None
         for raw_step in steps:
             step = raw_step if isinstance(raw_step, GuiStepPlan) else GuiStepPlan(**raw_step)
-            request = self._to_request(
+            # Ground against a fresh frame: a previous step (e.g. opening the
+            # application menu) changes what is visible, so a target that only
+            # appears afterwards cannot be located on the task-start frame.
+            request = self._to_request_with_fresh_frame(
+                driver,
                 employee_id,
                 step,
-                frame=frame_before,
                 grounder=loop.grounder,
                 fallback_coordinates=last_coordinates,
             )
@@ -196,6 +200,39 @@ class GuiWorkerEngine:
         if status == "failed":
             logger.error("GUI task failed", employee_id=employee_id, error=error)
         return result
+
+    def _to_request_with_fresh_frame(
+        self,
+        driver: ContainerDesktopDriver,
+        employee_id: str,
+        step: GuiStepPlan,
+        grounder: VisualGrounder,
+        fallback_coordinates: Optional[tuple[int, int]] = None,
+    ) -> GUIActionRequest:
+        """Resolve a step against a freshly captured frame, retrying while a target settles.
+
+        Opening a menu or window is asynchronous: the first capture after a click can
+        still show the old frame. Re-capturing briefly gives the desktop time to render
+        the target before the grounder is asked to locate it.
+        """
+        attempts = 6 if step.target else 1
+        last_error: Optional[GuiWorkerExecutionError] = None
+        for attempt in range(attempts):
+            frame = driver.capture_frame()
+            try:
+                return self._to_request(
+                    employee_id,
+                    step,
+                    frame=frame,
+                    grounder=grounder,
+                    fallback_coordinates=fallback_coordinates,
+                )
+            except GuiWorkerExecutionError as exc:
+                last_error = exc
+                if attempt + 1 < attempts:
+                    time.sleep(0.5)
+        assert last_error is not None
+        raise last_error
 
     def _to_request(
         self,
