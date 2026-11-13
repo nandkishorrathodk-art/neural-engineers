@@ -14,6 +14,7 @@ rather than pretending to have read the screen.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -26,16 +27,24 @@ from neural.logger import get_logger
 
 logger = get_logger("ancos.gui_intelligence.runtime.ocr")
 
+# Desktop UI text (menu labels, document markers) is often only 9-11px tall; at
+# native resolution tesseract misreads it ("GUI-OK" -> "GUI-K|"). Upscaling the
+# frame before OCR restores legibility. 3x balances accuracy against latency.
+_OCR_UPSCALE = 3
+
 
 class TesseractOCREngine:
     """Real pixel OCR using the tesseract binary (no DOM / AT-SPI access)."""
 
-    def __init__(self, tesseract_bin: str = "tesseract", psm: int = 6) -> None:
+    def __init__(
+        self, tesseract_bin: str = "tesseract", psm: int = 6, upscale: int = _OCR_UPSCALE
+    ) -> None:
         self.tesseract_bin = tesseract_bin
         # psm 6 = "single uniform block of text": reliably reads the menu bars,
         # window titles, and labels of a desktop screenshot. Sparse mode (psm 11)
         # fragments those labels into unreadable noise on a real X desktop.
         self.psm = psm
+        self.upscale = max(1, int(upscale))
 
     @property
     def available(self) -> bool:
@@ -58,6 +67,14 @@ class TesseractOCREngine:
             tmp_path = handle.name
         try:
             image = Image.fromarray(np.asarray(frame.pixels, dtype="uint8"))
+            if self.upscale > 1:
+                # Grayscale + nearest-neighbour upscale: nearest preserves the crisp
+                # pixel edges tesseract's classifier expects, whereas smoothing
+                # resampling blurs 10px glyphs into unreadable shapes.
+                image = image.convert("L").resize(
+                    (image.width * self.upscale, image.height * self.upscale),
+                    Image.NEAREST,
+                )
             image.save(tmp_path)
             proc = subprocess.run(
                 [binary, tmp_path, "stdout", "--psm", str(self.psm), "tsv"],
@@ -77,14 +94,17 @@ class TesseractOCREngine:
                 pass
 
     @staticmethod
-    def _parse_tsv(tsv: str) -> list[OCRResult]:
+    def _parse_tsv(tsv: str, scale: int = 1) -> list[OCRResult]:
         results: list[OCRResult] = []
         lines = tsv.splitlines()
         if not lines:
             return results
         header = lines[0].split("\t")
         try:
-            idx = {name: header.index(name) for name in ("left", "top", "width", "height", "conf", "text")}
+            idx = {
+                name: header.index(name)
+                for name in ("left", "top", "width", "height", "conf", "text")
+            }
         except ValueError:
             return results
         block_key = ("block_num", "par_num", "line_num")
@@ -95,7 +115,9 @@ class TesseractOCREngine:
         l_i = header.index("line_num")
         from collections import defaultdict
 
-        grouped: dict[tuple[str, str, str], list[tuple[int, int, int, int, float, str]]] = defaultdict(list)
+        grouped: dict[tuple[str, str, str], list[tuple[int, int, int, int, float, str]]] = (
+            defaultdict(list)
+        )
         for line in lines[1:]:
             cols = line.split("\t")
             if len(cols) <= idx["text"]:
@@ -109,12 +131,13 @@ class TesseractOCREngine:
                 continue
             if conf < 0:
                 continue
-            box = (
-                int(cols[idx["left"]]),
-                int(cols[idx["top"]]),
-                int(cols[idx["left"]]) + int(cols[idx["width"]]),
-                int(cols[idx["top"]]) + int(cols[idx["height"]]),
-            )
+            # Tesseract ran on the upscaled image; map boxes back to frame pixels
+            # so callers click the original coordinates, not the enlarged ones.
+            left = int(cols[idx["left"]]) // scale
+            top = int(cols[idx["top"]]) // scale
+            right = (int(cols[idx["left"]]) + int(cols[idx["width"]])) // scale
+            bottom = (int(cols[idx["top"]]) + int(cols[idx["height"]])) // scale
+            box = (left, top, right, bottom)
             word_conf = conf / 100.0
             # Word-level box: the precise click target for a single on-screen label.
             results.append(OCRResult(text=text, bounding_box=box, confidence=word_conf))
@@ -128,19 +151,28 @@ class TesseractOCREngine:
             xmax = max(w[2] for w in words)
             ymax = max(w[3] for w in words)
             conf = sum(w[4] for w in words) / len(words)
-            results.append(OCRResult(text=text, bounding_box=(xmin, ymin, xmax, ymax), confidence=conf))
+            results.append(
+                OCRResult(text=text, bounding_box=(xmin, ymin, xmax, ymax), confidence=conf)
+            )
         return results
 
     def extract_text_regions(self, frame: ScreenFrame) -> list[OCRResult]:
         start = time.perf_counter()
         tsv = self._run_tsv(frame)
-        regions = self._parse_tsv(tsv)
+        regions = self._parse_tsv(tsv, scale=self.upscale)
         logger.debug(
             "Tesseract OCR scan completed",
             regions=len(regions),
             elapsed_ms=(time.perf_counter() - start) * 1000.0,
         )
         return regions
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Fold case and drop separators so OCR noise ("GUI-K|", "GUI - OK") still
+        matches the intended token ("GUI-OK"). A live desktop renders markers with
+        hyphens, spaces, or trailing cursor glyphs that tesseract reads inconsistently."""
+        return re.sub(r"[^a-z0-9]", "", text.lower())
 
     def find_text(
         self,
@@ -154,18 +186,33 @@ class TesseractOCREngine:
         import difflib
 
         query_norm = query.strip().lower()
+        query_key = self._normalize(query)
         matched: list[OCRResult] = []
         for region in self.extract_text_regions(frame):
             text_norm = region.text.strip().lower()
-            if region.confidence < min_confidence and query_norm not in text_norm:
+            text_key = self._normalize(region.text)
+            # Separator-insensitive containment: a marker rendered as "GUI-OK" must
+            # match OCR output like "GUI-K|" that dropped or mangled the separator.
+            # Guarded by a minimum key length so short queries cannot match loosely.
+            if len(query_key) >= 4 and query_key in text_key:
+                matched.append(region)
+                continue
+            if region.confidence < min_confidence:
                 continue
             if query_norm == text_norm or query_norm in text_norm:
                 matched.append(region)
             elif fuzzy:
-                ratio = difflib.SequenceMatcher(None, query_norm, text_norm).ratio()
+                ratio = max(
+                    difflib.SequenceMatcher(None, query_norm, text_norm).ratio(),
+                    difflib.SequenceMatcher(None, query_key, text_key).ratio(),
+                )
                 if ratio >= 0.8:
                     matched.append(
-                        OCRResult(text=region.text, bounding_box=region.bounding_box, confidence=region.confidence * ratio)
+                        OCRResult(
+                            text=region.text,
+                            bounding_box=region.bounding_box,
+                            confidence=region.confidence * ratio,
+                        )
                     )
         return matched
 

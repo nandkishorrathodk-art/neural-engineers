@@ -22,7 +22,9 @@ class ObjectiveSubmissionRequest(BaseModel):
         allow_inf_nan=False,
         description="Alias for budget_usd: requested hard project budget in USD",
     )
-    deadline_days: Optional[int] = Field(None, ge=1, le=3650, description="Target project deadline in days")
+    deadline_days: Optional[int] = Field(
+        None, ge=1, le=3650, description="Target project deadline in days"
+    )
     scheduled_at: Optional[datetime] = Field(
         None, description="Optional UTC start time; task execution is held until this time."
     )
@@ -43,7 +45,9 @@ class ObjectiveSubmissionRequest(BaseModel):
                 data["project_budget_usd"] = b_budget
             elif p_budget is not None and b_budget is not None:
                 if p_budget != b_budget:
-                    raise ValueError("project_budget_usd and budget_usd must match if both are provided")
+                    raise ValueError(
+                        "project_budget_usd and budget_usd must match if both are provided"
+                    )
         return data
 
     @model_validator(mode="after")
@@ -54,7 +58,9 @@ class ObjectiveSubmissionRequest(BaseModel):
             self.project_budget_usd = self.budget_usd
         elif self.project_budget_usd is not None and self.budget_usd is not None:
             if self.project_budget_usd != self.budget_usd:
-                raise ValueError("project_budget_usd and budget_usd must match if both are provided")
+                raise ValueError(
+                    "project_budget_usd and budget_usd must match if both are provided"
+                )
         return self
 
     @field_validator("scheduled_at")
@@ -119,7 +125,6 @@ class SubmitProgressReportRequest(BaseModel):
     verification_receipt: dict[str, Any] = Field(default_factory=dict)
 
 
-
 class CreateActionItemRequest(BaseModel):
     meeting_id: str
     description: str
@@ -137,12 +142,18 @@ class UpdateActionItemRequest(BaseModel):
 
 
 class ReopenActionItemRequest(BaseModel):
-    reason: str = Field(..., min_length=3, description="Formal justification for reopening resolved action item")
-    reopened_by: Optional[str] = Field("BossAI", description="Identity of authority reopening the item")
+    reason: str = Field(
+        ..., min_length=3, description="Formal justification for reopening resolved action item"
+    )
+    reopened_by: Optional[str] = Field(
+        "BossAI", description="Identity of authority reopening the item"
+    )
 
 
 class AdvanceAgendaStageRequest(BaseModel):
-    stage: str = Field(..., min_length=2, max_length=64, description="Target agenda stage to advance to")
+    stage: str = Field(
+        ..., min_length=2, max_length=64, description="Target agenda stage to advance to"
+    )
 
 
 class ValidateClaimRequest(BaseModel):
@@ -156,19 +167,33 @@ class ValidateClaimRequest(BaseModel):
 
 
 class AssignDeskRequest(BaseModel):
-    desk_id: str = Field(..., min_length=2, max_length=64, description="Canonical workstation desk identifier")
+    desk_id: str = Field(
+        ..., min_length=2, max_length=64, description="Canonical workstation desk identifier"
+    )
 
 
 class PromoteEmployeeRequest(BaseModel):
-    new_title: str = Field(..., min_length=2, max_length=128, description="Target promoted job title")
-    new_model_tier: Optional[str] = Field(None, max_length=64, description="Upgraded model tier (e.g. reasoning, coding)")
-    additional_tools: Optional[list[str]] = Field(None, description="Additional tools granted with promotion")
-    reason: Optional[str] = Field(None, max_length=512, description="Merit-based promotion rationale")
+    new_title: str = Field(
+        ..., min_length=2, max_length=128, description="Target promoted job title"
+    )
+    new_model_tier: Optional[str] = Field(
+        None, max_length=64, description="Upgraded model tier (e.g. reasoning, coding)"
+    )
+    additional_tools: Optional[list[str]] = Field(
+        None, description="Additional tools granted with promotion"
+    )
+    reason: Optional[str] = Field(
+        None, max_length=512, description="Merit-based promotion rationale"
+    )
 
 
 class SetMeetingSpeakerRequest(BaseModel):
-    speaker_id: str = Field(..., min_length=1, max_length=64, description="Participant employee ID or BossAI")
-    reason: Optional[str] = Field(None, max_length=256, description="Context or agenda topic for speaker transition")
+    speaker_id: str = Field(
+        ..., min_length=1, max_length=64, description="Participant employee ID or BossAI"
+    )
+    reason: Optional[str] = Field(
+        None, max_length=256, description="Context or agenda topic for speaker transition"
+    )
 
 
 class ConductOperationalReviewRequest(BaseModel):
@@ -185,9 +210,13 @@ class ConductOperationalReviewRequest(BaseModel):
     action_item_description: str = Field(..., min_length=3)
     action_item_assigned_to: str = Field(..., min_length=1)
     action_item_deadline_hours: Optional[int] = Field(default=24, ge=1, le=720)
-    as_governance: Optional[bool] = Field(default=False, description="Whether to route decision through Governance Engine")
+    as_governance: Optional[bool] = Field(
+        default=False, description="Whether to route decision through Governance Engine"
+    )
     linked_task_id: Optional[str] = Field(default=None, description="Linked Task DAG identifier")
-    acceptance_criteria: Optional[str] = Field(default=None, description="Acceptance criteria for action item")
+    acceptance_criteria: Optional[str] = Field(
+        default=None, description="Acceptance criteria for action item"
+    )
 
 
 class RecordDecisionRequest(BaseModel):
@@ -229,9 +258,15 @@ class UpdateTaskStatusRequest(BaseModel):
 
 
 class TaskCancelRequest(BaseModel):
-    reason: str = Field(..., min_length=1, max_length=1000, description="Reason for cancelling the task")
-    requeue: bool = Field(False, description="Whether to requeue the task instead of terminating it as cancelled")
-    standby_employee_id: Optional[str] = Field(None, description="Optional standby employee to reassign to upon requeue")
+    reason: str = Field(
+        ..., min_length=1, max_length=1000, description="Reason for cancelling the task"
+    )
+    requeue: bool = Field(
+        False, description="Whether to requeue the task instead of terminating it as cancelled"
+    )
+    standby_employee_id: Optional[str] = Field(
+        None, description="Optional standby employee to reassign to upon requeue"
+    )
 
 
 class WorkerLeaseRequest(BaseModel):
@@ -263,6 +298,9 @@ class WorkerSubmitRequest(WorkerLeaseRequest):
 
 class WorkerFailureRequest(WorkerLeaseRequest):
     error_message: str = Field(..., min_length=1, max_length=4000)
+    # Structured exit code of the failed command. Carried explicitly so retry
+    # classification never depends on parsing free-text messages.
+    exit_code: Optional[int] = Field(default=None, ge=0, le=255)
 
 
 class WorkerGuiStep(BaseModel):
@@ -288,9 +326,13 @@ class WorkerGuiStep(BaseModel):
 
 class WorkerGuiPlanRequest(WorkerLeaseRequest):
     steps: list[WorkerGuiStep] = Field(..., min_length=1, max_length=200)
-    expected_text: Optional[str] = Field(None, description="Text that must be visible after execution")
+    expected_text: Optional[str] = Field(
+        None, description="Text that must be visible after execution"
+    )
     expected_postcondition: Optional[str] = None
-    display: Optional[str] = Field(None, description="X display to drive; defaults to the worker environment")
+    display: Optional[str] = Field(
+        None, description="X display to drive; defaults to the worker environment"
+    )
 
 
 class WorkerGuiStepRequest(WorkerLeaseRequest):
@@ -317,19 +359,31 @@ class VerifierCommandRequest(WorkerLeaseRequest):
         is_pytest = command[0] == "pytest" or (
             command[0] in {"python", "python3"} and command[1:3] == ["-m", "pytest"]
         )
-        is_unittest = (
-            command[0] in {"python", "python3"} and command[1:3] == ["-m", "unittest"]
-        )
+        is_unittest = command[0] in {"python", "python3"} and command[1:3] == ["-m", "unittest"]
         is_npm_test = command[0] == "npm" and (
             command[1:2] == ["test"] or command[1:3] == ["run", "test"]
         )
         if not (is_pytest or is_unittest or is_npm_test):
-            raise ValueError("Verifier execution is restricted to pytest, unittest, or npm test commands.")
+            raise ValueError(
+                "Verifier execution is restricted to pytest, unittest, or npm test commands."
+            )
         return command
 
 
 class VerifierManifestRequest(WorkerLeaseRequest):
     """Fence-only request for a read-only verifier workspace snapshot."""
+
+
+class VerifierScreenshotRequest(WorkerLeaseRequest):
+    """Independent live-desktop capture, optionally checking expected on-screen text.
+
+    ``expected_terms`` are the deliverable markers the task requires to be visible
+    on the live desktop (e.g. the text a GUI task must type). The verifier OCRs the
+    frame it captured itself, so a similar-looking screen that lacks the required
+    content is rejected rather than accepted on whole-screen similarity alone.
+    """
+
+    expected_terms: list[str] = Field(default_factory=list, max_length=16)
 
 
 class ResourceLeaseClaimRequest(BaseModel):
@@ -407,11 +461,15 @@ class CastVoteRequest(BaseModel):
 
 
 class DeliberateProposalRequest(BaseModel):
-    member_ids: Optional[list[str]] = Field(default=None, description="Optional specific committee member IDs to deliberate")
+    member_ids: Optional[list[str]] = Field(
+        default=None, description="Optional specific committee member IDs to deliberate"
+    )
 
 
 class FinalizeVotingRequest(BaseModel):
-    force_decision: Optional[str] = Field(default=None, description="Optional override 'APPROVED' or 'REJECTED'")
+    force_decision: Optional[str] = Field(
+        default=None, description="Optional override 'APPROVED' or 'REJECTED'"
+    )
 
 
 class VetoProposalRequest(BaseModel):
@@ -426,27 +484,45 @@ class CancelProposalRequest(BaseModel):
 
 class StartCertificationRequest(BaseModel):
     employee_id: str = Field(..., description="Employee identifier, e.g. ANC-EMP-0001")
-    skill_name: str = Field(..., description="Target technical skill name, e.g. Python, FastAPI, pytest")
-    target_level: str = Field(default="competent", description="Target competency tier: novice, competent, expert, master")
-    code_submission: str = Field(..., description="Candidate Python solution code to evaluate in sandbox")
-    test_override: Optional[str] = Field(default=None, description="Optional custom test suite code override")
+    skill_name: str = Field(
+        ..., description="Target technical skill name, e.g. Python, FastAPI, pytest"
+    )
+    target_level: str = Field(
+        default="competent", description="Target competency tier: novice, competent, expert, master"
+    )
+    code_submission: str = Field(
+        ..., description="Candidate Python solution code to evaluate in sandbox"
+    )
+    test_override: Optional[str] = Field(
+        default=None, description="Optional custom test suite code override"
+    )
     timeout: Optional[float] = Field(default=5.0, description="Execution timeout limit in seconds")
 
 
 class TriggerEvolutionCycleRequest(BaseModel):
-    trigger_reason: str = Field(default="manual_api_trigger", description="Reason triggering the evolution loop")
-    target_skills: Optional[list[str]] = Field(default=None, description="Optional list of skills to focus on")
+    trigger_reason: str = Field(
+        default="manual_api_trigger", description="Reason triggering the evolution loop"
+    )
+    target_skills: Optional[list[str]] = Field(
+        default=None, description="Optional list of skills to focus on"
+    )
 
 
 class GenerateCurriculumRequest(BaseModel):
     skill_name: str = Field(..., description="Skill name to design training curriculum for")
     target_level: str = Field(default="competent", description="Target competency tier")
-    gap_reason: Optional[str] = Field(default=None, description="Specific gap or failure context motivating curriculum")
+    gap_reason: Optional[str] = Field(
+        default=None, description="Specific gap or failure context motivating curriculum"
+    )
 
 
 class RunSkillGapAnalysisRequest(BaseModel):
-    include_projects: bool = Field(default=True, description="Whether to include pending project tasks")
-    include_failures: bool = Field(default=True, description="Whether to include recent task failures")
+    include_projects: bool = Field(
+        default=True, description="Whether to include pending project tasks"
+    )
+    include_failures: bool = Field(
+        default=True, description="Whether to include recent task failures"
+    )
 
 
 class AuthorToolRequest(BaseModel):
@@ -455,101 +531,160 @@ class AuthorToolRequest(BaseModel):
     test_code: str = Field(..., description="Executable Python test harness")
     description: str = Field(default="", description="Tool purpose and behavior description")
     version: str = Field(default="1.0.0", description="Semver version string")
-    category: str = Field(default="utility", description="Tool category (e.g. utility, security, data)")
-    interface_schema: Optional[dict[str, Any]] = Field(default=None, description="Optional OpenAPI schema")
+    category: str = Field(
+        default="utility", description="Tool category (e.g. utility, security, data)"
+    )
+    interface_schema: Optional[dict[str, Any]] = Field(
+        default=None, description="Optional OpenAPI schema"
+    )
     dependencies: Optional[list[str]] = Field(default=None, description="Declared dependencies")
     author_id: str = Field(default="autonomous_toolsmith", description="Author agent/employee ID")
-    auto_test: bool = Field(default=True, description="Whether to run sandbox validation tests immediately")
+    auto_test: bool = Field(
+        default=True, description="Whether to run sandbox validation tests immediately"
+    )
     timeout: float = Field(default=5.0, description="Test execution timeout in seconds")
 
 
 class TestToolRequest(BaseModel):
-    test_code_override: Optional[str] = Field(default=None, description="Optional test suite override")
+    test_code_override: Optional[str] = Field(
+        default=None, description="Optional test suite override"
+    )
     timeout: float = Field(default=5.0, description="Execution timeout limit in seconds")
 
 
 class ExecuteToolRequest(BaseModel):
     tool_name_or_id: str = Field(..., description="Registered tool name or unique tool_id")
     function_name: str = Field(..., description="Exported tool function name to execute")
-    arguments: dict[str, Any] = Field(default_factory=dict, description="Function keyword arguments")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict, description="Function keyword arguments"
+    )
     timeout: float = Field(default=5.0, description="Execution timeout limit in seconds")
 
 
 class SynthesizeMethodRequest(BaseModel):
     name: str = Field(..., description="Problem-solving method name")
     objective: str = Field(..., description="Target outcome or objective")
-    strategy_type: str = Field(default="decomposition_parallel", description="Strategy type (e.g. decomposition_parallel, spec_driven_synthesis, chain_of_verification)")
+    strategy_type: str = Field(
+        default="decomposition_parallel",
+        description="Strategy type (e.g. decomposition_parallel, spec_driven_synthesis, chain_of_verification)",
+    )
     domain: str = Field(default="engineering", description="Organizational domain")
-    steps: Optional[list[dict[str, Any]]] = Field(default=None, description="Explicit step specifications")
+    steps: Optional[list[dict[str, Any]]] = Field(
+        default=None, description="Explicit step specifications"
+    )
     version: str = Field(default="1.0.0", description="Method semver string")
-    baseline_method_id: Optional[str] = Field(default=None, description="ID of baseline method to improve upon")
+    baseline_method_id: Optional[str] = Field(
+        default=None, description="ID of baseline method to improve upon"
+    )
     author_id: str = Field(default="MethodLabAI", description="Author agent or department")
     tags: Optional[list[str]] = Field(default=None, description="Searchable taxonomy tags")
 
 
 class BenchmarkMethodRequest(BaseModel):
-    baseline_method_id: Optional[str] = Field(default=None, description="Optional baseline method ID override")
+    baseline_method_id: Optional[str] = Field(
+        default=None, description="Optional baseline method ID override"
+    )
 
 
 class PromoteMethodRequest(BaseModel):
-    force: bool = Field(default=False, description="Whether to bypass benchmark threshold requirements")
+    force: bool = Field(
+        default=False, description="Whether to bypass benchmark threshold requirements"
+    )
 
 
 class TriggerSelfImprovementRequest(BaseModel):
     trigger_reason: str = Field(default="manual_api_trigger", description="Trigger context")
-    auto_apply: bool = Field(default=False, description="Legacy flag; promotion remains behind human approval")
-    sample_failures: Optional[list[dict[str, Any]]] = Field(default=None, description="Optional failure logs to analyze")
+    auto_apply: bool = Field(
+        default=False, description="Legacy flag; promotion remains behind human approval"
+    )
+    sample_failures: Optional[list[dict[str, Any]]] = Field(
+        default=None, description="Optional failure logs to analyze"
+    )
 
 
 class OptimizePromptRequest(BaseModel):
     current_prompt: str = Field(..., description="Base system prompt")
-    pattern_type: str = Field(default="ASYNC_SESSION_MISMANAGEMENT", description="Target failure pattern type")
+    pattern_type: str = Field(
+        default="ASYNC_SESSION_MISMANAGEMENT", description="Target failure pattern type"
+    )
     target_role: str = Field(default="Senior Engineer", description="Target employee role title")
 
 
 class StoreMemoryRequest(BaseModel):
-    category: str = Field(default="lesson", description="Memory category: episode, knowledge, procedure, policy, lesson")
+    category: str = Field(
+        default="lesson",
+        description="Memory category: episode, knowledge, procedure, policy, lesson",
+    )
     source: str = Field(default="manual_input", description="Origin source identifier")
     content: str = Field(..., description="Memory content text")
-    metadata_json: Optional[dict[str, Any]] = Field(default=None, description="Structured metadata payload")
+    metadata_json: Optional[dict[str, Any]] = Field(
+        default=None, description="Structured metadata payload"
+    )
     confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Confidence score")
 
 
 class CreateEvolutionProposalRequest(BaseModel):
     title: str = Field(..., description="Title of the improvement proposal")
     description: str = Field(..., description="Detailed description")
-    category: str = Field(default="optimization", description="Proposal category: optimization, bug_fix, performance, reliability")
+    category: str = Field(
+        default="optimization",
+        description="Proposal category: optimization, bug_fix, performance, reliability",
+    )
     target_files: list[str] = Field(..., description="Target file paths to modify")
-    root_cause_rationale: str = Field(..., description="Root cause rationale and empirical weakness evidence")
-    baseline_metrics: dict[str, Any] = Field(..., description="Empirical baseline performance metrics")
-    target_goals: dict[str, Any] = Field(..., description="Measurable target goals (latency, speedup, error rate)")
+    root_cause_rationale: str = Field(
+        ..., description="Root cause rationale and empirical weakness evidence"
+    )
+    baseline_metrics: dict[str, Any] = Field(
+        ..., description="Empirical baseline performance metrics"
+    )
+    target_goals: dict[str, Any] = Field(
+        ..., description="Measurable target goals (latency, speedup, error rate)"
+    )
     proposer_id: str = Field(default="SelfEvolutionEngine", description="Proposer identity")
 
 
 class StageEvolutionCandidateRequest(BaseModel):
-    files: dict[str, str] = Field(..., description="File paths and modified source code contents to apply")
+    files: dict[str, str] = Field(
+        ..., description="File paths and modified source code contents to apply"
+    )
     commit_message: str = Field(..., description="Git commit message")
     author_id: str = Field(default="SelfEvolutionEngine", description="Author identity")
     base_ref: str = Field(default="HEAD", description="Base commit or branch ref")
 
 
 class VerifyEvolutionCandidateRequest(BaseModel):
-    test_command: Optional[list[str]] = Field(default=None, description="Optional custom test execution command")
-    candidate_benchmark_metrics: Optional[dict[str, Any]] = Field(default=None, description="Empirical candidate benchmark measurements")
+    test_command: Optional[list[str]] = Field(
+        default=None, description="Optional custom test execution command"
+    )
+    candidate_benchmark_metrics: Optional[dict[str, Any]] = Field(
+        default=None, description="Empirical candidate benchmark measurements"
+    )
 
 
 class PromoteEvolutionCandidateRequest(BaseModel):
     target_branch: str = Field(default="main", description="Target production branch")
-    approval_id: Optional[str] = Field(default=None, description="Cryptographically signed human approval token")
-    auto_promote: bool = Field(default=False, description="Legacy auto promote flag; remains strictly approval_required")
-    requested_by: str = Field(default="SelfEvolutionEngine", description="Requesting agent/employee identity")
+    approval_id: Optional[str] = Field(
+        default=None, description="Cryptographically signed human approval token"
+    )
+    auto_promote: bool = Field(
+        default=False, description="Legacy auto promote flag; remains strictly approval_required"
+    )
+    requested_by: str = Field(
+        default="SelfEvolutionEngine", description="Requesting agent/employee identity"
+    )
 
 
 class RollbackEvolutionCandidateRequest(BaseModel):
     target_branch: str = Field(default="main", description="Target branch to restore")
-    pre_evolution_commit: str = Field(..., description="Pinned pre-evolution commit hash to restore")
-    anomaly_detected: dict[str, Any] = Field(..., description="Anomaly or regression details triggering rollback")
-    requested_by: str = Field(default="PostPromotionHealthMonitor", description="Actor triggering rollback")
+    pre_evolution_commit: str = Field(
+        ..., description="Pinned pre-evolution commit hash to restore"
+    )
+    anomaly_detected: dict[str, Any] = Field(
+        ..., description="Anomaly or regression details triggering rollback"
+    )
+    requested_by: str = Field(
+        default="PostPromotionHealthMonitor", description="Actor triggering rollback"
+    )
 
 
 class BossChatRequest(BaseModel):
@@ -557,14 +692,4 @@ class BossChatRequest(BaseModel):
     conversation_history: list[dict[str, Any]] = Field(
         default_factory=list, description="Recent conversation history"
     )
-    project_id: Optional[str] = Field(
-        None, description="Optional target project ID context"
-    )
-
-
-
-
-
-
-
-
+    project_id: Optional[str] = Field(None, description="Optional target project ID context")

@@ -1,5 +1,6 @@
 import hashlib
 import io
+import time
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,6 +18,7 @@ from neural.api.schemas.requests import (
     VerificationDecisionRequest,
     VerifierCommandRequest,
     VerifierManifestRequest,
+    VerifierScreenshotRequest,
 )
 from neural.constants import EmployeeStatus, ExecutionMode, mode_requires_gui
 from neural.containers.manager import ContainerManager
@@ -26,6 +28,8 @@ from neural.db.repositories import (
     ServiceHeartbeatRepository,
     TaskRepository,
 )
+from neural.gui_intelligence.models import ScreenFrame
+from neural.gui_intelligence.perception.ocr_runtime import TesseractOCREngine
 from neural.security.kill_switch import get_kill_switch
 from neural.verification.visual_match import frame_dhash
 from PIL import Image
@@ -150,7 +154,7 @@ async def capture_verifier_manifest(
 async def capture_verifier_screenshot(
     task_id: str,
     attempt_id: str,
-    request: VerifierManifestRequest,
+    request: VerifierScreenshotRequest,
     task_repo: TaskRepository = Depends(get_task_repo),
     employee_repo: EmployeeRepository = Depends(get_employee_repo),
     container_repo: ContainerRepository = Depends(get_container_repo),
@@ -160,8 +164,10 @@ async def capture_verifier_screenshot(
 
     The GUI worker reports before/after pixel hashes; an independent verifier must
     observe the same live desktop itself rather than trust the worker's claim. This
-    returns only the frame hash and resolution, never the pixels, so verification
-    stays cheap while still proving the desktop was genuinely live.
+    returns the frame hash and a whole-screen perceptual hash, plus the OCR text the
+    verifier read from the frame it captured. When the task requires deliverable
+    markers to be visible on screen, those terms are matched against the verifier's
+    own OCR -- a similar-looking screen missing the required content is rejected.
     """
     get_kill_switch().guard_active()
     task = await task_repo.get_by_task_id(task_id)
@@ -192,6 +198,23 @@ async def capture_verifier_screenshot(
     png = await container_manager.capture_screenshot(workstation["docker_id"])
     with Image.open(io.BytesIO(png)) as image:
         pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+
+    expected_terms = [t for t in (request.expected_terms or []) if t and t.strip()]
+    observed_terms: list[str] = []
+    ocr = TesseractOCREngine()
+    ocr_available = ocr.available
+    if expected_terms and ocr_available:
+        frame = ScreenFrame(
+            timestamp=time.time(),
+            resolution=(int(pixels.shape[1]), int(pixels.shape[0])),
+            pixels=pixels,
+            frame_hash=hashlib.sha256(pixels.tobytes()).hexdigest(),
+            capture_latency_ms=0.0,
+        )
+        for term in expected_terms:
+            if ocr.find_text(frame, term, fuzzy=True, min_confidence=0.7):
+                observed_terms.append(term)
+
     return {
         "task_id": task_id,
         "attempt_id": attempt_id,
@@ -199,6 +222,9 @@ async def capture_verifier_screenshot(
         "resolution": [int(pixels.shape[1]), int(pixels.shape[0])],
         "screenshot_hash": hashlib.sha256(pixels.tobytes()).hexdigest(),
         "screenshot_phash": frame_dhash(pixels),
+        "expected_terms": expected_terms,
+        "observed_terms": observed_terms,
+        "ocr_available": ocr_available,
         "captured": True,
     }
 

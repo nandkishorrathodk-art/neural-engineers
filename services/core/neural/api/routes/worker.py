@@ -43,7 +43,7 @@ from neural.exceptions import (
 )
 from neural.execution.contracts import CapabilityPolicyEnforcer
 from neural.gui_intelligence.runtime.errors import DesktopRuntimeUnavailable
-from neural.gui_intelligence.runtime.planner import derive_gui_steps
+from neural.gui_intelligence.runtime.planner import derive_gui_steps, expected_onscreen_text
 from neural.gui_intelligence.worker import (
     GuiStepPlan,
     GuiWorkerExecutionError,
@@ -125,7 +125,9 @@ async def start_task_attempt(
 ):
     get_kill_switch().guard_active()
     if not await task_repo.worker_claim_is_current(task_id, worker_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
     task = await task_repo.get_by_task_id(task_id)
     if task:
         declared_modes = worker_declared_modes(worker_id, get_settings().WORKER_EXECUTION_MODES)
@@ -142,7 +144,11 @@ async def start_task_attempt(
                 status_code=409,
                 detail=f"Worker '{worker_id}' cannot execute {mode_str}-mode tasks.",
             )
-    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task and task.assigned_to else None
+    employee = (
+        await employee_repo.get_by_employee_id(task.assigned_to)
+        if task and task.assigned_to
+        else None
+    )
     workstation = (
         await container_manager.get_desktop_by_employee_id(
             employee.employee_id,
@@ -161,7 +167,9 @@ async def start_task_attempt(
         )
         raise HTTPException(status_code=409, detail="Assigned employee workstation is not live.")
     try:
-        workspace_manifest_before = await container_manager.capture_verifier_manifest(employee.employee_id)
+        workspace_manifest_before = await container_manager.capture_verifier_manifest(
+            employee.employee_id
+        )
     except ContainerError as exc:
         await task_repo.release_task_claim(
             task_id,
@@ -169,7 +177,9 @@ async def start_task_attempt(
             request.fencing_token,
             "Could not capture a complete task-start workspace baseline.",
         )
-        raise HTTPException(status_code=503, detail="Task-start workspace baseline capture failed.") from exc
+        raise HTTPException(
+            status_code=503, detail="Task-start workspace baseline capture failed."
+        ) from exc
     if not valid_workspace_manifest(workspace_manifest_before, allow_empty=True):
         await task_repo.release_task_claim(
             task_id,
@@ -177,7 +187,9 @@ async def start_task_attempt(
             request.fencing_token,
             "Task-start workspace baseline was incomplete or invalid.",
         )
-        raise HTTPException(status_code=503, detail="Task-start workspace baseline is incomplete or invalid.")
+        raise HTTPException(
+            status_code=503, detail="Task-start workspace baseline is incomplete or invalid."
+        )
 
     started = await task_repo.start_task_attempt(
         task_id,
@@ -186,7 +198,9 @@ async def start_task_attempt(
         workspace_manifest_before,
     )
     if not started:
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
     return {"task_id": task_id, "status": "running", "fencing_token": request.fencing_token}
 
 
@@ -204,7 +218,9 @@ async def heartbeat_task_attempt(
         request.fencing_token,
     )
     if lease_expires_at is None:
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
     return {"task_id": task_id, "status": "running", "lease_expires_at": lease_expires_at}
 
 
@@ -223,18 +239,28 @@ async def plan_terminal_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     if not ExecutionMode.is_terminal(task.execution_mode):
-        raise HTTPException(status_code=409, detail="This endpoint accepts terminal-mode tasks only.")
+        raise HTTPException(
+            status_code=409, detail="This endpoint accepts terminal-mode tasks only."
+        )
     if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
 
     resource_budget = task.resource_budget or {}
     raw_max_tokens = resource_budget.get("max_tokens", 6000)
-    if isinstance(raw_max_tokens, bool) or not isinstance(raw_max_tokens, int) or raw_max_tokens < 1:
+    if (
+        isinstance(raw_max_tokens, bool)
+        or not isinstance(raw_max_tokens, int)
+        or raw_max_tokens < 1
+    ):
         raise HTTPException(status_code=409, detail="Task token budget is invalid.")
     max_tokens = min(6000, raw_max_tokens)
     project = await session.get(Project, task.project_id)
     if project is None:
-        raise HTTPException(status_code=409, detail="Task project is missing; metered inference is blocked.")
+        raise HTTPException(
+            status_code=409, detail="Task project is missing; metered inference is blocked."
+        )
     budget_scope_caps = await load_budget_scope_caps(
         session,
         gateway.cost_tracker,
@@ -256,8 +282,8 @@ async def plan_terminal_task(
         "directly in a command, and do not inline test definitions in the test-running command. "
         "If acceptance requires tests to pass, `commands` must include a separate replayable test "
         "runner that reads the persisted files, and it must use the module form such as "
-        "`[\"python3\",\"-m\",\"unittest\",\"-v\"]` or `[\"python3\",\"-m\",\"pytest\",\"-q\"]`; "
-        "never run a test file directly as `[\"python3\",\"file.py\"]`. Commands must not claim "
+        '`["python3","-m","unittest","-v"]` or `["python3","-m","pytest","-q"]`; '
+        'never run a test file directly as `["python3","file.py"]`. Commands must not claim '
         "success unless their exit codes are zero.\n\n"
         f"Title: {task.title}\nObjective: {task.objective}\nScope: {task.scope}\n"
         f"Acceptance criteria: {task.acceptance_criteria}"
@@ -279,7 +305,7 @@ async def plan_terminal_task(
                     "\n\nYour previous plan was rejected before execution: "
                     f"{validation_error} Return a corrected plan that lists every requested workspace file "
                     "under `files` with its exact path and full contents, then runs a separate replayable "
-                    "test command such as `[\"python3\",\"-m\",\"unittest\",\"-v\"]`."
+                    'test command such as `["python3","-m","unittest","-v"]`.'
                 )
             provider_plan, response = await gateway.generate_structured(
                 prompt=base_prompt + correction,
@@ -308,7 +334,9 @@ async def plan_terminal_task(
             try:
                 validate_test_plan(task.acceptance_criteria, plan.commands)
                 task_context = "\n".join((task.title or "", task.objective or "", task.scope or ""))
-                validate_workspace_artifact_plan(task_context, task.acceptance_criteria, plan.commands)
+                validate_workspace_artifact_plan(
+                    task_context, task.acceptance_criteria, plan.commands
+                )
                 validation_error = None
                 break
             except ValueError as exc:
@@ -322,9 +350,13 @@ async def plan_terminal_task(
         if validation_error is not None:
             raise HTTPException(status_code=422, detail=str(validation_error))
     except QuotaExceededError as exc:
-        raise HTTPException(status_code=429, detail="Budget reservation denied; provider was not called.") from exc
+        raise HTTPException(
+            status_code=429, detail="Budget reservation denied; provider was not called."
+        ) from exc
     except ModelProviderError as exc:
-        raise HTTPException(status_code=502, detail="All configured planning providers failed.") from exc
+        raise HTTPException(
+            status_code=502, detail="All configured planning providers failed."
+        ) from exc
 
     return {
         "plan": plan.model_dump(),
@@ -350,6 +382,7 @@ async def execute_terminal_command(
 ):
     get_kill_switch().guard_active()
     from neural.boss.recovery import WorkerFaultInjector
+
     fault = WorkerFaultInjector.check_and_trigger(task_id)
     if fault:
         raise HTTPException(
@@ -360,7 +393,10 @@ async def execute_terminal_command(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     if not ExecutionMode.is_terminal(task.execution_mode):
-        raise HTTPException(status_code=409, detail="This worker execution endpoint accepts terminal-mode tasks only.")
+        raise HTTPException(
+            status_code=409,
+            detail="This worker execution endpoint accepts terminal-mode tasks only.",
+        )
     try:
         CapabilityPolicyEnforcer.validate_action(
             task.execution_mode,
@@ -370,8 +406,12 @@ async def execute_terminal_command(
     except SecurityViolationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
-    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
+    employee = (
+        await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    )
     if not employee:
         raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
     workstation = await container_manager.get_desktop_by_employee_id(
@@ -412,9 +452,16 @@ async def plan_gui_task(
     if not mode_requires_gui(task.execution_mode):
         raise HTTPException(status_code=409, detail="This endpoint accepts GUI-bearing tasks only.")
     if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
     steps = derive_gui_steps(task.title or "", task.objective or "", task.scope or "")
-    return {"task_id": task_id, "fencing_token": request.fencing_token, "steps": steps}
+    return {
+        "task_id": task_id,
+        "fencing_token": request.fencing_token,
+        "steps": steps,
+        "expected_text": expected_onscreen_text(steps),
+    }
 
 
 @router.post("/tasks/{task_id}/gui/execute")
@@ -440,12 +487,18 @@ async def execute_gui_plan(
     if not mode_requires_gui(task.execution_mode):
         raise HTTPException(status_code=409, detail="This endpoint accepts GUI-bearing tasks only.")
     try:
-        CapabilityPolicyEnforcer.validate_action(task.execution_mode, "gui_action", {"steps": len(request.steps)})
+        CapabilityPolicyEnforcer.validate_action(
+            task.execution_mode, "gui_action", {"steps": len(request.steps)}
+        )
     except SecurityViolationError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
-    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
+    employee = (
+        await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    )
     if not employee:
         raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
     workstation = await container_manager.get_desktop_by_employee_id(
@@ -492,8 +545,12 @@ async def execute_gui_step(
     if not mode_requires_gui(task.execution_mode):
         raise HTTPException(status_code=409, detail="This endpoint accepts GUI-bearing tasks only.")
     if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
-    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
+    employee = (
+        await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    )
     if not employee:
         raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
     workstation = await container_manager.get_desktop_by_employee_id(
@@ -533,7 +590,9 @@ async def submit_task_attempt(
         request.execution_receipt,
     )
     if not submitted:
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
     return {
         "task_id": task_id,
         "status": "submitted_for_verification",
@@ -558,9 +617,12 @@ async def fail_task_attempt(
         worker_id,
         request.fencing_token,
         request.error_message,
+        exit_code=request.exit_code,
     )
     if failure is None:
-        raise HTTPException(status_code=409, detail="Worker lease expired or fencing token was superseded.")
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
     if task and task.assigned_to and not failure["retrying"]:
         await employee_repo.update_status(task.assigned_to, EmployeeStatus.IDLE)
     await audit_repo.log(

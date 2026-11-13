@@ -59,6 +59,7 @@ from neural.security.kill_switch import GlobalEmergencyKillSwitch
 # 1. Perception Tests
 # ---------------------------------------------------------------------------
 
+
 def test_screen_capture_engine_synthetic_and_latency():
     """Validates ScreenCaptureEngine renders synthetic desktop in <15ms with valid sha256."""
     engine = ScreenCaptureEngine(default_resolution=(1280, 800))
@@ -139,7 +140,12 @@ def test_ui_object_detector():
                 "rect": (100, 100, 600, 400),
                 "elements": [
                     {"type": "button", "text": "OK", "rect": (120, 150, 80, 32)},
-                    {"type": "text_input", "text": "name", "rect": (120, 200, 150, 32), "is_focused": True},
+                    {
+                        "type": "text_input",
+                        "text": "name",
+                        "rect": (120, 200, 150, 32),
+                        "is_focused": True,
+                    },
                 ],
             }
         ]
@@ -214,6 +220,7 @@ def test_screen_change_detector_settle():
 # 2. World Model Tests
 # ---------------------------------------------------------------------------
 
+
 def test_screen_state_manager_queries():
     """Validates ScreenStateManager spatial queries without querying OS APIs."""
     mgr = ScreenStateManager()
@@ -221,7 +228,9 @@ def test_screen_state_manager_queries():
     frame = engine.capture_frame()
 
     elem1 = VisualElement("btn_1", (100, 100, 200, 150), "button", "Submit", "sig1", 0.9, True)
-    elem2 = VisualElement("input_1", (100, 200, 300, 240), "text_input", "Username", "sig2", 0.95, True)
+    elem2 = VisualElement(
+        "input_1", (100, 200, 300, 240), "text_input", "Username", "sig2", 0.95, True
+    )
 
     mgr.update_state(frame, [elem1, elem2])
 
@@ -241,8 +250,12 @@ def test_window_state_tracker_z_order_and_dialogs():
     tracker.register_window("win_main", (50, 50, 800, 600), "Main Window", is_active=True)
     assert tracker.active_window.window_id == "win_main"
 
-    dialog = VisualElement("dlg_elem", (300, 200, 600, 400), "dialog", "Confirm Action", "sig_d", 0.99, True)
-    tracker.register_window("win_dialog", (300, 200, 600, 400), "Confirm Action", is_active=True, elements=[dialog])
+    dialog = VisualElement(
+        "dlg_elem", (300, 200, 600, 400), "dialog", "Confirm Action", "sig_d", 0.99, True
+    )
+    tracker.register_window(
+        "win_dialog", (300, 200, 600, 400), "Confirm Action", is_active=True, elements=[dialog]
+    )
 
     assert tracker.active_window.window_id == "win_dialog"
     assert len(tracker.detect_active_dialogs()) == 1
@@ -308,10 +321,13 @@ def test_visual_transition_tracker():
 # 3. Action Execution & Motor Tests
 # ---------------------------------------------------------------------------
 
+
 def test_mouse_controller_smooth_cosine_waypoints():
     """Validates MouseController generates smooth cosine-eased trajectory waypoints (Section 9.1)."""
     mouse = MouseController(initial_position=(100, 100))
-    waypoints = mouse.compute_trajectory_waypoints((100, 100), (500, 400), duration_ms=220.0, num_waypoints=10)
+    waypoints = mouse.compute_trajectory_waypoints(
+        (100, 100), (500, 400), duration_ms=220.0, num_waypoints=10
+    )
 
     assert len(waypoints) == 11
     assert waypoints[0] == (100, 100, 0.0)
@@ -341,14 +357,18 @@ def test_mouse_controller_actions():
 def test_keyboard_controller_focus_verification_gate():
     """Validates Section 9.2: Text entry without verified focus cue is strictly blocked."""
     kb = KeyboardController()
-    unfocused_elem = VisualElement("txt_1", (100, 100, 300, 140), "text_input", "", "sig", 0.9, True, is_focused=False)
+    unfocused_elem = VisualElement(
+        "txt_1", (100, 100, 300, 140), "text_input", "", "sig", 0.9, True, is_focused=False
+    )
 
     # Unverified focus MUST raise FocusVerificationFailedError
     with pytest.raises(FocusVerificationFailedError):
         kb.type_text("Hello World", target_element=unfocused_elem)
 
     # Verified focus element proceeds
-    focused_elem = VisualElement("txt_2", (100, 100, 300, 140), "text_input", "", "sig", 0.9, True, is_focused=True)
+    focused_elem = VisualElement(
+        "txt_2", (100, 100, 300, 140), "text_input", "", "sig", 0.9, True, is_focused=True
+    )
     elapsed = kb.type_text("Hello World", target_element=focused_elem)
     assert elapsed >= 0.0
     assert len(kb.keystroke_history) == 1
@@ -393,6 +413,7 @@ def test_gui_execution_loop_and_receipt_signature():
 # ---------------------------------------------------------------------------
 # 4. Brain & Cognitive Controller Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_system2_task_planner_decomposition():
@@ -446,26 +467,30 @@ class _ControllerTestPlanner(System2TaskPlanner):
         return CompiledExecutionPlan(
             plan_id="plan_test",
             task_objective=task_objective,
-            steps=[PlanStep(
-                step_id="step_test",
-                phase_name="Test visual completion",
-                action_intent="CLICK",
-                target_descriptor="button[text='Save']",
-                expected_postcondition="Save confirmation appears",
-            )],
+            steps=[
+                PlanStep(
+                    step_id="step_test",
+                    phase_name="Test visual completion",
+                    action_intent="CLICK",
+                    target_descriptor="button[text='Save']",
+                    expected_postcondition="Save confirmation appears",
+                )
+            ],
         )
 
 
 class _MultiStepControllerTestPlanner(_ControllerTestPlanner):
     async def create_plan(self, task_objective, belief_state=None):
         plan = await super().create_plan(task_objective, belief_state)
-        plan.steps.append(PlanStep(
-            step_id="step_test_followup",
-            phase_name="Verify saved document",
-            action_intent="CLICK",
-            target_descriptor="button[text='Done']",
-            expected_postcondition="Document appears in saved list",
-        ))
+        plan.steps.append(
+            PlanStep(
+                step_id="step_test_followup",
+                phase_name="Verify saved document",
+                action_intent="CLICK",
+                target_descriptor="button[text='Done']",
+                expected_postcondition="Document appears in saved list",
+            )
+        )
         return plan
 
 
@@ -478,13 +503,15 @@ class _ControllerTestFastPolicy:
     def select_action_chunk(self, step, frame, belief_state=None):
         if self.uncertain:
             raise VisualUncertaintyError("No confident visual target")
-        return [GUIActionRequest(
-            action_id="act_test",
-            employee_id=self.employee_id,
-            action_type="MOUSE_CLICK",
-            coordinates=(10, 10),
-            confidence=0.95,
-        )]
+        return [
+            GUIActionRequest(
+                action_id="act_test",
+                employee_id=self.employee_id,
+                action_type="MOUSE_CLICK",
+                coordinates=(10, 10),
+                confidence=0.95,
+            )
+        ]
 
 
 class _ControllerTestExecutionLoop:
@@ -495,16 +522,19 @@ class _ControllerTestExecutionLoop:
 
     def execute_chunk(self, chunk):
         self.dispatched.extend(chunk)
-        return [GUIActionReceipt(
-            action_id=request.action_id,
-            employee_id=request.employee_id,
-            status="SUCCESS",
-            execution_time_ms=1.0,
-            screen_settled=True,
-            pixel_delta_magnitude=0.1,
-            observed_postcondition="action received",
-            signature="test-signature",
-        ) for request in chunk]
+        return [
+            GUIActionReceipt(
+                action_id=request.action_id,
+                employee_id=request.employee_id,
+                status="SUCCESS",
+                execution_time_ms=1.0,
+                screen_settled=True,
+                pixel_delta_magnitude=0.1,
+                observed_postcondition="action received",
+                signature="test-signature",
+            )
+            for request in chunk
+        ]
 
 
 class _ControllerTestCapture:
@@ -525,7 +555,9 @@ class _ControllerTestVerifier:
         self.result = result
         self.calls = []
 
-    def verify_postcondition(self, frame_initial, frame_final, expected_text=None, min_delta_magnitude=0.0001):
+    def verify_postcondition(
+        self, frame_initial, frame_final, expected_text=None, min_delta_magnitude=0.0001
+    ):
         self.calls.append((frame_initial, frame_final, expected_text))
         if self.result is None:
             return None
@@ -535,7 +567,9 @@ class _ControllerTestVerifier:
             delta_magnitude=0.2,
             postcondition_checked="Visual state transition",
             details="test receipt",
-            screenshot_hash=("0" * 64 if self.result == "mismatched_hash" else frame_final.frame_hash),
+            screenshot_hash=(
+                "0" * 64 if self.result == "mismatched_hash" else frame_final.frame_hash
+            ),
         )
 
 
@@ -544,7 +578,9 @@ class _ControllerTestVerifier:
     ("verification_result", "expected_success"),
     [(True, True), (False, False), (None, False), ("mismatched_hash", False)],
 )
-async def test_controller_requires_independent_visual_receipt_per_step(verification_result, expected_success):
+async def test_controller_requires_independent_visual_receipt_per_step(
+    verification_result, expected_success
+):
     capture = _ControllerTestCapture()
     execution = _ControllerTestExecutionLoop()
     verifier = _ControllerTestVerifier(verification_result)
@@ -614,13 +650,16 @@ async def test_controller_does_not_center_click_when_visual_grounding_is_uncerta
 # 5. Recovery Tests
 # ---------------------------------------------------------------------------
 
+
 def test_failure_detector_modal_and_stalls():
     """Validates GUIFailureDetector diagnoses modal dialogs and stalls."""
     detector = GUIFailureDetector()
     engine = ScreenCaptureEngine()
     frame = engine.capture_frame()
 
-    dialog_elem = VisualElement("dlg1", (200, 200, 500, 400), "dialog", "Error Alert", "sig", 0.98, True)
+    dialog_elem = VisualElement(
+        "dlg1", (200, 200, 500, 400), "dialog", "Error Alert", "sig", 0.98, True
+    )
     diag_modal = detector.diagnose(frame, frame, [dialog_elem], "MOUSE_CLICK")
 
     assert diag_modal.has_failure
@@ -633,10 +672,15 @@ def test_visibility_recovery_engine_hierarchy():
     rec_engine = VisibilityRecoveryEngine()
 
     # Step 1: Occluded background window recovery
-    win_back = WindowStateTracker().register_window("win_bg", (100, 100, 500, 400), "Settings Window", is_active=False)
+    win_back = WindowStateTracker().register_window(
+        "win_bg", (100, 100, 500, 400), "Settings Window", is_active=False
+    )
     res_step1 = rec_engine.recover_control_visibility(
         target_descriptor="Settings",
-        visible_windows=[WindowStateTracker().register_window("win_active", (0, 0, 800, 600), "Front Window"), win_back],
+        visible_windows=[
+            WindowStateTracker().register_window("win_active", (0, 0, 800, 600), "Front Window"),
+            win_back,
+        ],
         active_dialogs=[],
         scrollable_elements=[],
         menu_expanders=[],
@@ -671,6 +715,7 @@ def test_state_recovery_actions():
 # 6. Verification & Safety Tests
 # ---------------------------------------------------------------------------
 
+
 def test_independent_visual_verifier_zero_decree():
     """Validates IndependentVisualVerifier prevents success-by-decree."""
     verifier = IndependentVisualVerifier()
@@ -678,15 +723,51 @@ def test_independent_visual_verifier_zero_decree():
     frame1 = engine.render_synthetic_desktop()
     frame2 = engine.render_synthetic_desktop()
 
-    verifier.ocr_engine.register_mock_text("Build Successful", (300, 200, 450, 230), confidence=0.98)
+    verifier.ocr_engine.register_mock_text(
+        "Build Successful", (300, 200, 450, 230), confidence=0.98
+    )
 
     # Frame2 without expected text must fail
-    res_fail = verifier.verify_postcondition(frame1, frame2, expected_text="Nonexistent Success Text")
+    res_fail = verifier.verify_postcondition(
+        frame1, frame2, expected_text="Nonexistent Success Text"
+    )
     assert not res_fail.passed
 
     # Frame2 with registered expected text passes
-    res_pass = verifier.verify_postcondition(frame1, frame2, expected_text="Build Successful", min_delta_magnitude=0.0)
+    res_pass = verifier.verify_postcondition(
+        frame1, frame2, expected_text="Build Successful", min_delta_magnitude=0.0
+    )
     assert res_pass.passed
+
+
+def test_verified_onscreen_text_satisfies_postcondition_despite_tiny_delta():
+    """Typing a short marker changes very few pixels; a verified on-screen
+    deliverable must not be rejected by a whole-frame delta floor."""
+    verifier = IndependentVisualVerifier()
+    engine = ScreenCaptureEngine()
+    frame1 = engine.render_synthetic_desktop()
+    frame2 = engine.render_synthetic_desktop()
+    verifier.ocr_engine.register_mock_text("GUI-OK", (300, 200, 380, 230), confidence=0.98)
+
+    res = verifier.verify_postcondition(
+        frame1, frame2, expected_text="GUI-OK", min_delta_magnitude=0.5
+    )
+    assert res.passed
+    assert res.postcondition_checked == "GUI-OK"
+
+
+def test_unverified_text_still_fails_despite_delta_floor_bypass():
+    """The delta bypass must not weaken the zero-success-by-decree rule: missing
+    on-screen text still fails even when the delta floor would be waived."""
+    verifier = IndependentVisualVerifier()
+    engine = ScreenCaptureEngine()
+    frame1 = engine.render_synthetic_desktop()
+    frame2 = engine.render_synthetic_desktop()
+
+    res = verifier.verify_postcondition(
+        frame1, frame2, expected_text="GUI-OK", min_delta_magnitude=0.5
+    )
+    assert not res.passed
 
 
 def test_task_completion_certificate_tamper_evident():
@@ -697,7 +778,9 @@ def test_task_completion_certificate_tamper_evident():
         ScreenCaptureEngine().capture_frame(),
         min_delta_magnitude=0.0,
     )
-    cert = gen.generate_certificate("task_123", "emp_abc", ver_res, speedup_ratio=4.2, total_actions=10)
+    cert = gen.generate_certificate(
+        "task_123", "emp_abc", ver_res, speedup_ratio=4.2, total_actions=10
+    )
 
     assert cert.passed
     assert cert.verified_speedup_ratio == 4.2
@@ -761,6 +844,7 @@ def test_risk_guard_emergency_halt_and_approval_gate():
 # 7. Benchmarks & 4x Speedup Tests
 # ---------------------------------------------------------------------------
 
+
 def test_human_speed_comparator_and_disqualification():
     """Validates Section 14: 4x Speedup formula and Disqualification Rule."""
     # 25s human baseline, 5s ANCOS completion -> 5.0x speedup
@@ -814,6 +898,7 @@ def test_gui_success_metrics_and_reporter():
 # ---------------------------------------------------------------------------
 # 8. Experience Compiler & Skill Certification Tests
 # ---------------------------------------------------------------------------
+
 
 def test_experience_recorder_and_skill_compiler():
     """Validates trajectory recording and relative anchor skill compilation."""

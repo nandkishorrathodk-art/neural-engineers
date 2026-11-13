@@ -37,7 +37,9 @@ class GuiWorker:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not api_url or not worker_id or len(token) < 32:
-            raise ValueError("Core API URL, worker identity, and a 32-character worker token are required.")
+            raise ValueError(
+                "Core API URL, worker identity, and a 32-character worker token are required."
+            )
         self.api_url = api_url.rstrip("/")
         self.worker_id = worker_id
         self.display = display or os.environ.get("DISPLAY", ":1")
@@ -62,7 +64,9 @@ class GuiWorker:
             raise RuntimeError("Core API returned an invalid worker response.")
         return result
 
-    async def _heartbeat_loop(self, task_id: str, fencing_token: int, lease_lost: asyncio.Event) -> None:
+    async def _heartbeat_loop(
+        self, task_id: str, fencing_token: int, lease_lost: asyncio.Event
+    ) -> None:
         while not self._stopping.is_set():
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=20.0)
@@ -128,12 +132,15 @@ class GuiWorker:
             {"fencing_token": fence},
         )
         steps = plan_response.get("steps") or []
+        # The plan declares the literal deliverable it types on screen; verifying
+        # that text (not a generic screen change) is the correct postcondition.
+        expected_text = plan_response.get("expected_text") or task.get("expected_text")
         result = await self._post(
             f"/internal/worker/tasks/{task['task_id']}/gui/execute",
             {
                 "fencing_token": fence,
                 "steps": steps,
-                "expected_text": task.get("expected_text"),
+                "expected_text": expected_text,
                 "display": self.display,
             },
         )

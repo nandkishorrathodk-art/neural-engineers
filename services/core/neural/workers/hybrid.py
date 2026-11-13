@@ -28,6 +28,10 @@ logger = get_logger("ancos.workers.hybrid")
 class HybridExecutionError(RuntimeError):
     """Raised when a hybrid phase cannot complete."""
 
+    def __init__(self, message: str, exit_code: int | None = None) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
 
 class HybridExecutionCoordinator:
     def __init__(self, worker: Any) -> None:
@@ -36,7 +40,9 @@ class HybridExecutionCoordinator:
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self.worker._post(path, payload)
 
-    async def _run_terminal_phase(self, task: dict[str, Any], fence: int, phase_name: str) -> dict[str, Any]:
+    async def _run_terminal_phase(
+        self, task: dict[str, Any], fence: int, phase_name: str
+    ) -> dict[str, Any]:
         task_id = task["task_id"]
         plan_response = await self._post(
             f"/internal/worker/tasks/{task_id}/plan",
@@ -53,7 +59,8 @@ class HybridExecutionCoordinator:
             if result.get("exit_code") != 0:
                 raise HybridExecutionError(
                     f"[{phase_name}] terminal command exited with code {result.get('exit_code')}: "
-                    f"{str(result.get('stderr', ''))[-1000:]}"
+                    f"{str(result.get('stderr', ''))[-1000:]}",
+                    exit_code=int(result.get("exit_code")),
                 )
         return {
             "kind": "terminal",

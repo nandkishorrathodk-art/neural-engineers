@@ -20,6 +20,9 @@ def _gui_item(
     worker_phash: str | None = None,
     worker_passed: bool = True,
     planned_commands: list[list[str]] | None = None,
+    acceptance_criteria: str = "Task completed",
+    objective: str | None = None,
+    title: str | None = None,
 ) -> dict:
     gui_receipt: dict = {
         "status": "success" if worker_passed else "failed",
@@ -48,7 +51,9 @@ def _gui_item(
         "attempt_id": "attempt-gui-1",
         "fencing_token": 5,
         "execution_mode": mode,
-        "acceptance_criteria": "Task completed",
+        "acceptance_criteria": acceptance_criteria,
+        "objective": objective,
+        "title": title,
         "workspace_manifest_before": {
             "captured_at_unix": 1789999990.0,
             "files": [],
@@ -61,7 +66,15 @@ def _gui_item(
     }
 
 
-def _transport(seen, *, live_hash: str, live_captured: bool = True, live_phash: str | None = None):
+def _transport(
+    seen,
+    *,
+    live_hash: str,
+    live_captured: bool = True,
+    live_phash: str | None = None,
+    observed_terms: list[str] | None = None,
+    ocr_available: bool = True,
+):
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(await request.aread()) if request.method == "POST" else {}
         seen.append((request.url.path, body))
@@ -70,6 +83,11 @@ def _transport(seen, *, live_hash: str, live_captured: bool = True, live_phash: 
                 "captured": live_captured,
                 "screenshot_hash": live_hash,
                 "resolution": [1280, 800],
+                "expected_terms": body.get("expected_terms", []),
+                "observed_terms": observed_terms
+                if observed_terms is not None
+                else body.get("expected_terms", []),
+                "ocr_available": ocr_available,
             }
             if live_phash is not None:
                 payload["screenshot_phash"] = live_phash
@@ -241,3 +259,103 @@ async def test_hybrid_verification_fails_closed_without_replayable_terminal_phas
     review = seen[-1][1]
     assert review["passed"] is False
     assert review["checks"][2]["passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_gui_verification_requires_verifier_to_read_onscreen_deliverable():
+    """A similar-looking screen that lacks the required marker must be rejected, even
+    when the live frame matches the worker's frame and the worker reported success."""
+    seen: list[tuple[str, dict]] = []
+    client = httpx.AsyncClient(
+        base_url="http://core.test",
+        transport=_transport(seen, live_hash="a" * 64, observed_terms=[]),
+    )
+    verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
+    result = await verifier.verify_item(
+        _gui_item(
+            worker_hash="a" * 64,
+            acceptance_criteria="The text editor window is open and the text GUI-OK appears.",
+        )
+    )
+    await verifier.close()
+
+    assert result == {"task_status": "completed"}
+    # The verifier asked the core API to OCR the marker it extracted from the contract.
+    screenshot_body = seen[0][1]
+    assert screenshot_body["expected_terms"] == ["GUI-OK"]
+    review = seen[-1][1]
+    assert review["passed"] is False
+    terms_check = next(
+        check
+        for check in review["checks"]
+        if check["name"] == "onscreen_deliverable_terms_observed_by_verifier"
+    )
+    assert terms_check["passed"] is False
+    assert terms_check["evidence"]["missing_terms"] == ["GUI-OK"]
+
+
+@pytest.mark.asyncio
+async def test_gui_verification_passes_when_verifier_reads_onscreen_deliverable():
+    seen: list[tuple[str, dict]] = []
+    client = httpx.AsyncClient(
+        base_url="http://core.test",
+        transport=_transport(seen, live_hash="a" * 64, observed_terms=["GUI-OK"]),
+    )
+    verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
+    result = await verifier.verify_item(
+        _gui_item(
+            worker_hash="a" * 64,
+            acceptance_criteria="The text editor window is open and the text GUI-OK appears.",
+        )
+    )
+    await verifier.close()
+
+    assert result == {"task_status": "completed"}
+    review = seen[-1][1]
+    assert review["passed"] is True
+    terms_check = next(
+        check
+        for check in review["checks"]
+        if check["name"] == "onscreen_deliverable_terms_observed_by_verifier"
+    )
+    assert terms_check["passed"] is True
+    assert terms_check["evidence"]["observed_terms"] == ["GUI-OK"]
+
+
+@pytest.mark.asyncio
+async def test_gui_verification_fails_closed_when_required_marker_terms_but_ocr_unavailable():
+    seen: list[tuple[str, dict]] = []
+    client = httpx.AsyncClient(
+        base_url="http://core.test",
+        transport=_transport(seen, live_hash="a" * 64, observed_terms=[], ocr_available=False),
+    )
+    verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
+    await verifier.verify_item(
+        _gui_item(
+            worker_hash="a" * 64, acceptance_criteria="Document contains the text 'HYBRID-READY'."
+        )
+    )
+    await verifier.close()
+
+    review = seen[-1][1]
+    assert review["passed"] is False
+
+
+def test_onscreen_expected_terms_extracts_markers_and_quoted_text():
+    from neural.workers.verifier import onscreen_expected_terms
+
+    terms = onscreen_expected_terms(
+        {
+            "title": "Open text editor and type HYBRID-READY",
+            "objective": "Type the marker HYBRID-READY into a new document.",
+            "acceptance_criteria": "Document contains text 'HYBRID-READY' and file is saved.",
+        }
+    )
+    assert "HYBRID-READY" in terms
+    assert terms.count("HYBRID-READY") == 1
+
+
+def test_onscreen_expected_terms_empty_for_generic_contract():
+    from neural.workers.verifier import onscreen_expected_terms
+
+    assert onscreen_expected_terms({"acceptance_criteria": "Task completed"}) == []

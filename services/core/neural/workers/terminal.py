@@ -12,6 +12,7 @@ import httpx
 from pydantic import BaseModel, Field, field_validator
 
 from neural.containers.execution_limits import WORKER_COMMAND_REQUEST_TIMEOUT_SECONDS
+from neural.workers.failures import TerminalCommandFailure
 
 # Argument ceiling shared with the worker/verifier command contracts. Each
 # materialized write command is bounded to this so a file's contents never
@@ -24,9 +25,9 @@ MAX_PLAN_COMMANDS = 24
 
 
 class TerminalCommandPlan(BaseModel):
-    commands: list[list[Annotated[str, Field(min_length=1, max_length=COMMAND_ARGUMENT_MAX_LENGTH)]]] = Field(
-        ..., min_length=1, max_length=MAX_PLAN_COMMANDS
-    )
+    commands: list[
+        list[Annotated[str, Field(min_length=1, max_length=COMMAND_ARGUMENT_MAX_LENGTH)]]
+    ] = Field(..., min_length=1, max_length=MAX_PLAN_COMMANDS)
 
     @field_validator("commands", mode="before")
     @classmethod
@@ -79,9 +80,9 @@ class TerminalPlan(BaseModel):
     """
 
     files: list[WorkspaceFile] = Field(default_factory=list, max_length=8)
-    commands: list[list[Annotated[str, Field(min_length=1, max_length=COMMAND_ARGUMENT_MAX_LENGTH)]]] = Field(
-        default_factory=list, max_length=12
-    )
+    commands: list[
+        list[Annotated[str, Field(min_length=1, max_length=COMMAND_ARGUMENT_MAX_LENGTH)]]
+    ] = Field(default_factory=list, max_length=12)
 
     @field_validator("commands", mode="before")
     @classmethod
@@ -108,7 +109,10 @@ def _write_commands(path: str, content: str) -> list[list[str]]:
     always matches ``content`` exactly.
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-    chunks = [encoded[index:index + WRITE_CHUNK_LENGTH] for index in range(0, len(encoded), WRITE_CHUNK_LENGTH)]
+    chunks = [
+        encoded[index : index + WRITE_CHUNK_LENGTH]
+        for index in range(0, len(encoded), WRITE_CHUNK_LENGTH)
+    ]
     if not chunks:
         chunks = [""]
     commands: list[list[str]] = []
@@ -129,7 +133,9 @@ class TerminalWorker:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not api_url or not worker_id or len(token) < 32:
-            raise ValueError("Core API URL, worker identity, and a 32-character worker token are required.")
+            raise ValueError(
+                "Core API URL, worker identity, and a 32-character worker token are required."
+            )
         self.api_url = api_url.rstrip("/")
         self.worker_id = worker_id
         self.instance_id = uuid.uuid4().hex
@@ -161,7 +167,9 @@ class TerminalWorker:
             raise RuntimeError("Core API returned an invalid worker response.")
         return result
 
-    async def _heartbeat_loop(self, task_id: str, fencing_token: int, lease_lost: asyncio.Event) -> None:
+    async def _heartbeat_loop(
+        self, task_id: str, fencing_token: int, lease_lost: asyncio.Event
+    ) -> None:
         while not self._stopping.is_set():
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=20.0)
@@ -181,7 +189,9 @@ class TerminalWorker:
                 lease_lost.set()
                 return
 
-    async def _plan_commands(self, task: dict[str, Any]) -> tuple[TerminalCommandPlan, dict[str, Any]]:
+    async def _plan_commands(
+        self, task: dict[str, Any]
+    ) -> tuple[TerminalCommandPlan, dict[str, Any]]:
         response = await self._post(
             f"/internal/worker/tasks/{task['task_id']}/plan",
             {"fencing_token": int(task["fencing_token"])},
@@ -219,9 +229,10 @@ class TerminalWorker:
                 )
                 command_receipts.append({**result, "command": command})
                 if result.get("exit_code") != 0:
-                    raise RuntimeError(
+                    raise TerminalCommandFailure(
                         f"Terminal command exited with code {result.get('exit_code')}: "
-                        f"{str(result.get('stderr', ''))[-1000:]}"
+                        f"{str(result.get('stderr', ''))[-1000:]}",
+                        exit_code=int(result.get("exit_code")),
                     )
             if lease_lost.is_set():
                 return
@@ -247,6 +258,11 @@ class TerminalWorker:
                 await self._report_failure(task_id, fence, str(exc))
             else:
                 raise
+        except TerminalCommandFailure as exc:
+            if started:
+                await self._report_failure(task_id, fence, str(exc), exit_code=exc.exit_code)
+            else:
+                raise
         except Exception as exc:
             if started:
                 await self._report_failure(task_id, fence, str(exc))
@@ -257,11 +273,16 @@ class TerminalWorker:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
 
-    async def _report_failure(self, task_id: str, fencing_token: int, message: str) -> None:
+    async def _report_failure(
+        self, task_id: str, fencing_token: int, message: str, exit_code: int | None = None
+    ) -> None:
+        payload: dict[str, Any] = {"fencing_token": fencing_token, "error_message": message[:4000]}
+        if exit_code is not None:
+            payload["exit_code"] = exit_code
         try:
             await self._post(
                 f"/internal/worker/tasks/{task_id}/fail",
-                {"fencing_token": fencing_token, "error_message": message[:4000]},
+                payload,
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code not in (409, 503):

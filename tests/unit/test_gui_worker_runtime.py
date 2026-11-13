@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from neural.gui_intelligence.perception.ocr_runtime import TesseractOCREngine
 from neural.gui_intelligence.runtime.desktop_driver import ContainerDesktopDriver
-from neural.gui_intelligence.runtime.planner import derive_gui_steps
+from neural.gui_intelligence.runtime.planner import derive_gui_steps, expected_onscreen_text
 
 
 class _RecordingManager:
@@ -29,7 +29,9 @@ class _RecordingManager:
         self.stdout = stdout
         self.exit_code = exit_code
 
-    def execute_command_sync(self, docker_id: str, command: list[str], workdir: str | None = None) -> dict[str, Any]:
+    def execute_command_sync(
+        self, docker_id: str, command: list[str], workdir: str | None = None
+    ) -> dict[str, Any]:
         self.commands.append(list(command))
         return {"exit_code": self.exit_code, "stdout": self.stdout, "stderr": ""}
 
@@ -114,6 +116,33 @@ def test_planner_extracts_unquoted_typed_payload():
     assert [s["target"] for s in steps[:3]] == ["Applications", "Accessories", "Mousepad"]
 
 
+def test_planner_extracts_payload_after_input_verb_and_exact_string_filler():
+    """The Boss LLM phrases text entry as "input the exact string X into ..."; the
+    planner must still emit the KEY_TYPE step or the worker never types the marker."""
+    steps = derive_gui_steps(
+        "Open text editor and type GUI-OK marker",
+        "Launch the default text editor application via the graphical desktop interface "
+        "and input the exact string GUI-OK into a new document.",
+        "Desktop automation using only graphical interface controls; no command-line input.",
+    )
+    assert steps[-1] == {"action_type": "KEY_TYPE", "text": "GUI-OK", "confidence": 0.95}
+    assert [s["target"] for s in steps[:3]] == ["Applications", "Accessories", "Mousepad"]
+
+
+def test_expected_onscreen_text_returns_typed_marker():
+    steps = derive_gui_steps(
+        "Open text editor and type GUI-OK marker",
+        "Launch the default text editor application via the graphical desktop interface "
+        "and input the exact string GUI-OK into a new document.",
+    )
+    assert expected_onscreen_text(steps) == "GUI-OK"
+
+
+def test_expected_onscreen_text_none_without_text_entry():
+    steps = derive_gui_steps("Open the editor", "Click the 'Applications' menu to open it")
+    assert expected_onscreen_text(steps) is None
+
+
 def test_planner_does_not_treat_menu_click_title_as_app_launch():
     """A short title naming an editor must not hijack an explicit menu click."""
     steps = derive_gui_steps("Open the editor", "Click the 'Applications' menu to open it")
@@ -161,16 +190,20 @@ def test_engine_key_type_without_focus_target_has_no_coordinates():
     assert request.coordinates is None
 
 
-_TSV_HEADER = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"
+_TSV_HEADER = (
+    "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"
+)
 
 
 def test_ocr_tsv_parse_emits_word_and_line_boxes():
-    tsv = "\n".join([
-        _TSV_HEADER,
-        "5\t1\t1\t1\t1\t1\t9\t65\t22\t11\t86\tFile",
-        "5\t1\t1\t1\t1\t2\t48\t65\t24\t10\t86\tEdit",
-        "5\t1\t1\t1\t1\t3\t89\t65\t43\t11\t95\tSearch",
-    ])
+    tsv = "\n".join(
+        [
+            _TSV_HEADER,
+            "5\t1\t1\t1\t1\t1\t9\t65\t22\t11\t86\tFile",
+            "5\t1\t1\t1\t1\t2\t48\t65\t24\t10\t86\tEdit",
+            "5\t1\t1\t1\t1\t3\t89\t65\t43\t11\t95\tSearch",
+        ]
+    )
     regions = TesseractOCREngine._parse_tsv(tsv)
     by_text = {r.text: r for r in regions}
     # Word-level box is preserved for precise single-label clicks.
@@ -180,14 +213,36 @@ def test_ocr_tsv_parse_emits_word_and_line_boxes():
 
 
 def test_ocr_tsv_parse_ignores_empty_and_negative_conf():
-    tsv = "\n".join([
-        _TSV_HEADER,
-        "5\t1\t1\t1\t1\t1\t0\t0\t0\t0\t-1\t",
-        "5\t1\t1\t1\t1\t1\t10\t10\t5\t5\t-1\tnoise",
-        "5\t1\t1\t1\t1\t2\t20\t20\t5\t5\t90\tok",
-    ])
+    tsv = "\n".join(
+        [
+            _TSV_HEADER,
+            "5\t1\t1\t1\t1\t1\t0\t0\t0\t0\t-1\t",
+            "5\t1\t1\t1\t1\t1\t10\t10\t5\t5\t-1\tnoise",
+            "5\t1\t1\t1\t1\t2\t20\t20\t5\t5\t90\tok",
+        ]
+    )
     regions = TesseractOCREngine._parse_tsv(tsv)
     assert [r.text for r in regions] == ["ok", "ok"]
+
+
+def test_ocr_tsv_parse_maps_upscaled_boxes_back_to_frame_pixels():
+    """Tesseract runs on the 3x image; boxes must be divided back down so callers
+    click original frame coordinates, not enlarged ones."""
+    tsv = "\n".join(
+        [
+            _TSV_HEADER,
+            "5\t1\t1\t1\t1\t1\t27\t195\t66\t33\t86\tFile",
+        ]
+    )
+    regions = TesseractOCREngine._parse_tsv(tsv, scale=3)
+    by_text = {r.text: r for r in regions}
+    assert by_text["File"].bounding_box == (9, 65, 31, 76)
+
+
+def test_ocr_normalize_folds_case_and_separators():
+    assert TesseractOCREngine._normalize("GUI-OK") == "guiok"
+    assert TesseractOCREngine._normalize("GUI-K|") == "guik"
+    assert TesseractOCREngine._normalize("GUI - OK") == "guiok"
 
 
 def test_engine_refuses_blind_click_when_grounding_returns_negative():
@@ -195,7 +250,9 @@ def test_engine_refuses_blind_click_when_grounding_returns_negative():
 
     class _BlindGrounder:
         def ground_query(self, frame, target):
-            return type("T", (), {"coordinates": (-1, -1), "confidence": 0.1, "is_confident": False})()
+            return type(
+                "T", (), {"coordinates": (-1, -1), "confidence": 0.1, "is_confident": False}
+            )()
 
     engine = GuiWorkerEngine(container_manager=object(), require_real_desktop=False)
     from neural.gui_intelligence.worker import GuiWorkerExecutionError

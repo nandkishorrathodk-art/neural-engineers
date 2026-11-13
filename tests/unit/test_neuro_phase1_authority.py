@@ -107,12 +107,21 @@ async def test_verified_task_review_persists_idempotent_memory_for_restart_retri
     assert persisted_receipt["task_id"] == task.task_id
 
     # The accepted transition is one-shot; replaying the review cannot duplicate memory.
-    assert await task_repo.review_task_attempt(
-        task.task_id,
-        attempt_id,
-        "independent-memory-verifier",
-        {"passed": True, "notes": "duplicate", "evidence_refs": ["duplicate"], "checks": [], "test_summary": {}},
-    ) is None
+    assert (
+        await task_repo.review_task_attempt(
+            task.task_id,
+            attempt_id,
+            "independent-memory-verifier",
+            {
+                "passed": True,
+                "notes": "duplicate",
+                "evidence_refs": ["duplicate"],
+                "checks": [],
+                "test_summary": {},
+            },
+        )
+        is None
+    )
     assert len(await memory_repo.list_entries(source=f"task-attempt:{attempt_id}")) == 1
 
     # Recreate the store to model process restart, then ensure trusted retrieval indexes it.
@@ -179,7 +188,10 @@ async def test_rejected_task_review_does_not_create_trusted_memory(async_session
         },
     )
     assert rejected is not None and rejected["attempt_status"] == "rejected"
-    assert await MemoryRepository(async_session).list_entries(source=f"task-attempt:{attempt_id}") == []
+    assert (
+        await MemoryRepository(async_session).list_entries(source=f"task-attempt:{attempt_id}")
+        == []
+    )
 
 
 @pytest.mark.asyncio
@@ -221,12 +233,19 @@ async def test_worker_claim_reserves_idle_employee_and_prevents_overlapping_task
         )
 
     await async_session.refresh(employee)
-    claimed = await task_repo.claim_next_task("worker-claim-test", execution_modes=[ExecutionMode.TERMINAL])
+    claimed = await task_repo.claim_next_task(
+        "worker-claim-test", execution_modes=[ExecutionMode.TERMINAL]
+    )
     assert claimed is not None
     assert claimed["task_id"] == "TASK-CLAIM-1"
     await async_session.refresh(employee)
     assert employee.status == EmployeeStatus.WORKING
-    assert await task_repo.claim_next_task("worker-claim-test-2", execution_modes=[ExecutionMode.TERMINAL]) is None
+    assert (
+        await task_repo.claim_next_task(
+            "worker-claim-test-2", execution_modes=[ExecutionMode.TERMINAL]
+        )
+        is None
+    )
 
     assert await task_repo.release_task_claim(
         claimed["task_id"],
@@ -237,7 +256,9 @@ async def test_worker_claim_reserves_idle_employee_and_prevents_overlapping_task
     await async_session.refresh(employee)
     assert employee.status == EmployeeStatus.IDLE
 
-    next_claim = await task_repo.claim_next_task("worker-claim-test-2", execution_modes=[ExecutionMode.TERMINAL])
+    next_claim = await task_repo.claim_next_task(
+        "worker-claim-test-2", execution_modes=[ExecutionMode.TERMINAL]
+    )
     assert next_claim is not None
     assert next_claim["task_id"] == "TASK-CLAIM-2"
     await async_session.refresh(employee)
@@ -322,7 +343,9 @@ async def test_worker_claim_orders_by_real_priority_then_earliest_deadline(async
 
 
 @pytest.mark.asyncio
-async def test_worker_claim_dispatches_next_dag_task_only_after_verified_prerequisite(async_session):
+async def test_worker_claim_dispatches_next_dag_task_only_after_verified_prerequisite(
+    async_session,
+):
     employee_repo = EmployeeRepository(async_session)
     employee = await employee_repo.create(
         employee_id="ANC-EMP-DAG-CONTINUE",
@@ -471,10 +494,13 @@ async def test_worker_claim_does_not_unlock_dependency_with_unverified_completio
     )
     await task_repo.add_dependency(dependent.task_id, prerequisite.task_id)
 
-    assert await task_repo.claim_next_task(
-        "worker-unverified-dependency",
-        execution_modes=[ExecutionMode.TERMINAL],
-    ) is None
+    assert (
+        await task_repo.claim_next_task(
+            "worker-unverified-dependency",
+            execution_modes=[ExecutionMode.TERMINAL],
+        )
+        is None
+    )
     persisted = await task_repo.get_by_task_id(dependent.task_id)
     assert persisted.status == TaskStatus.PENDING
     assert persisted.assigned_to is None
@@ -517,9 +543,7 @@ async def test_independent_verifier_receipts_persist_employee_performance_histor
         started_at=now - timedelta(seconds=37),
         finished_at=now,
         lease_expires_at=now,
-        execution_receipt={
-            "model": {"input_tokens": 125, "output_tokens": 41, "cost_usd": 0.0042}
-        },
+        execution_receipt={"model": {"input_tokens": 125, "output_tokens": 41, "cost_usd": 0.0042}},
     )
     async_session.add(passing_attempt)
     await async_session.commit()
@@ -636,7 +660,9 @@ async def test_verifier_queue_requires_separate_verifier_credential(async_sessio
     monkeypatch.setenv("APPROVER_API_TOKEN", "approver-token-" + "a" * 40)
     get_settings.cache_clear()
 
-    project = await ProjectRepository(async_session).create(name="Verifier auth", objective="Protect queue")
+    project = await ProjectRepository(async_session).create(
+        name="Verifier auth", objective="Protect queue"
+    )
     task_repo = TaskRepository(async_session)
     task = await task_repo.create(
         task_id="TASK-VERIFIER-AUTH",
@@ -649,15 +675,17 @@ async def test_verifier_queue_requires_separate_verifier_credential(async_sessio
         status=TaskStatus.RUNNING,
         fencing_token=11,
     )
-    async_session.add(TaskAttempt(
-        task_id=task.id,
-        attempt_number=1,
-        worker_id="worker-auth-test",
-        fencing_token=11,
-        status="submitted",
-        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
-        execution_receipt={"planned_commands": [["pytest", "-q"]]},
-    ))
+    async_session.add(
+        TaskAttempt(
+            task_id=task.id,
+            attempt_number=1,
+            worker_id="worker-auth-test",
+            fencing_token=11,
+            status="submitted",
+            lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            execution_receipt={"planned_commands": [["pytest", "-q"]]},
+        )
+    )
     await async_session.commit()
 
     app = create_app()
@@ -711,9 +739,7 @@ async def test_boss_staffing_requires_verified_skills(async_session):
         ]
     }
 
-    assert BossBrain._get_verified_skill_gaps(plan, [employee]) == {
-        "backend-engineer": ["Python"]
-    }
+    assert BossBrain._get_verified_skill_gaps(plan, [employee]) == {"backend-engineer": ["Python"]}
 
     employee.skills[0].verified = True
     await async_session.commit()
@@ -778,7 +804,8 @@ async def test_production_objective_is_owner_authenticated_and_audited(
         assert budget_project.execution_plan["budget_usd"] == 10
         assert await TaskRepository(async_session).list_by_project(budget_project_id)
         budget_events = [
-            event for event in await AuditRepository(async_session).list_all()
+            event
+            for event in await AuditRepository(async_session).list_all()
             if event.resource_id == budget_project_id and event.action == "SUBMIT_OBJECTIVE"
         ]
         assert len(budget_events) == 1 and budget_events[0].details["budget_usd"] == 10
@@ -817,10 +844,14 @@ async def test_production_objective_is_owner_authenticated_and_audited(
 
 
 @pytest.mark.asyncio
-async def test_project_report_distinguishes_unverified_completion_and_attempt_failure(async_session):
+async def test_project_report_distinguishes_unverified_completion_and_attempt_failure(
+    async_session,
+):
     project_repo = ProjectRepository(async_session)
     task_repo = TaskRepository(async_session)
-    project = await project_repo.create(name="Report evidence", objective="Report stored task state")
+    project = await project_repo.create(
+        name="Report evidence", objective="Report stored task state"
+    )
     await task_repo.create(
         task_id="TASK-UNVERIFIED-REPORT",
         project_id=project.id,
@@ -917,12 +948,14 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
         ],
         "artifacts": ["verified-artifact"],
         "test_summary": {
-            "independent_test_runs": [{
-                "command": ["python3", "-m", "unittest", "--password", "must-not-leak"],
-                "worker_exit_code": 0,
-                "verifier_exit_code": 0,
-                "evidence_ref": "verifier:attempt-report:test:1",
-            }],
+            "independent_test_runs": [
+                {
+                    "command": ["python3", "-m", "unittest", "--password", "must-not-leak"],
+                    "worker_exit_code": 0,
+                    "verifier_exit_code": 0,
+                    "evidence_ref": "verifier:attempt-report:test:1",
+                }
+            ],
             "workspace_manifest_before": {"complete": True, "file_count": 0},
             "workspace_manifest": {
                 "complete": True,
@@ -977,76 +1010,108 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
         )
     )
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    async_session.add_all([
-        TaskAttempt(
-            task_id=active_task.id,
-            attempt_number=1,
-            worker_id="worker-active",
-            fencing_token=active_task.fencing_token,
-            status="running",
-            lease_expires_at=now + timedelta(minutes=2),
-            heartbeat_at=now,
-            execution_receipt={},
-        ),
-        TaskAttempt(
-            task_id=submitted_task.id,
-            attempt_number=1,
-            worker_id="worker-submitted",
-            fencing_token=submitted_task.fencing_token,
-            status="submitted",
-            lease_expires_at=now,
-            execution_receipt={"passed": False},
-        ),
-        TaskAttempt(
-            task_id=expired_task.id,
-            attempt_number=1,
-            worker_id="worker-expired",
-            fencing_token=expired_task.fencing_token,
-            status="running",
-            lease_expires_at=now - timedelta(minutes=1),
-            execution_receipt={},
-        ),
-        TaskAttempt(
-            task_id=leased_task.id,
-            attempt_number=1,
-            worker_id="worker-leased",
-            fencing_token=leased_task.fencing_token,
-            status="leased",
-            lease_expires_at=now + timedelta(minutes=1),
-            execution_receipt={},
-        ),
-        TaskAttempt(
-            task_id=stale_fence_task.id,
-            attempt_number=1,
-            worker_id="worker-stale-fence",
-            fencing_token=8,
-            status="running",
-            lease_expires_at=now + timedelta(minutes=1),
-            execution_receipt={},
-        ),
-    ])
+    async_session.add_all(
+        [
+            TaskAttempt(
+                task_id=active_task.id,
+                attempt_number=1,
+                worker_id="worker-active",
+                fencing_token=active_task.fencing_token,
+                status="running",
+                lease_expires_at=now + timedelta(minutes=2),
+                heartbeat_at=now,
+                execution_receipt={},
+            ),
+            TaskAttempt(
+                task_id=submitted_task.id,
+                attempt_number=1,
+                worker_id="worker-submitted",
+                fencing_token=submitted_task.fencing_token,
+                status="submitted",
+                lease_expires_at=now,
+                execution_receipt={"passed": False},
+            ),
+            TaskAttempt(
+                task_id=expired_task.id,
+                attempt_number=1,
+                worker_id="worker-expired",
+                fencing_token=expired_task.fencing_token,
+                status="running",
+                lease_expires_at=now - timedelta(minutes=1),
+                execution_receipt={},
+            ),
+            TaskAttempt(
+                task_id=leased_task.id,
+                attempt_number=1,
+                worker_id="worker-leased",
+                fencing_token=leased_task.fencing_token,
+                status="leased",
+                lease_expires_at=now + timedelta(minutes=1),
+                execution_receipt={},
+            ),
+            TaskAttempt(
+                task_id=stale_fence_task.id,
+                attempt_number=1,
+                worker_id="worker-stale-fence",
+                fencing_token=8,
+                status="running",
+                lease_expires_at=now + timedelta(minutes=1),
+                execution_receipt={},
+            ),
+        ]
+    )
     await async_session.commit()
 
-    report = await BossBrain(project_repo=project_repo, task_repo=task_repo).build_project_report(project.id)
+    report = await BossBrain(project_repo=project_repo, task_repo=task_repo).build_project_report(
+        project.id
+    )
     assert report is not None
     assert report["task_counts"]["verified"] == 1
     assert report["task_counts"]["completed_without_verification"] == 1
     assert report["task_counts"]["failed"] == 1
     assert report["task_counts"]["failed_attempts"] == 1
     reported_orphan = next(
-        task for task in report["tasks"]
-        if task["task_id"] == "TASK-RUNNING-WITHOUT-ATTEMPT"
+        task for task in report["tasks"] if task["task_id"] == "TASK-RUNNING-WITHOUT-ATTEMPT"
     )
     assert reported_orphan["execution_health"] == "missing_current_attempt"
     assert reported_orphan["attempts"] == []
-    assert next(task for task in report["tasks"] if task["task_id"] == stale_fence_task.task_id)["execution_health"] == "missing_current_attempt"
-    assert next(task for task in report["tasks"] if task["task_id"] == active_task.task_id)["execution_health"] == "active"
-    assert next(task for task in report["tasks"] if task["task_id"] == submitted_task.task_id)["execution_health"] == "awaiting_verification"
-    assert next(task for task in report["tasks"] if task["task_id"] == expired_task.task_id)["execution_health"] == "expired_worker_lease"
-    assert next(task for task in report["tasks"] if task["task_id"] == leased_task.task_id)["execution_health"] == "claimed_not_started"
-    reported_failure = next(task for task in report["tasks"] if task["task_id"] == "TASK-FAILED-REPORT")
+    assert (
+        next(task for task in report["tasks"] if task["task_id"] == stale_fence_task.task_id)[
+            "execution_health"
+        ]
+        == "missing_current_attempt"
+    )
+    assert (
+        next(task for task in report["tasks"] if task["task_id"] == active_task.task_id)[
+            "execution_health"
+        ]
+        == "active"
+    )
+    assert (
+        next(task for task in report["tasks"] if task["task_id"] == submitted_task.task_id)[
+            "execution_health"
+        ]
+        == "awaiting_verification"
+    )
+    assert (
+        next(task for task in report["tasks"] if task["task_id"] == expired_task.task_id)[
+            "execution_health"
+        ]
+        == "expired_worker_lease"
+    )
+    assert (
+        next(task for task in report["tasks"] if task["task_id"] == leased_task.task_id)[
+            "execution_health"
+        ]
+        == "claimed_not_started"
+    )
+    reported_failure = next(
+        task for task in report["tasks"] if task["task_id"] == "TASK-FAILED-REPORT"
+    )
     assert reported_failure["attempts"][0]["error_message"] == "Process returned exit code 2"
-    reported_success = next(task for task in report["tasks"] if task["task_id"] == "TASK-VERIFIED-REPORT")
+    reported_success = next(
+        task for task in report["tasks"] if task["task_id"] == "TASK-VERIFIED-REPORT"
+    )
     assert reported_success["verified"] is True
     assert reported_success["evidence_refs"] == [
         "verifier:attempt-report:test:1",
@@ -1058,18 +1123,22 @@ async def test_project_report_distinguishes_unverified_completion_and_attempt_fa
         "input_tokens": 123,
         "output_tokens": 45,
     }
-    assert reported_success["verification_evidence"]["independent_test_runs"] == [{
-        "executable": "python3",
-        "worker_exit_code": 0,
-        "verifier_exit_code": 0,
-        "evidence_ref": "verifier:attempt-report:test:1",
-    }]
+    assert reported_success["verification_evidence"]["independent_test_runs"] == [
+        {
+            "executable": "python3",
+            "worker_exit_code": 0,
+            "verifier_exit_code": 0,
+            "evidence_ref": "verifier:attempt-report:test:1",
+        }
+    ]
     assert "must-not-leak" not in str(reported_success)
 
 
 @pytest.mark.asyncio
 async def test_worker_failure_retries_only_retryable_errors_within_budget(async_session):
-    project = await ProjectRepository(async_session).create(name="Recovery", objective="Retry safely")
+    project = await ProjectRepository(async_session).create(
+        name="Recovery", objective="Retry safely"
+    )
     task_repo = TaskRepository(async_session)
     task = await task_repo.create(
         task_id="TASK-RECOVERY-RETRY",
@@ -1123,7 +1192,9 @@ async def test_worker_failure_retries_only_retryable_errors_within_budget(async_
     async_session.add(next_attempt)
     await async_session.commit()
 
-    exhausted = await task_repo.fail_task_attempt(task.task_id, "worker-test", 3, "connection timeout")
+    exhausted = await task_repo.fail_task_attempt(
+        task.task_id, "worker-test", 3, "connection timeout"
+    )
     assert exhausted == {
         "retrying": False,
         "retry_count": 1,
@@ -1134,6 +1205,48 @@ async def test_worker_failure_retries_only_retryable_errors_within_budget(async_
     }
     final_task = await task_repo.get_by_task_id(task.task_id)
     assert final_task.status == TaskStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_structured_exit_code_drives_retry_without_message_parsing(async_session):
+    """The failure contract carries a structured exit_code, so retry classification
+    must not depend on the free-text error message."""
+    project = await ProjectRepository(async_session).create(name="Struct", objective="Exit code")
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-STRUCT-EXIT",
+        project_id=project.id,
+        title="Failing command",
+        objective="Run a command that exits non-zero.",
+        scope="Execution",
+        acceptance_criteria="Command exits successfully.",
+        status=TaskStatus.RUNNING,
+        max_retries=3,
+        fencing_token=1,
+    )
+    attempt = TaskAttempt(
+        task_id=task.id,
+        attempt_number=1,
+        worker_id="terminal-worker",
+        fencing_token=1,
+        status="running",
+        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=2),
+        execution_receipt={},
+    )
+    async_session.add(attempt)
+    await async_session.commit()
+
+    # Message carries no parsable exit code; only the structured field is set.
+    recovery = await task_repo.fail_task_attempt(
+        task.task_id,
+        "terminal-worker",
+        1,
+        "command did not succeed",
+        exit_code=2,
+    )
+    assert recovery is not None
+    assert recovery["retrying"] is True
+    assert recovery["retry_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -1227,7 +1340,9 @@ async def test_retryable_worker_failure_reassigns_to_idle_employee_with_live_des
 
 
 @pytest.mark.asyncio
-async def test_worker_failure_route_returns_and_audits_recovery_decision(async_session, monkeypatch):
+async def test_worker_failure_route_returns_and_audits_recovery_decision(
+    async_session, monkeypatch
+):
     from neural.config import get_settings
 
     owner_token = "owner-recovery-" + "o" * 40
@@ -1303,7 +1418,9 @@ async def test_worker_failure_route_returns_and_audits_recovery_decision(async_s
 
 @pytest.mark.asyncio
 async def test_verifier_rejection_retries_with_backoff_then_fails_closed(async_session):
-    project = await ProjectRepository(async_session).create(name="Verifier recovery", objective="Retry rejected work")
+    project = await ProjectRepository(async_session).create(
+        name="Verifier recovery", objective="Retry rejected work"
+    )
     task_repo = TaskRepository(async_session)
     task = await task_repo.create(
         task_id="TASK-VERIFIER-RETRY",
@@ -1334,7 +1451,9 @@ async def test_verifier_rejection_retries_with_backoff_then_fails_closed(async_s
         "evidence_refs": ["command:pytest"],
         "checks": [{"name": "tests", "passed": False}],
     }
-    first_result = await task_repo.review_task_attempt(task.task_id, first_attempt.id, "verifier-test", rejection)
+    first_result = await task_repo.review_task_attempt(
+        task.task_id, first_attempt.id, "verifier-test", rejection
+    )
     assert first_result is not None
     assert first_result["task_status"] == TaskStatus.ASSIGNED.value
     assert first_result["attempt_status"] == "rejected"
@@ -1357,7 +1476,9 @@ async def test_verifier_rejection_retries_with_backoff_then_fails_closed(async_s
     async_session.add(second_attempt)
     await async_session.commit()
 
-    exhausted = await task_repo.review_task_attempt(task.task_id, second_attempt.id, "verifier-test", rejection)
+    exhausted = await task_repo.review_task_attempt(
+        task.task_id, second_attempt.id, "verifier-test", rejection
+    )
     assert exhausted is not None
     assert exhausted["task_status"] == TaskStatus.FAILED.value
     assert exhausted["attempt_status"] == "rejected"
@@ -1369,7 +1490,9 @@ async def test_verifier_rejection_retries_with_backoff_then_fails_closed(async_s
 
 @pytest.mark.asyncio
 async def test_expired_worker_lease_consumes_retry_budget(async_session):
-    project = await ProjectRepository(async_session).create(name="Lease recovery", objective="Recover worker loss")
+    project = await ProjectRepository(async_session).create(
+        name="Lease recovery", objective="Recover worker loss"
+    )
     employee = await EmployeeRepository(async_session).create(
         employee_id="ANC-EMP-LEASE-TEST",
         name="Lease Worker",
@@ -1407,7 +1530,9 @@ async def test_expired_worker_lease_consumes_retry_budget(async_session):
     assert recovered.status == TaskStatus.ASSIGNED
     assert recovered.retry_count == 1
     assert recovered.fencing_token == 2
-    report = await BossBrain(project_repo=ProjectRepository(async_session), task_repo=task_repo).build_project_report(project.id)
+    report = await BossBrain(
+        project_repo=ProjectRepository(async_session), task_repo=task_repo
+    ).build_project_report(project.id)
     assert report is not None
     assert report["task_counts"]["retrying"] == 1
     retried_report = report["tasks"][0]
@@ -1421,7 +1546,9 @@ async def test_expired_worker_lease_consumes_retry_budget(async_session):
 
 @pytest.mark.asyncio
 async def test_expired_worker_lease_exhaustion_fails_task_and_releases_employee(async_session):
-    project = await ProjectRepository(async_session).create(name="Lease exhaustion", objective="Stop retry loops")
+    project = await ProjectRepository(async_session).create(
+        name="Lease exhaustion", objective="Stop retry loops"
+    )
     employee_repo = EmployeeRepository(async_session)
     employee = await employee_repo.create(
         employee_id="ANC-EMP-LEASE-EXHAUST",
@@ -1466,7 +1593,9 @@ async def test_expired_worker_lease_exhaustion_fails_task_and_releases_employee(
 
 @pytest.mark.asyncio
 async def test_cancelling_task_fences_and_closes_active_worker_attempt(async_session):
-    project = await ProjectRepository(async_session).create(name="Cancellation", objective="Stop active work")
+    project = await ProjectRepository(async_session).create(
+        name="Cancellation", objective="Stop active work"
+    )
     task_repo = TaskRepository(async_session)
     task = await task_repo.create(
         task_id="TASK-CANCEL-ACTIVE-WORKER",
@@ -1502,7 +1631,9 @@ async def test_cancelling_task_fences_and_closes_active_worker_attempt(async_ses
 
 @pytest.mark.asyncio
 async def test_worker_claim_filters_execution_modes_before_leasing(async_session):
-    project = await ProjectRepository(async_session).create(name="Mode filtering", objective="Only claim supported work")
+    project = await ProjectRepository(async_session).create(
+        name="Mode filtering", objective="Only claim supported work"
+    )
     employee = await EmployeeRepository(async_session).create(
         employee_id="ANC-EMP-MODE-TEST",
         name="Mode Worker",
@@ -1523,7 +1654,9 @@ async def test_worker_claim_filters_execution_modes_before_leasing(async_session
         status=TaskStatus.ASSIGNED,
     )
 
-    assert await task_repo.claim_next_task("worker-gui", execution_modes=[ExecutionMode.GUI]) is None
+    assert (
+        await task_repo.claim_next_task("worker-gui", execution_modes=[ExecutionMode.GUI]) is None
+    )
     assert await task_repo.list_attempts_by_project(project.id) == []
     persisted = await task_repo.get_by_task_id(task.task_id)
     assert persisted.fencing_token == 0
@@ -1531,7 +1664,9 @@ async def test_worker_claim_filters_execution_modes_before_leasing(async_session
 
 @pytest.mark.asyncio
 async def test_worker_claim_waits_until_scheduled_task_is_due(async_session):
-    project = await ProjectRepository(async_session).create(name="Scheduled", objective="Wait for schedule")
+    project = await ProjectRepository(async_session).create(
+        name="Scheduled", objective="Wait for schedule"
+    )
     container = await ContainerRepository(async_session).create(
         docker_id="ancos-desktop-anc-emp-scheduled-test",
         image="test-image",
@@ -1561,12 +1696,19 @@ async def test_worker_claim_waits_until_scheduled_task_is_due(async_session):
         scheduled_at=now + timedelta(hours=1),
     )
 
-    assert await task_repo.claim_next_task("scheduled-worker", execution_modes=[ExecutionMode.TERMINAL]) is None
+    assert (
+        await task_repo.claim_next_task(
+            "scheduled-worker", execution_modes=[ExecutionMode.TERMINAL]
+        )
+        is None
+    )
     assert await task_repo.list_attempts_by_project(project.id) == []
 
     task.scheduled_at = now - timedelta(seconds=1)
     await async_session.commit()
-    claimed = await task_repo.claim_next_task("scheduled-worker", execution_modes=[ExecutionMode.TERMINAL])
+    claimed = await task_repo.claim_next_task(
+        "scheduled-worker", execution_modes=[ExecutionMode.TERMINAL]
+    )
     assert claimed is not None
     assert claimed["task_id"] == task.task_id
 
@@ -1575,7 +1717,9 @@ async def test_worker_claim_waits_until_scheduled_task_is_due(async_session):
 async def test_dag_scheduler_holds_future_tasks_until_their_start_time(async_session):
     from neural.tasks.scheduler import TaskScheduler
 
-    project = await ProjectRepository(async_session).create(name="Scheduled DAG", objective="Wait for start time")
+    project = await ProjectRepository(async_session).create(
+        name="Scheduled DAG", objective="Wait for start time"
+    )
     task_repo = TaskRepository(async_session)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     task = await task_repo.create(
@@ -1599,21 +1743,31 @@ async def test_dag_scheduler_holds_future_tasks_until_their_start_time(async_ses
 
 
 def test_worker_terminal_command_contract_rejects_shells_and_unapproved_executables():
-    assert WorkerCommandRequest.model_validate(
-        {"fencing_token": 3, "command": ["pytest", "-q", "tests"]}
-    ).command[0] == "pytest"
+    assert (
+        WorkerCommandRequest.model_validate(
+            {"fencing_token": 3, "command": ["pytest", "-q", "tests"]}
+        ).command[0]
+        == "pytest"
+    )
     with pytest.raises(ValueError):
         WorkerCommandRequest.model_validate({"fencing_token": 3, "command": ["sh", "-c", "id"]})
 
 
 def test_verifier_command_contract_allows_only_test_runners():
-    assert VerifierCommandRequest.model_validate(
-        {"fencing_token": 3, "command": ["python", "-m", "pytest", "-q"]}
-    ).command[0] == "python"
+    assert (
+        VerifierCommandRequest.model_validate(
+            {"fencing_token": 3, "command": ["python", "-m", "pytest", "-q"]}
+        ).command[0]
+        == "python"
+    )
     with pytest.raises(ValueError):
-        VerifierCommandRequest.model_validate({"fencing_token": 3, "command": ["python", "-c", "print(1)"]})
+        VerifierCommandRequest.model_validate(
+            {"fencing_token": 3, "command": ["python", "-c", "print(1)"]}
+        )
     with pytest.raises(ValueError):
-        VerifierCommandRequest.model_validate({"fencing_token": 3, "command": ["npm", "install", "pkg"]})
+        VerifierCommandRequest.model_validate(
+            {"fencing_token": 3, "command": ["npm", "install", "pkg"]}
+        )
 
 
 def test_verifier_manifest_contract_requires_only_fencing_token():
@@ -1622,7 +1776,9 @@ def test_verifier_manifest_contract_requires_only_fencing_token():
 
 @pytest.mark.asyncio
 async def test_worker_lease_validation_requires_active_fence(async_session):
-    project = await ProjectRepository(async_session).create(name="Lease validation", objective="Fence execution")
+    project = await ProjectRepository(async_session).create(
+        name="Lease validation", objective="Fence execution"
+    )
     task_repo = TaskRepository(async_session)
     task = await task_repo.create(
         task_id="TASK-LEASE-VALIDATION",
@@ -1653,7 +1809,9 @@ async def test_worker_lease_validation_requires_active_fence(async_session):
 
 @pytest.mark.asyncio
 async def test_worker_command_route_requires_current_terminal_lease(async_session):
-    project = await ProjectRepository(async_session).create(name="Terminal execution", objective="Execute under fence")
+    project = await ProjectRepository(async_session).create(
+        name="Terminal execution", objective="Execute under fence"
+    )
     employee_repo = EmployeeRepository(async_session)
     employee = await employee_repo.create(
         employee_id="ANC-EMP-EXEC-TEST",
@@ -1675,15 +1833,17 @@ async def test_worker_command_route_requires_current_terminal_lease(async_sessio
         status=TaskStatus.RUNNING,
         fencing_token=5,
     )
-    async_session.add(TaskAttempt(
-        task_id=task.id,
-        attempt_number=1,
-        worker_id="worker-current",
-        fencing_token=5,
-        status="running",
-        lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=1),
-        execution_receipt={},
-    ))
+    async_session.add(
+        TaskAttempt(
+            task_id=task.id,
+            attempt_number=1,
+            worker_id="worker-current",
+            fencing_token=5,
+            status="running",
+            lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=1),
+            execution_receipt={},
+        )
+    )
     await async_session.commit()
 
     class StubContainerManager:
@@ -1723,7 +1883,9 @@ async def test_worker_command_route_requires_current_terminal_lease(async_sessio
 
 @pytest.mark.asyncio
 async def test_verifier_exec_requires_current_submitted_attempt(async_session):
-    project = await ProjectRepository(async_session).create(name="Verifier execution", objective="Replay test safely")
+    project = await ProjectRepository(async_session).create(
+        name="Verifier execution", objective="Replay test safely"
+    )
     employee_repo = EmployeeRepository(async_session)
     employee = await employee_repo.create(
         employee_id="ANC-EMP-VERIFY-EXEC",
@@ -1952,7 +2114,9 @@ async def test_runtime_heartbeat_endpoints_require_role_credentials_and_persist_
         yield async_session
 
     app.dependency_overrides[get_db_session] = override_get_db_session
-    app.dependency_overrides[get_service_heartbeat_repo] = lambda: ServiceHeartbeatRepository(async_session)
+    app.dependency_overrides[get_service_heartbeat_repo] = lambda: ServiceHeartbeatRepository(
+        async_session
+    )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         worker_path = "/internal/worker/runtime/heartbeat"

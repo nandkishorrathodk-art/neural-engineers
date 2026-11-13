@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import signal
 import uuid
 from typing import Any
@@ -17,6 +18,27 @@ from neural.verification.test_commands import (
 )
 from neural.verification.visual_match import frames_visually_match
 from neural.verification.workspace_manifest import build_workspace_delta, valid_workspace_manifest
+
+# Deliverable markers a GUI task must show on screen: hyphenated uppercase tokens
+# (e.g. HYBRID-READY, GUI-OK) and explicitly quoted strings in the task contract.
+_UPPER_MARKER = re.compile(r"\b[A-Z0-9]+(?:-[A-Z0-9]+)+\b")
+_QUOTED_TERM = re.compile(r"['\"]([^'\"]{2,64})['\"]")
+
+
+def onscreen_expected_terms(item: dict[str, Any]) -> list[str]:
+    """Extract on-screen deliverable markers the task contract requires to be visible."""
+    text = " ".join(
+        str(item.get(key) or "") for key in ("title", "objective", "acceptance_criteria")
+    )
+    terms: list[str] = []
+    for marker in _UPPER_MARKER.findall(text):
+        if marker not in terms:
+            terms.append(marker)
+    for quoted in _QUOTED_TERM.findall(text):
+        candidate = quoted.strip()
+        if candidate and candidate not in terms:
+            terms.append(candidate)
+    return terms[:8]
 
 
 def worker_test_exit_code(receipt: dict[str, Any], command: list[str]) -> int | None:
@@ -269,10 +291,11 @@ class VerificationWorker:
 
         # 1. Independent live desktop observation (never trust the worker's hash).
         live: dict[str, Any] = {}
+        expected_terms = onscreen_expected_terms(item)
         try:
             live = await self._post(
                 f"/internal/verifier/tasks/{task_id}/attempts/{attempt_id}/screenshot",
-                {"fencing_token": fence},
+                {"fencing_token": fence, "expected_terms": expected_terms},
             )
         except httpx.HTTPError:
             live = {}
@@ -310,7 +333,30 @@ class VerificationWorker:
             }
         )
 
-        # 3. Hybrid tasks must also expose a replayable terminal verification phase.
+        # 3. When the task requires deliverable markers to be visible on screen, the
+        #    verifier must read them itself. Whole-screen similarity alone would accept
+        #    a similar-looking screen that lacks the required content.
+        observed_terms = (
+            live.get("observed_terms") if isinstance(live.get("observed_terms"), list) else []
+        )
+        ocr_available = bool(live.get("ocr_available"))
+        missing_terms = [t for t in expected_terms if t not in observed_terms]
+        if expected_terms:
+            checks.append(
+                {
+                    "name": "onscreen_deliverable_terms_observed_by_verifier",
+                    "passed": ocr_available and not missing_terms,
+                    "evidence": {
+                        "expected_terms": expected_terms,
+                        "observed_terms": observed_terms,
+                        "missing_terms": missing_terms,
+                        "ocr_available": ocr_available,
+                    },
+                }
+            )
+        onscreen_terms_passed = (not expected_terms) or (ocr_available and not missing_terms)
+
+        # 4. Hybrid tasks must also expose a replayable terminal verification phase.
         hybrid = str(item.get("execution_mode", "")).lower() == "hybrid"
         tests_passed = True
         if hybrid:
@@ -343,11 +389,22 @@ class VerificationWorker:
                 }
             )
 
-        passed = live_captured and hash_matches and worker_passed and tests_passed
+        passed = (
+            live_captured
+            and hash_matches
+            and worker_passed
+            and onscreen_terms_passed
+            and tests_passed
+        )
         notes = (
             "Independent visual verification passed: the verifier observed the live employee desktop "
-            f"itself and its frame matched the worker's post-action frame ({match_method} match), and "
-            "the worker's GUI loop reported success."
+            f"itself and its frame matched the worker's post-action frame ({match_method} match), "
+            "the worker's GUI loop reported success"
+            + (
+                f", and the verifier read the required on-screen deliverable terms {expected_terms}."
+                if expected_terms
+                else "."
+            )
             + (
                 " The hybrid terminal verification phase was independently replayed."
                 if hybrid
@@ -356,7 +413,8 @@ class VerificationWorker:
             if passed
             else "Independent visual verification failed closed: the live desktop could not be observed, "
             "the independently captured frame did not match the worker's post-action frame, the worker's "
-            "GUI loop did not report success, or a hybrid terminal phase was not independently replayable."
+            "GUI loop did not report success, the required on-screen deliverable terms were not read by "
+            "the verifier, or a hybrid terminal phase was not independently replayable."
         )
         if not evidence_refs:
             evidence_refs = [f"verifier:{attempt_id}:no-visual-evidence"]

@@ -13,7 +13,9 @@ import re
 from typing import Any
 
 _QUOTED = re.compile(r"['\"]([^'\"]{2,80})['\"]")
-_INTO_FIELD = re.compile(r"\binto\s+(?:the\s+)?(.+?)(?:\s+(?:field|box|input|area))?$", re.IGNORECASE)
+_INTO_FIELD = re.compile(
+    r"\binto\s+(?:the\s+)?(.+?)(?:\s+(?:field|box|input|area))?$", re.IGNORECASE
+)
 
 # Verbs that name a clickable on-screen target in a real objective.
 _CLICK_VERBS = ("click", "press", "open", "launch", "select")
@@ -56,14 +58,15 @@ _APP_LAUNCH_VERBS = ("open", "launch", "start", "run", "load")
 # preferred, but the unquoted payload between the verb and its "into/in/to"
 # target is captured when no quotes are present.
 _TYPED_SEGMENT = re.compile(
-    r"\b(?:type|enter|fill|write)\b\s+(?:the\s+|a\s+|an\s+)?(?P<value>.+?)\s+(?:into|in|to)\b",
+    r"\b(?:type|enter|fill|write|input)\b\s+(?:the\s+|a\s+|an\s+)?(?P<value>.+?)\s+(?:into|in|to)\b",
     re.IGNORECASE,
 )
 _TYPED_FILLER_LEAD = re.compile(
-    r"^(?:text|marker|string|value|word|following|this|these|message|content|phrase)\s+",
+    r"^(?:(?:exact|literal|precise|specified|following)\s+)?"
+    r"(?:text|marker|string|value|word|following|this|these|message|content|phrase)\s+",
     re.IGNORECASE,
 )
-_TYPED_VERB = re.compile(r"\b(?:type|enter|fill|write)\b", re.IGNORECASE)
+_TYPED_VERB = re.compile(r"\b(?:type|enter|fill|write|input)\b", re.IGNORECASE)
 
 # A negation within this window before an application alias means the objective
 # names that application as an exclusion ("without a terminal"), not a target.
@@ -109,7 +112,7 @@ def _label_after_verb(text: str, verbs: tuple[str, ...]) -> str | None:
             index = lowered.find(verb, start)
             if index < 0:
                 break
-            label = _clean_label(text[index + len(verb):])
+            label = _clean_label(text[index + len(verb) :])
             if label:
                 return label
             start = index + len(verb)
@@ -142,7 +145,7 @@ def _match_application(lowered: str) -> tuple[str | None, str] | None:
             match = re.search(rf"(?<![\w-]){re.escape(alias)}\b", lowered)
             if match is None:
                 continue
-            prefix = lowered[max(0, match.start() - 24):match.start()]
+            prefix = lowered[max(0, match.start() - 24) : match.start()]
             if _NEGATION.search(prefix):
                 continue
             candidates.append((match.start(), category, label))
@@ -160,7 +163,9 @@ def _typed_value(text: str) -> str | None:
     destination is used, with leading filler words ("the marker", "the text")
     stripped so the value that reaches the keyboard is the payload itself.
     """
-    quoted = _quoted_after(text, "type") or _quoted_after(text, "enter") or _quoted_after(text, "fill")
+    quoted = (
+        _quoted_after(text, "type") or _quoted_after(text, "enter") or _quoted_after(text, "fill")
+    )
     if quoted is not None:
         return quoted
     segment = _TYPED_SEGMENT.search(text)
@@ -170,7 +175,7 @@ def _typed_value(text: str) -> str | None:
     # No explicit destination ("type GUI_OK"): take the remainder after the verb.
     verb = _TYPED_VERB.search(text)
     if verb:
-        value = _TYPED_FILLER_LEAD.sub("", text[verb.end():].strip()).strip()
+        value = _TYPED_FILLER_LEAD.sub("", text[verb.end() :].strip()).strip()
         value = re.split(r"[.,;:!?()\n]", value, maxsplit=1)[0].strip()
         return value[:200] if value else None
     return None
@@ -193,7 +198,11 @@ def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[s
     if click_label is None:
         click_label = _label_after_verb(blob, _CLICK_VERBS)
     menu_label = _application_menu_label(blob)
-    app_match = _match_application(instruction_lowered) if _looks_like_app_launch(instruction_lowered) else None
+    app_match = (
+        _match_application(instruction_lowered)
+        if _looks_like_app_launch(instruction_lowered)
+        else None
+    )
     if app_match is not None:
         # The concept name ("text editor") is not a pixel label; route through the
         # launcher to the concrete menu label ("Mousepad") the desktop renders,
@@ -222,8 +231,13 @@ def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[s
     # Text entry tasks: "type/enter <value> into the <field>". A real desktop has no
     # focus to inherit, so the field must be clicked first; without that the keyboard
     # focus gate fails closed and nothing is typed.
-    typed_value = _typed_value(" ".join(part for part in (objective, scope) if part).strip() or blob)
-    if any(word in lowered for word in ("type", "enter", "fill", "write")) and typed_value is not None:
+    typed_value = _typed_value(
+        " ".join(part for part in (objective, scope) if part).strip() or blob
+    )
+    if (
+        any(word in lowered for word in ("type", "enter", "fill", "write", "input"))
+        and typed_value is not None
+    ):
         field_match = _INTO_FIELD.search(blob)
         field_label = _first_quoted(field_match.group(1)) if field_match else None
         if field_label:
@@ -250,3 +264,16 @@ def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[s
         steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99})
 
     return steps
+
+
+def expected_onscreen_text(steps: list[dict[str, Any]]) -> str | None:
+    """Return the literal deliverable text a plan types onto the screen.
+
+    A plan that types a marker (``KEY_TYPE``) declares that marker as its visible
+    deliverable. Verification must check for *that* text rather than a generic
+    whole-screen change, because typing a short marker alters very few pixels.
+    """
+    for step in reversed(steps):
+        if step.get("action_type") == "KEY_TYPE" and step.get("text"):
+            return str(step["text"])
+    return None
