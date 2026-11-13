@@ -27,6 +27,7 @@ from neural.db.repositories import (
     TaskRepository,
 )
 from neural.security.kill_switch import get_kill_switch
+from neural.verification.visual_match import frame_dhash
 from PIL import Image
 
 router = APIRouter(
@@ -74,10 +75,18 @@ async def execute_verifier_test(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     if not ExecutionMode.is_terminal(task.execution_mode):
-        raise HTTPException(status_code=409, detail="Automated verifier execution only supports terminal tasks.")
-    if not await task_repo.verification_attempt_is_current(task_id, attempt_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Verification attempt is stale or no longer pending.")
-    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+        raise HTTPException(
+            status_code=409, detail="Automated verifier execution only supports terminal tasks."
+        )
+    if not await task_repo.verification_attempt_is_current(
+        task_id, attempt_id, request.fencing_token
+    ):
+        raise HTTPException(
+            status_code=409, detail="Verification attempt is stale or no longer pending."
+        )
+    employee = (
+        await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    )
     if not employee:
         raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
     workstation = await container_manager.get_desktop_by_employee_id(
@@ -113,10 +122,18 @@ async def capture_verifier_manifest(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     if not ExecutionMode.is_terminal(task.execution_mode):
-        raise HTTPException(status_code=409, detail="Automated verifier manifests only support terminal tasks.")
-    if not await task_repo.verification_attempt_is_current(task_id, attempt_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Verification attempt is stale or no longer pending.")
-    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+        raise HTTPException(
+            status_code=409, detail="Automated verifier manifests only support terminal tasks."
+        )
+    if not await task_repo.verification_attempt_is_current(
+        task_id, attempt_id, request.fencing_token
+    ):
+        raise HTTPException(
+            status_code=409, detail="Verification attempt is stale or no longer pending."
+        )
+    employee = (
+        await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    )
     if not employee:
         raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
     workstation = await container_manager.get_desktop_by_employee_id(
@@ -151,10 +168,18 @@ async def capture_verifier_screenshot(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     if not mode_requires_gui(task.execution_mode):
-        raise HTTPException(status_code=409, detail="Verifier screenshots only support GUI-bearing tasks.")
-    if not await task_repo.verification_attempt_is_current(task_id, attempt_id, request.fencing_token):
-        raise HTTPException(status_code=409, detail="Verification attempt is stale or no longer pending.")
-    employee = await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+        raise HTTPException(
+            status_code=409, detail="Verifier screenshots only support GUI-bearing tasks."
+        )
+    if not await task_repo.verification_attempt_is_current(
+        task_id, attempt_id, request.fencing_token
+    ):
+        raise HTTPException(
+            status_code=409, detail="Verification attempt is stale or no longer pending."
+        )
+    employee = (
+        await employee_repo.get_by_employee_id(task.assigned_to) if task.assigned_to else None
+    )
     if not employee:
         raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
     workstation = await container_manager.get_desktop_by_employee_id(
@@ -173,6 +198,7 @@ async def capture_verifier_screenshot(
         "fencing_token": request.fencing_token,
         "resolution": [int(pixels.shape[1]), int(pixels.shape[0])],
         "screenshot_hash": hashlib.sha256(pixels.tobytes()).hexdigest(),
+        "screenshot_phash": frame_dhash(pixels),
         "captured": True,
     }
 

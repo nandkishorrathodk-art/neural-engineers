@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -51,6 +52,25 @@ def is_infrastructure_failure(error: Union[str, Exception]) -> bool:
     return any(marker in err_lower for marker in INFRASTRUCTURE_FAILURE_MARKERS)
 
 
+# A worker that fails because a command exited non-zero reports the exit code in
+# its message ("Terminal command exited with code 2: ..."). The code is otherwise
+# lost, because the failure request carries only free text, so it is recovered
+# here to classify the failure correctly instead of defaulting to FATAL.
+_EXIT_CODE_IN_MESSAGE = re.compile(
+    r"(?:exited with code|exit code|exit status|returned)\D{0,4}(?P<code>\d{1,3})\b",
+    re.IGNORECASE,
+)
+
+
+def extract_exit_code(error: Union[str, Exception]) -> Optional[int]:
+    """Recover a non-zero command exit code embedded in a failure message."""
+    match = _EXIT_CODE_IN_MESSAGE.search(str(error))
+    if not match:
+        return None
+    code = int(match.group("code"))
+    return code if code != 0 else None
+
+
 @dataclass
 class FailureClassification:
     category: FailureCategory
@@ -75,7 +95,7 @@ class RecoveryAction:
 def classify_failure(
     error: Union[str, Exception],
     exit_code: Optional[int] = None,
-    context: Optional[dict[str, Any]] = None
+    context: Optional[dict[str, Any]] = None,
 ) -> FailureClassification:
     """
     Intelligently inspects error signatures, exit codes, and execution context
@@ -83,6 +103,11 @@ def classify_failure(
     """
     err_str = str(error).strip()
     err_lower = err_str.lower()
+    # Recover an exit code the caller did not supply (workers report failures as
+    # free text only). Without it a plain non-zero command exit cannot be told
+    # apart from an unclassified fatal error and would skip its retry budget.
+    if exit_code is None:
+        exit_code = extract_exit_code(err_str)
 
     # 0. Pure infrastructure failures: the execution environment was unavailable.
     #    These are recovered by requeue/reassignment and must not be charged to
@@ -99,7 +124,12 @@ def classify_failure(
         )
 
     # 1. Security policy violations (NEVER retryable, critical severity)
-    if "security" in err_lower or "forbidden" in err_lower or "unauthorized" in err_lower or "eval(" in err_lower:
+    if (
+        "security" in err_lower
+        or "forbidden" in err_lower
+        or "unauthorized" in err_lower
+        or "eval(" in err_lower
+    ):
         return FailureClassification(
             category=FailureCategory.SECURITY,
             error_message=err_str,
@@ -107,7 +137,7 @@ def classify_failure(
             is_retryable=False,
             severity="critical",
             recommended_action="escalate_to_boss",
-            diagnostic_feedback="Security violation detected: code attempted unauthorized operations or forbidden constructs."
+            diagnostic_feedback="Security violation detected: code attempted unauthorized operations or forbidden constructs.",
         )
 
     # 2. Code Quality / Syntax issues (retryable with feedback)
@@ -125,12 +155,13 @@ def classify_failure(
             is_retryable=True,
             severity="medium",
             recommended_action="retry_with_backoff",
-            diagnostic_feedback=f"Code quality / syntax issue detected: {err_str}. Please review and correct syntax before re-submitting."
+            diagnostic_feedback=f"Code quality / syntax issue detected: {err_str}. Please review and correct syntax before re-submitting.",
         )
 
     # 3. Unit / Integration test failures (retryable with diagnostic guidance)
     if (
-        exit_code is not None and exit_code != 0
+        exit_code is not None
+        and exit_code != 0
         or "assert" in err_lower
         or "test failed" in err_lower
         or "failures=" in err_lower
@@ -143,7 +174,7 @@ def classify_failure(
             is_retryable=True,
             severity="medium",
             recommended_action="retry_with_backoff",
-            diagnostic_feedback=f"Automated test runner failed (exit code {exit_code}): {err_str}. Inspect failed assertions and fix logic."
+            diagnostic_feedback=f"Automated test runner failed (exit code {exit_code}): {err_str}. Inspect failed assertions and fix logic.",
         )
 
     # 4. Transient network / provider / rate-limit failures (retryable with backoff)
@@ -168,7 +199,7 @@ def classify_failure(
             is_retryable=True,
             severity="low",
             recommended_action="retry_with_backoff",
-            diagnostic_feedback=f"Transient infrastructure error: {err_str}. Applying exponential backoff."
+            diagnostic_feedback=f"Transient infrastructure error: {err_str}. Applying exponential backoff.",
         )
 
     # 5. Missing environment / package dependencies (retryable or escalate)
@@ -185,7 +216,7 @@ def classify_failure(
             is_retryable=True,
             severity="medium",
             recommended_action="retry_with_backoff",
-            diagnostic_feedback=f"Environment dependency missing: {err_str}. Ensure necessary packages are installed in container."
+            diagnostic_feedback=f"Environment dependency missing: {err_str}. Ensure necessary packages are installed in container.",
         )
 
     # 6. Default Fatal failure (unhandled)
@@ -196,7 +227,7 @@ def classify_failure(
         is_retryable=False,
         severity="high",
         recommended_action="escalate_to_boss",
-        diagnostic_feedback=f"Unclassified critical failure: {err_str}."
+        diagnostic_feedback=f"Unclassified critical failure: {err_str}.",
     )
 
 
@@ -213,7 +244,7 @@ class FailureRecoveryManager:
         max_retries: int = 3,
         initial_delay: float = 1.0,
         backoff_multiplier: float = 2.0,
-        max_delay: float = 60.0
+        max_delay: float = 60.0,
     ):
         self.max_retries = max_retries
         self.initial_delay = initial_delay
@@ -222,7 +253,7 @@ class FailureRecoveryManager:
 
     def calculate_backoff(self, retry_count: int) -> float:
         """Computes exponential backoff delay capped by max_delay."""
-        delay = self.initial_delay * (self.backoff_multiplier ** retry_count)
+        delay = self.initial_delay * (self.backoff_multiplier**retry_count)
         return min(round(delay, 3), self.max_delay)
 
     def handle_failure(
@@ -230,7 +261,7 @@ class FailureRecoveryManager:
         task: Task,
         error: Union[str, Exception],
         exit_code: Optional[int] = None,
-        context: Optional[dict[str, Any]] = None
+        context: Optional[dict[str, Any]] = None,
     ) -> RecoveryAction:
         """
         Processes a task failure:
@@ -249,7 +280,7 @@ class FailureRecoveryManager:
             category=classification.category.value,
             is_retryable=classification.is_retryable,
             retry_count=current_retry_count,
-            max_retries=effective_max_retries
+            max_retries=effective_max_retries,
         )
 
         # Case A: Retryable and retries remaining
@@ -261,11 +292,15 @@ class FailureRecoveryManager:
                 retry_count=task.retry_count,
                 backoff_delay_seconds=delay,
                 reason="retryable_failure",
-                diagnostic_feedback=classification.diagnostic_feedback
+                diagnostic_feedback=classification.diagnostic_feedback,
             )
 
         # Case B: Retries exhausted or non-retryable failure -> Escalate to Boss AI
-        reason = "retries_exhausted" if current_retry_count >= effective_max_retries else "non_retryable_failure"
+        reason = (
+            "retries_exhausted"
+            if current_retry_count >= effective_max_retries
+            else "non_retryable_failure"
+        )
         escalation_report = {
             "task_id": task.task_id,
             "project_id": task.project_id,
@@ -281,14 +316,14 @@ class FailureRecoveryManager:
                 if classification.severity in ("high", "critical")
                 else "reassign_to_senior_specialist"
             ),
-            "escalated_at": utc_now().isoformat()
+            "escalated_at": utc_now().isoformat(),
         }
 
         logger.warning(
             "Task failure escalated to Boss AI",
             task_id=task.task_id,
             reason=reason,
-            retries=current_retry_count
+            retries=current_retry_count,
         )
 
         return RecoveryAction(
@@ -297,14 +332,11 @@ class FailureRecoveryManager:
             backoff_delay_seconds=0.0,
             reason=reason,
             diagnostic_feedback=classification.diagnostic_feedback,
-            escalation_report=escalation_report
+            escalation_report=escalation_report,
         )
 
     async def escalate_to_boss(
-        self,
-        task: Task,
-        escalation_report: dict[str, Any],
-        boss_brain: Optional[Any] = None
+        self, task: Task, escalation_report: dict[str, Any], boss_brain: Optional[Any] = None
     ) -> dict[str, Any]:
         """
         Notifies Boss AI of escalated failure, triggers decision or incident post-mortem.
@@ -314,7 +346,7 @@ class FailureRecoveryManager:
             "task_id": task.task_id,
             "status": "escalated_to_boss",
             "escalation_report": escalation_report,
-            "resolution": "Incident logged for Boss AI arbitration"
+            "resolution": "Incident logged for Boss AI arbitration",
         }
         if boss_brain and hasattr(boss_brain, "record_incident"):
             await boss_brain.record_incident(task.task_id, escalation_report)
@@ -327,6 +359,7 @@ class WorkerFaultInjector:
     Can only be activated in testing/development environments (APP_ENV != 'production').
     In production, all fault injection attempts are strictly prohibited.
     """
+
     _injected_faults: dict[str, Any] = {}
 
     @classmethod
@@ -337,9 +370,12 @@ class WorkerFaultInjector:
         error_message: str = "Simulated worker process crash",
     ) -> None:
         from neural.config import get_settings
+
         settings = get_settings()
         if getattr(settings, "APP_ENV", "development") == "production":
-            raise RuntimeError("Worker fault injection is strictly prohibited in production environments.")
+            raise RuntimeError(
+                "Worker fault injection is strictly prohibited in production environments."
+            )
         cls._injected_faults[task_id] = {
             "fault_type": fault_type,
             "error_message": error_message,

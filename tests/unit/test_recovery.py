@@ -1,4 +1,9 @@
-from neural.boss.recovery import FailureCategory, FailureRecoveryManager, classify_failure
+from neural.boss.recovery import (
+    FailureCategory,
+    FailureRecoveryManager,
+    classify_failure,
+    extract_exit_code,
+)
 from neural.db.models import Task
 
 
@@ -33,6 +38,28 @@ def test_failure_classification_categories():
     assert c_sec.recommended_action == "escalate_to_boss"
 
 
+def test_nonzero_command_exit_is_recovered_and_retryable():
+    """A worker reports a failed command as free text; its exit code must still
+    classify the failure as a retryable test failure rather than fatal."""
+    message = "Terminal command exited with code 2: "
+    assert extract_exit_code(message) == 2
+
+    classification = classify_failure(message)
+    assert classification.category == FailureCategory.TEST_FAILURE
+    assert classification.is_retryable is True
+    assert classification.exit_code == 2
+
+
+def test_explicit_exit_code_argument_is_not_overwritten_by_message_parsing():
+    classification = classify_failure("AssertionError: boom", exit_code=1)
+    assert classification.exit_code == 1
+
+
+def test_extract_exit_code_ignores_zero_and_absent_codes():
+    assert extract_exit_code("Terminal command exited with code 0: ") is None
+    assert extract_exit_code("Unclassified critical failure.") is None
+
+
 def test_exponential_backoff_calculation():
     manager = FailureRecoveryManager(initial_delay=1.0, backoff_multiplier=2.0, max_delay=30.0)
     assert manager.calculate_backoff(0) == 1.0
@@ -55,7 +82,7 @@ def test_recovery_manager_retry_loop():
         scope="Scope",
         acceptance_criteria="Crit",
         retry_count=0,
-        max_retries=3
+        max_retries=3,
     )
 
     # First failure -> retry 1
@@ -99,7 +126,7 @@ def test_recovery_manager_immediate_escalation_on_non_retryable_error():
         scope="Scope",
         acceptance_criteria="Crit",
         retry_count=0,
-        max_retries=3
+        max_retries=3,
     )
 
     action = manager.handle_failure(task, "Security violation: unauthorized tool access")

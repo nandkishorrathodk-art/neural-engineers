@@ -17,19 +17,23 @@ def _gui_item(
     *,
     mode: str = "gui",
     worker_hash: str = "a" * 64,
+    worker_phash: str | None = None,
     worker_passed: bool = True,
     planned_commands: list[list[str]] | None = None,
 ) -> dict:
+    gui_receipt: dict = {
+        "status": "success" if worker_passed else "failed",
+        "screen_hash_before": "b" * 64,
+        "screen_hash_after": worker_hash,
+        "steps_executed": 3,
+        "verification": {"passed": worker_passed, "screenshot_hash": worker_hash},
+    }
+    if worker_phash is not None:
+        gui_receipt["screen_phash_after"] = worker_phash
     receipt: dict = {
         "executor": "gui-worker",
         "execution_mode": mode,
-        "gui": {
-            "status": "success" if worker_passed else "failed",
-            "screen_hash_before": "b" * 64,
-            "screen_hash_after": worker_hash,
-            "steps_executed": 3,
-            "verification": {"passed": worker_passed, "screenshot_hash": worker_hash},
-        },
+        "gui": gui_receipt,
         "verification_status": "awaiting_independent_verifier",
         "passed": worker_passed,
     }
@@ -57,19 +61,19 @@ def _gui_item(
     }
 
 
-def _transport(seen, *, live_hash: str, live_captured: bool = True):
+def _transport(seen, *, live_hash: str, live_captured: bool = True, live_phash: str | None = None):
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(await request.aread()) if request.method == "POST" else {}
         seen.append((request.url.path, body))
         if request.method == "POST" and request.url.path.endswith("/screenshot"):
-            return httpx.Response(
-                200,
-                json={
-                    "captured": live_captured,
-                    "screenshot_hash": live_hash,
-                    "resolution": [1280, 800],
-                },
-            )
+            payload = {
+                "captured": live_captured,
+                "screenshot_hash": live_hash,
+                "resolution": [1280, 800],
+            }
+            if live_phash is not None:
+                payload["screenshot_phash"] = live_phash
+            return httpx.Response(200, json=payload)
         if request.method == "POST" and request.url.path.endswith("/exec"):
             return httpx.Response(200, json={"exit_code": 0, "stdout": "1 passed", "stderr": ""})
         if request.method == "POST" and request.url.path.endswith("/review"):
@@ -95,8 +99,55 @@ async def test_gui_verification_passes_when_live_hash_matches_worker_frame():
     review = seen[-1][1]
     assert review["passed"] is True
     assert review["checks"][0]["passed"] is True
+    assert review["checks"][0]["evidence"]["match_method"] == "exact"
     assert review["evidence_refs"][0] == f"screen:sha256:{'a' * 64}"
     assert review["test_summary"]["independent_screen_capture"]["captured"] is True
+
+
+@pytest.mark.asyncio
+async def test_gui_verification_passes_on_perceptual_match_when_pixels_differ():
+    """A live desktop is never byte-identical (blinking caret, ticking clock), so a
+    small whole-screen dHash distance must still verify instead of failing closed."""
+    seen: list[tuple[str, dict]] = []
+    client = httpx.AsyncClient(
+        base_url="http://core.test",
+        transport=_transport(
+            seen,
+            live_hash="c" * 64,
+            live_phash="00000000000000ff",
+        ),
+    )
+    verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
+    result = await verifier.verify_item(
+        _gui_item(worker_hash="a" * 64, worker_phash="0000000000000000")
+    )
+    await verifier.close()
+
+    assert result == {"task_status": "completed"}
+    review = seen[-1][1]
+    assert review["passed"] is True
+    assert review["checks"][0]["passed"] is True
+    assert review["checks"][0]["evidence"]["match_method"] == "perceptual"
+
+
+@pytest.mark.asyncio
+async def test_gui_verification_fails_closed_when_perceptual_hashes_diverge():
+    seen: list[tuple[str, dict]] = []
+    client = httpx.AsyncClient(
+        base_url="http://core.test",
+        transport=_transport(seen, live_hash="c" * 64, live_phash="ffffffffffffffff"),
+    )
+    verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
+    result = await verifier.verify_item(
+        _gui_item(worker_hash="a" * 64, worker_phash="0000000000000000")
+    )
+    await verifier.close()
+
+    assert result == {"task_status": "completed"}
+    review = seen[-1][1]
+    assert review["passed"] is False
+    assert review["checks"][0]["passed"] is False
+    assert review["checks"][0]["evidence"]["match_method"] == "mismatch"
 
 
 @pytest.mark.asyncio
@@ -158,7 +209,11 @@ async def test_hybrid_verification_replays_terminal_phase():
     )
     verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
     result = await verifier.verify_item(
-        _gui_item(mode="hybrid", worker_hash="a" * 64, planned_commands=[["python3", "-m", "unittest", "-v"]])
+        _gui_item(
+            mode="hybrid",
+            worker_hash="a" * 64,
+            planned_commands=[["python3", "-m", "unittest", "-v"]],
+        )
     )
     await verifier.close()
 
@@ -177,7 +232,9 @@ async def test_hybrid_verification_fails_closed_without_replayable_terminal_phas
         transport=_transport(seen, live_hash="a" * 64),
     )
     verifier = VerificationWorker("http://core.test", "verifier-test", "v" * 32, client=client)
-    result = await verifier.verify_item(_gui_item(mode="hybrid", worker_hash="a" * 64, planned_commands=[]))
+    result = await verifier.verify_item(
+        _gui_item(mode="hybrid", worker_hash="a" * 64, planned_commands=[])
+    )
     await verifier.close()
 
     assert result == {"task_status": "completed"}

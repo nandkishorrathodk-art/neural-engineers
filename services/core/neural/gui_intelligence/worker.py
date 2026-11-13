@@ -35,6 +35,7 @@ from neural.gui_intelligence.runtime.motor import (
 from neural.gui_intelligence.safety.risk_guard import GUIRiskGuard
 from neural.gui_intelligence.verification.visual_verifier import IndependentVisualVerifier
 from neural.logger import get_logger
+from neural.verification.visual_match import frame_dhash
 
 logger = get_logger("ancos.gui_intelligence.worker")
 
@@ -62,6 +63,7 @@ class GuiWorkerResult:
     receipts: list[dict] = field(default_factory=list)
     screen_hash_before: Optional[str] = None
     screen_hash_after: Optional[str] = None
+    screen_phash_after: Optional[str] = None
     verification: Optional[dict] = None
     error: Optional[str] = None
 
@@ -73,6 +75,7 @@ class GuiWorkerResult:
             "receipts": self.receipts,
             "screen_hash_before": self.screen_hash_before,
             "screen_hash_after": self.screen_hash_after,
+            "screen_phash_after": self.screen_phash_after,
             "verification": self.verification,
             "error": self.error,
         }
@@ -159,6 +162,7 @@ class GuiWorkerEngine:
 
         frame_after = driver.capture_frame()
         hash_after = self._hash_frame(frame_after)
+        phash_after = frame_dhash(frame_after.pixels)
 
         verifier = IndependentVisualVerifier(ocr_engine=TesseractOCREngine())
         verification = verifier.verify_postcondition(
@@ -184,7 +188,10 @@ class GuiWorkerEngine:
             error = (
                 verification.details
                 if all_success
-                else next((r["error_message"] for r in receipts if r["status"] != "SUCCESS"), "GUI step failed")
+                else next(
+                    (r["error_message"] for r in receipts if r["status"] != "SUCCESS"),
+                    "GUI step failed",
+                )
             )
 
         result = GuiWorkerResult(
@@ -194,6 +201,7 @@ class GuiWorkerEngine:
             receipts=receipts,
             screen_hash_before=hash_before,
             screen_hash_after=hash_after,
+            screen_phash_after=phash_after,
             verification=verification_dict,
             error=error,
         )
@@ -245,7 +253,11 @@ class GuiWorkerEngine:
         coordinates = step.coordinates
         if coordinates is None and step.target:
             coordinates = self._ground(grounder, frame, step.target)
-        if coordinates is None and step.action_type == "KEY_TYPE" and fallback_coordinates is not None:
+        if (
+            coordinates is None
+            and step.action_type == "KEY_TYPE"
+            and fallback_coordinates is not None
+        ):
             # Text entry must follow a verified click. Reuse the most recent click
             # coordinate so the keyboard focus gate has a concrete target instead of
             # failing closed on a real desktop that has no inheritable focus.

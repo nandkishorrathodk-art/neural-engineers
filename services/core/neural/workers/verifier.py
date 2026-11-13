@@ -15,6 +15,7 @@ from neural.verification.test_commands import (
     normalize_acceptance_criteria,
     replayable_test_commands,
 )
+from neural.verification.visual_match import frames_visually_match
 from neural.verification.workspace_manifest import build_workspace_delta, valid_workspace_manifest
 
 
@@ -41,7 +42,9 @@ class VerificationWorker:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not api_url or not verifier_id or len(token) < 32:
-            raise ValueError("Core API URL, verifier identity, and a 32-character verifier token are required.")
+            raise ValueError(
+                "Core API URL, verifier identity, and a 32-character verifier token are required."
+            )
         self.verifier_id = verifier_id
         self.instance_id = uuid.uuid4().hex
         self.client = client or httpx.AsyncClient(
@@ -104,7 +107,11 @@ class VerificationWorker:
             manifest = {}
         manifest_valid = valid_workspace_manifest(manifest)
         manifest_files = manifest.get("files", []) if isinstance(manifest, dict) else []
-        manifest_refs = [f"workspace:sha256:{entry['sha256']}" for entry in manifest_files] if manifest_valid else []
+        manifest_refs = (
+            [f"workspace:sha256:{entry['sha256']}" for entry in manifest_files]
+            if manifest_valid
+            else []
+        )
         workspace_delta = (
             build_workspace_delta(workspace_manifest_before, manifest)
             if baseline_valid and manifest_valid
@@ -138,8 +145,12 @@ class VerificationWorker:
                 "name": "complete_task_start_workspace_baseline_captured",
                 "passed": baseline_valid,
                 "evidence": {
-                    "file_count": workspace_manifest_before.get("file_count") if baseline_valid else None,
-                    "captured_at_unix": workspace_manifest_before.get("captured_at_unix") if baseline_valid else None,
+                    "file_count": workspace_manifest_before.get("file_count")
+                    if baseline_valid
+                    else None,
+                    "captured_at_unix": workspace_manifest_before.get("captured_at_unix")
+                    if baseline_valid
+                    else None,
                     "complete": baseline_valid,
                 },
             },
@@ -147,14 +158,22 @@ class VerificationWorker:
                 "name": "complete_verification_snapshot_and_workspace_delta_captured",
                 "passed": manifest_valid and workspace_delta is not None,
                 "evidence": {
-                    "file_count": manifest.get("file_count") if isinstance(manifest, dict) else None,
+                    "file_count": manifest.get("file_count")
+                    if isinstance(manifest, dict)
+                    else None,
                     "complete": manifest_valid,
                     "delta_counts": workspace_delta["counts"] if workspace_delta else None,
                     "scope": "path and SHA-256 delta; file contents are not included",
                 },
             },
         ]
-        passed = criteria_is_testable and tests_passed and baseline_valid and manifest_valid and workspace_delta is not None
+        passed = (
+            criteria_is_testable
+            and tests_passed
+            and baseline_valid
+            and manifest_valid
+            and workspace_delta is not None
+        )
         notes = (
             "Declared automated tests passed in the worker receipt and an independent verifier rerun. "
             "Complete task-start and verification-time workspace hash snapshots were recorded with a "
@@ -164,11 +183,15 @@ class VerificationWorker:
             "no replayable test, a test failure, a missing/invalid task-start baseline, an incomplete/empty "
             "verification snapshot, or acceptance criteria outside the supported test-only contracts."
         )
-        evidence_refs = [run["evidence_ref"] for run in test_runs] or [f"verifier:{attempt_id}:no-replayable-test"]
+        evidence_refs = [run["evidence_ref"] for run in test_runs] or [
+            f"verifier:{attempt_id}:no-replayable-test"
+        ]
         evidence_refs.extend(manifest_refs)
         if baseline_valid:
             baseline_digest = hashlib.sha256(
-                json.dumps(workspace_manifest_before, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                json.dumps(workspace_manifest_before, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8"
+                )
             ).hexdigest()
             evidence_refs.append(f"workspace-baseline:sha256:{baseline_digest}")
         if workspace_delta:
@@ -185,18 +208,27 @@ class VerificationWorker:
                 "checks": checks,
                 "test_summary": {
                     "independent_test_runs": test_runs,
-                    "workspace_manifest_before": workspace_manifest_before if baseline_valid else {
+                    "workspace_manifest_before": workspace_manifest_before
+                    if baseline_valid
+                    else {
                         "complete": False,
                         "file_count": 0,
                         "errors": ["task-start workspace baseline missing or invalid"],
                     },
-                    "workspace_manifest": manifest if manifest_valid else {
+                    "workspace_manifest": manifest
+                    if manifest_valid
+                    else {
                         "complete": False,
-                        "file_count": len(manifest_files) if isinstance(manifest_files, list) else 0,
-                        "errors": manifest.get("errors", []) if isinstance(manifest, dict) else ["manifest unavailable"],
+                        "file_count": len(manifest_files)
+                        if isinstance(manifest_files, list)
+                        else 0,
+                        "errors": manifest.get("errors", [])
+                        if isinstance(manifest, dict)
+                        else ["manifest unavailable"],
                         "scope": "verification-time workspace snapshot",
                     },
-                    "workspace_delta": workspace_delta or {
+                    "workspace_delta": workspace_delta
+                    or {
                         "complete": False,
                         "errors": ["task-start baseline or verification snapshot is unavailable"],
                     },
@@ -204,7 +236,9 @@ class VerificationWorker:
             },
         )
 
-    async def verify_gui_item(self, item: dict[str, Any], execution_receipt: dict[str, Any]) -> dict[str, Any] | None:
+    async def verify_gui_item(
+        self, item: dict[str, Any], execution_receipt: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Independently verify a GUI or hybrid task from live visual evidence.
 
         The worker's receipt is a *claim*: it reports before/after pixel hashes and
@@ -220,7 +254,11 @@ class VerificationWorker:
         gui_receipt = execution_receipt.get("gui")
         if not isinstance(gui_receipt, dict):
             gui_receipt = {}
-        verification = gui_receipt.get("verification") if isinstance(gui_receipt.get("verification"), dict) else {}
+        verification = (
+            gui_receipt.get("verification")
+            if isinstance(gui_receipt.get("verification"), dict)
+            else {}
+        )
         worker_hash = gui_receipt.get("screen_hash_after")
         if not isinstance(worker_hash, str) or not worker_hash:
             worker_hash = verification.get("screenshot_hash")
@@ -240,7 +278,11 @@ class VerificationWorker:
             live = {}
         live_captured = bool(live.get("captured"))
         live_hash = str(live.get("screenshot_hash") or "")
-        hash_matches = bool(live_hash) and live_hash == worker_hash
+        live_phash = str(live.get("screenshot_phash") or "")
+        worker_phash = str(gui_receipt.get("screen_phash_after") or "")
+        hash_matches, match_method = frames_visually_match(
+            worker_hash, worker_phash, live_hash, live_phash
+        )
         checks.append(
             {
                 "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
@@ -249,6 +291,9 @@ class VerificationWorker:
                     "live_captured": live_captured,
                     "verifier_screenshot_hash": live_hash,
                     "worker_screenshot_hash": worker_hash,
+                    "match_method": match_method,
+                    "verifier_screenshot_phash": live_phash or None,
+                    "worker_screenshot_phash": worker_phash or None,
                     "resolution": live.get("resolution"),
                 },
             }
@@ -301,9 +346,13 @@ class VerificationWorker:
         passed = live_captured and hash_matches and worker_passed and tests_passed
         notes = (
             "Independent visual verification passed: the verifier observed the live employee desktop "
-            "itself and the captured frame hash matched the worker's post-action frame, and the worker's "
-            "GUI loop reported success."
-            + (" The hybrid terminal verification phase was independently replayed." if hybrid else "")
+            f"itself and its frame matched the worker's post-action frame ({match_method} match), and "
+            "the worker's GUI loop reported success."
+            + (
+                " The hybrid terminal verification phase was independently replayed."
+                if hybrid
+                else ""
+            )
             if passed
             else "Independent visual verification failed closed: the live desktop could not be observed, "
             "the independently captured frame did not match the worker's post-action frame, the worker's "
@@ -341,7 +390,13 @@ class VerificationWorker:
                 break
             if not isinstance(item, dict):
                 continue
-            if str(item.get("execution_mode", "")).lower() not in {"terminal", "terminal_only", "gui", "gui_only", "hybrid"}:
+            if str(item.get("execution_mode", "")).lower() not in {
+                "terminal",
+                "terminal_only",
+                "gui",
+                "gui_only",
+                "hybrid",
+            }:
                 continue
             try:
                 await self.verify_item(item)
