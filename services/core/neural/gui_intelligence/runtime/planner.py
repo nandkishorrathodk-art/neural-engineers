@@ -31,6 +31,44 @@ _LABEL_BOUNDARY = re.compile(
 _MENU_HINTS = ("application menu", "applications menu", "start menu", "whisker menu")
 _MENU_LABEL = "Applications"
 
+# Application-launch objectives name a *concept* ("text editor", "browser") while
+# the desktop only exposes *menu labels* ("Mousepad", "Web Browser"). The live
+# grounder matches pixels, so a concept that never appears on screen can never be
+# clicked. This catalog translates a concept to the concrete (category, label)
+# the desktop actually renders; the label lives inside its category submenu, so
+# the category must be opened first. Keep entries aligned with the base image's
+# application menu.
+_APP_CATALOG: tuple[tuple[tuple[str, ...], str | None, str], ...] = (
+    (("text editor", "notepad", "mousepad", "gedit"), "Accessories", "Mousepad"),
+    (("file manager", "thunar"), None, "File Manager"),
+    (("terminal emulator", "terminal", "console"), None, "Terminal Emulator"),
+    (("web browser", "browser", "firefox", "chromium", "chrome"), None, "Web Browser"),
+    (("mail reader", "email", "thunderbird"), None, "Mail Reader"),
+)
+
+# Verbs that signal the objective is launching an application rather than using
+# one that is already on screen. Routing an app concept through the launcher is
+# only correct when the objective actually asks to open/launch it.
+_APP_LAUNCH_VERBS = ("open", "launch", "start", "run", "load")
+
+# Text-entry value extraction. Real objectives write the payload unquoted
+# ("type the marker GUI_LIFECYCLE_42 into the document"); a quoted value is
+# preferred, but the unquoted payload between the verb and its "into/in/to"
+# target is captured when no quotes are present.
+_TYPED_SEGMENT = re.compile(
+    r"\b(?:type|enter|fill|write)\b\s+(?:the\s+|a\s+|an\s+)?(?P<value>.+?)\s+(?:into|in|to)\b",
+    re.IGNORECASE,
+)
+_TYPED_FILLER_LEAD = re.compile(
+    r"^(?:text|marker|string|value|word|following|this|these|message|content|phrase)\s+",
+    re.IGNORECASE,
+)
+_TYPED_VERB = re.compile(r"\b(?:type|enter|fill|write)\b", re.IGNORECASE)
+
+# A negation within this window before an application alias means the objective
+# names that application as an exclusion ("without a terminal"), not a target.
+_NEGATION = re.compile(r"\b(?:no|not|without|non|avoid|skip|except|other than)\b", re.IGNORECASE)
+
 
 def _first_quoted(text: str) -> str | None:
     match = _QUOTED.search(text)
@@ -85,10 +123,67 @@ def _application_menu_label(text: str) -> str | None:
     return None
 
 
+def _looks_like_app_launch(lowered: str) -> bool:
+    """True when the objective is launching an application by concept name."""
+    return any(re.search(rf"\b{verb}\b", lowered) for verb in _APP_LAUNCH_VERBS)
+
+
+def _match_application(lowered: str) -> tuple[str | None, str] | None:
+    """Map an app-launch objective to its concrete (category, label) on screen.
+
+    The leftmost non-negated alias wins, so "open the web browser without a
+    terminal" resolves to the browser rather than the terminal named later as an
+    exclusion. An alias preceded by a negation word ("no terminal", "without
+    using a browser") names what to avoid, not what to launch.
+    """
+    candidates: list[tuple[int, str | None, str]] = []
+    for aliases, category, label in _APP_CATALOG:
+        for alias in aliases:
+            match = re.search(rf"(?<![\w-]){re.escape(alias)}\b", lowered)
+            if match is None:
+                continue
+            prefix = lowered[max(0, match.start() - 24):match.start()]
+            if _NEGATION.search(prefix):
+                continue
+            candidates.append((match.start(), category, label))
+    if not candidates:
+        return None
+    candidates.sort()
+    _, category, label = candidates[0]
+    return category, label
+
+
+def _typed_value(text: str) -> str | None:
+    """Return the literal text a type/enter/fill objective wants entered.
+
+    A quoted payload wins; otherwise the noun phrase between the verb and its
+    destination is used, with leading filler words ("the marker", "the text")
+    stripped so the value that reaches the keyboard is the payload itself.
+    """
+    quoted = _quoted_after(text, "type") or _quoted_after(text, "enter") or _quoted_after(text, "fill")
+    if quoted is not None:
+        return quoted
+    segment = _TYPED_SEGMENT.search(text)
+    if segment:
+        value = _TYPED_FILLER_LEAD.sub("", segment.group("value").strip()).strip()
+        return value[:200] if value else None
+    # No explicit destination ("type GUI_OK"): take the remainder after the verb.
+    verb = _TYPED_VERB.search(text)
+    if verb:
+        value = _TYPED_FILLER_LEAD.sub("", text[verb.end():].strip()).strip()
+        value = re.split(r"[.,;:!?()\n]", value, maxsplit=1)[0].strip()
+        return value[:200] if value else None
+    return None
+
+
 def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[str, Any]]:
     """Return a list of GUI step dicts (see ``WorkerGuiStep``) for a task."""
     blob = " ".join(part for part in (title, objective, scope) if part).strip()
     lowered = blob.lower()
+    # App-launch routing keys off the instruction text, not the short task title:
+    # a title like "Open the editor" is not enough to distinguish launching a
+    # desktop application from clicking a label that is already on screen.
+    instruction_lowered = " ".join(part for part in (objective, scope) if part).strip().lower()
 
     steps: list[dict[str, Any]] = []
 
@@ -98,6 +193,18 @@ def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[s
     if click_label is None:
         click_label = _label_after_verb(blob, _CLICK_VERBS)
     menu_label = _application_menu_label(blob)
+    app_match = _match_application(instruction_lowered) if _looks_like_app_launch(instruction_lowered) else None
+    if app_match is not None:
+        # The concept name ("text editor") is not a pixel label; route through the
+        # launcher to the concrete menu label ("Mousepad") the desktop renders,
+        # opening the category submenu first when the entry lives inside one.
+        category, app_label = app_match
+        click_label = None
+        steps.append({"action_type": "MOUSE_CLICK", "target": _MENU_LABEL, "confidence": 0.95})
+        if category and category.lower() not in lowered:
+            steps.append({"action_type": "MOUSE_CLICK", "target": category, "confidence": 0.95})
+        steps.append({"action_type": "MOUSE_CLICK", "target": app_label, "confidence": 0.95})
+        menu_label = None
     if menu_label and (click_label is None or menu_label.lower() != click_label.lower()):
         # Opening the application menu is the first real step when the objective
         # routes through it; the launcher must be open before its entries can be
@@ -115,7 +222,7 @@ def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[s
     # Text entry tasks: "type/enter <value> into the <field>". A real desktop has no
     # focus to inherit, so the field must be clicked first; without that the keyboard
     # focus gate fails closed and nothing is typed.
-    typed_value = _quoted_after(blob, "type") or _quoted_after(blob, "enter") or _quoted_after(blob, "fill")
+    typed_value = _typed_value(" ".join(part for part in (objective, scope) if part).strip() or blob)
     if any(word in lowered for word in ("type", "enter", "fill", "write")) and typed_value is not None:
         field_match = _INTO_FIELD.search(blob)
         field_label = _first_quoted(field_match.group(1)) if field_match else None

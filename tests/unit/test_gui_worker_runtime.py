@@ -91,6 +91,47 @@ def test_planner_falls_back_to_settle_without_groundable_verb():
     assert steps == [{"action_type": "WAIT_SETTLE", "confidence": 0.99}]
 
 
+def test_planner_routes_app_concept_through_launcher_to_real_label():
+    """A concept name ("text editor") is not on screen; route to the menu label."""
+    steps = derive_gui_steps(
+        "Open text editor and create new document",
+        "Launch the default text editor application via GUI and open a new blank document window.",
+        "Use only GUI interactions to start the text editor application.",
+    )
+    assert steps == [
+        {"action_type": "MOUSE_CLICK", "target": "Applications", "confidence": 0.95},
+        {"action_type": "MOUSE_CLICK", "target": "Accessories", "confidence": 0.95},
+        {"action_type": "MOUSE_CLICK", "target": "Mousepad", "confidence": 0.95},
+    ]
+
+
+def test_planner_extracts_unquoted_typed_payload():
+    steps = derive_gui_steps(
+        "Launch text editor and type marker",
+        "Open the text editor on the desktop and type the marker GUI_LIFECYCLE_42 into the document.",
+    )
+    assert steps[-1] == {"action_type": "KEY_TYPE", "text": "GUI_LIFECYCLE_42", "confidence": 0.95}
+    assert [s["target"] for s in steps[:3]] == ["Applications", "Accessories", "Mousepad"]
+
+
+def test_planner_does_not_treat_menu_click_title_as_app_launch():
+    """A short title naming an editor must not hijack an explicit menu click."""
+    steps = derive_gui_steps("Open the editor", "Click the 'Applications' menu to open it")
+    assert steps == [{"action_type": "MOUSE_CLICK", "target": "Applications", "confidence": 0.95}]
+
+
+def test_planner_targets_leftmost_app_and_skips_negated_exclusion():
+    """A later exclusion ("without a terminal") must not become the launch target."""
+    steps = derive_gui_steps(
+        "Open browser",
+        "Open the web browser application, without using a terminal.",
+    )
+    assert steps == [
+        {"action_type": "MOUSE_CLICK", "target": "Applications", "confidence": 0.95},
+        {"action_type": "MOUSE_CLICK", "target": "Web Browser", "confidence": 0.95},
+    ]
+
+
 def test_engine_reuses_last_click_for_coordinateless_key_type():
     from neural.gui_intelligence.worker import GuiStepPlan, GuiWorkerEngine
 
