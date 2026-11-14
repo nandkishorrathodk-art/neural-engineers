@@ -19,8 +19,16 @@ import shutil
 import subprocess
 import tempfile
 import time
+from typing import Optional
+
+import numpy as np
 
 from neural.gui_intelligence.models import ScreenFrame
+from neural.gui_intelligence.perception.ocr_cache import (
+    OCR_NORMALIZATION_VERSION,
+    OCRRegion,
+    RegionOCRCache,
+)
 from neural.gui_intelligence.perception.pixel_ocr import OCRResult
 from neural.gui_intelligence.runtime.errors import DesktopRuntimeUnavailable
 from neural.logger import get_logger
@@ -48,19 +56,61 @@ class TesseractOCREngine:
         tesseract_bin: str = "tesseract",
         psm: int = 6,
         upscales: tuple[int, ...] = _OCR_UPSCALES,
+        lang: str = "eng",
+        region_cache: Optional[RegionOCRCache] = None,
+        max_cache_entries: int = 64,
     ) -> None:
         self.tesseract_bin = tesseract_bin
         # psm 6 = "single uniform block of text": reliably reads the menu bars,
         # window titles, and labels of a desktop screenshot. Sparse mode (psm 11)
         # fragments those labels into unreadable noise on a real X desktop.
         self.psm = psm
+        self.lang = lang
         self.upscales = tuple(sorted({max(1, int(u)) for u in upscales})) or (1,)
         self._cache_key: str | None = None
         self._cache_regions: list[OCRResult] = []
+        # Region-level cache: keyed on region pixels + geometry + OCR config, so an
+        # unchanged region is reused even when the whole-frame hash moved (cursor
+        # blink, clock tick). Bounded, so a long run cannot grow memory forever.
+        self._region_cache = region_cache or RegionOCRCache(max_entries=max_cache_entries)
+        # Config signature: results must never survive a change to any of these.
+        self._config_signature = "|".join(
+            [
+                f"bin={os.path.basename(self.tesseract_bin)}",
+                f"psm={self.psm}",
+                f"lang={self.lang}",
+                f"upscales={','.join(str(u) for u in self.upscales)}",
+                f"norm={OCR_NORMALIZATION_VERSION}",
+            ]
+        )
+        # Per-call telemetry for the last public call, plus cumulative counters
+        # for the whole engine lifetime (merged upward into worker timings).
+        self.last_metrics: dict[str, float] = {}
+        self.metrics: dict[str, float] = {
+            "ocr_full_frame_calls": 0.0,
+            "ocr_region_calls": 0.0,
+            "ocr_cache_hits": 0.0,
+            "ocr_cache_misses": 0.0,
+            "ocr_total_ms": 0.0,
+            "ocr_full_frame_ms": 0.0,
+            "ocr_region_ms": 0.0,
+            "ocr_regions_processed": 0.0,
+        }
+
+    def metrics_snapshot(self) -> dict[str, float]:
+        return dict(self.metrics)
 
     @property
     def available(self) -> bool:
         return shutil.which(self.tesseract_bin) is not None
+
+    @property
+    def cache_stats(self) -> dict[str, int]:
+        return self._region_cache.stats.to_dict()
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        return self._region_cache.stats.hit_ratio
 
     def _require(self) -> str:
         path = shutil.which(self.tesseract_bin)
@@ -70,15 +120,14 @@ class TesseractOCREngine:
             )
         return path
 
-    def _run_tsv(self, frame: ScreenFrame, upscale: int) -> str:
+    def _run_tsv(self, pixels: np.ndarray, upscale: int) -> str:
         binary = self._require()
-        import numpy as np
         from PIL import Image
 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
             tmp_path = handle.name
         try:
-            image = Image.fromarray(np.asarray(frame.pixels, dtype="uint8"))
+            image = Image.fromarray(np.asarray(pixels, dtype="uint8"))
             if upscale > 1:
                 # Grayscale + nearest-neighbour upscale: nearest preserves the crisp
                 # pixel edges tesseract's classifier expects, whereas smoothing
@@ -89,7 +138,7 @@ class TesseractOCREngine:
                 )
             image.save(tmp_path)
             proc = subprocess.run(
-                [binary, tmp_path, "stdout", "--psm", str(self.psm), "tsv"],
+                [binary, tmp_path, "stdout", "-l", self.lang, "--psm", str(self.psm), "tsv"],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -178,26 +227,185 @@ class TesseractOCREngine:
         cached per frame so a verification pass reads each frame once.
         """
         if frame.frame_hash and frame.frame_hash == self._cache_key:
+            self.last_metrics = {
+                "ocr_total_ms": 0.0,
+                "ocr_full_frame_ms": 0.0,
+                "ocr_regions_processed": 0.0,
+                "ocr_cache_hit": 1.0,
+            }
+            self.metrics["ocr_cache_hits"] += 1
             return self._cache_regions
         start = time.perf_counter()
+        regions = self._ocr_pixels(frame.pixels)
+        self._cache_key = frame.frame_hash
+        self._cache_regions = regions
+        elapsed = (time.perf_counter() - start) * 1000.0
+        self.last_metrics = {
+            "ocr_total_ms": elapsed,
+            "ocr_full_frame_ms": elapsed,
+            "ocr_regions_processed": float(len(regions)),
+            "ocr_cache_hit": 0.0,
+        }
+        self.metrics["ocr_full_frame_calls"] += 1
+        self.metrics["ocr_cache_misses"] += 1
+        self.metrics["ocr_total_ms"] += elapsed
+        self.metrics["ocr_full_frame_ms"] += elapsed
+        self.metrics["ocr_regions_processed"] += float(len(regions))
+        logger.debug(
+            "Tesseract OCR scan completed",
+            regions=len(regions),
+            upscales=list(self.upscales),
+            elapsed_ms=elapsed,
+        )
+        return regions
+
+    def _ocr_pixels(self, pixels: np.ndarray) -> list[OCRResult]:
+        """Run multi-scale OCR on a pixel array, mapping boxes to array coordinates."""
         regions: list[OCRResult] = []
         seen: set[tuple[str, tuple[int, int, int, int]]] = set()
         for upscale in self.upscales:
-            for region in self._parse_tsv(self._run_tsv(frame, upscale), scale=upscale):
+            for region in self._parse_tsv(self._run_tsv(pixels, upscale), scale=upscale):
                 key = (region.text, region.bounding_box)
                 if key in seen:
                     continue
                 seen.add(key)
                 regions.append(region)
-        self._cache_key = frame.frame_hash
-        self._cache_regions = regions
-        logger.debug(
-            "Tesseract OCR scan completed",
-            regions=len(regions),
-            upscales=list(self.upscales),
-            elapsed_ms=(time.perf_counter() - start) * 1000.0,
-        )
         return regions
+
+    # -- region OCR ------------------------------------------------------------
+
+    def extract_region_text(
+        self,
+        frame: ScreenFrame,
+        region: OCRRegion,
+        cache: bool = True,
+    ) -> list[OCRResult]:
+        """OCR a single screen region and return boxes in *original* coordinates.
+
+        The region is cropped from the frame and OCR'd at every configured upscale;
+        a crop preserves glyph pixel size, so the same upscale ladder gives the same
+        legibility as a full-frame read. Every box is offset back into original
+        desktop space. Results are cached on the region's own pixels so an unrelated
+        change elsewhere on screen cannot evict a still-valid region.
+        """
+        screen = (int(frame.width), int(frame.height))
+        self._region_cache.note_screen(screen)
+        clamped = region.clamped(*screen)
+        if clamped is None:
+            self.last_metrics = {
+                "ocr_total_ms": 0.0,
+                "ocr_region_ms": 0.0,
+                "ocr_region_area": 0.0,
+                "ocr_screen_area": float(screen[0] * screen[1]),
+                "ocr_regions_processed": 0.0,
+                "ocr_cache_hit": 0.0,
+            }
+            return []
+
+        crop = frame.pixels[
+            clamped.y : clamped.y + clamped.height,
+            clamped.x : clamped.x + clamped.width,
+        ]
+        if crop.size == 0:
+            self.last_metrics = {
+                "ocr_total_ms": 0.0,
+                "ocr_region_ms": 0.0,
+                "ocr_region_area": float(clamped.area),
+                "ocr_screen_area": float(screen[0] * screen[1]),
+                "ocr_regions_processed": 0.0,
+                "ocr_cache_hit": 0.0,
+            }
+            return []
+
+        start = time.perf_counter()
+        cache_key = self._region_cache.make_key(
+            clamped, crop, screen, self._config_signature
+        )
+        if cache:
+            cached = self._region_cache.get(cache_key)
+            if cached is not None:
+                elapsed = (time.perf_counter() - start) * 1000.0
+                self.last_metrics = {
+                    "ocr_total_ms": elapsed,
+                    "ocr_region_ms": elapsed,
+                    "ocr_region_area": float(clamped.area),
+                    "ocr_screen_area": float(screen[0] * screen[1]),
+                    "ocr_regions_processed": float(len(cached)),
+                    "ocr_cache_hit": 1.0,
+                }
+                self.metrics["ocr_region_calls"] += 1
+                self.metrics["ocr_cache_hits"] += 1
+                self.metrics["ocr_total_ms"] += elapsed
+                self.metrics["ocr_region_ms"] += elapsed
+                return cached
+
+        # A region crop preserves the glyphs' pixel size, so the same configured
+        # upscale ladder gives the same legibility as a full-frame read. Scaling a
+        # small crop further would only enlarge already-legible glyphs and cost time.
+        local = self._ocr_pixels(crop)
+        results = [
+            OCRResult(
+                text=r.text,
+                bounding_box=(
+                    r.bounding_box[0] + clamped.x,
+                    r.bounding_box[1] + clamped.y,
+                    r.bounding_box[2] + clamped.x,
+                    r.bounding_box[3] + clamped.y,
+                ),
+                confidence=r.confidence,
+            )
+            for r in local
+        ]
+        if cache and results:
+            self._region_cache.put(cache_key, results)
+        elapsed = (time.perf_counter() - start) * 1000.0
+        self.last_metrics = {
+            "ocr_total_ms": elapsed,
+            "ocr_region_ms": elapsed,
+            "ocr_region_area": float(clamped.area),
+            "ocr_screen_area": float(screen[0] * screen[1]),
+            "ocr_regions_processed": float(len(results)),
+            "ocr_cache_hit": 0.0,
+        }
+        self.metrics["ocr_region_calls"] += 1
+        self.metrics["ocr_cache_misses"] += 1
+        self.metrics["ocr_total_ms"] += elapsed
+        self.metrics["ocr_region_ms"] += elapsed
+        self.metrics["ocr_regions_processed"] += float(len(results))
+        return results
+
+    def find_text_in_region(
+        self,
+        frame: ScreenFrame,
+        query: str,
+        region: OCRRegion,
+        fuzzy: bool = True,
+        min_confidence: float = 0.70,
+        cache: bool = True,
+    ) -> list[OCRResult]:
+        """Match a query against the OCR of a single region (boxes in screen space)."""
+        if not query or not query.strip():
+            return []
+        return self._match(
+            query,
+            self.extract_region_text(frame, region, cache=cache),
+            fuzzy=fuzzy,
+            min_confidence=min_confidence,
+        )
+
+    def has_containment_match(self, query: str, matches: list[OCRResult]) -> bool:
+        """True when the query's normalized text appears inside a matched reading.
+
+        Tesseract's per-word confidence is noisier on a cropped region than on the
+        full frame (block context differs), so a correct region read can score a
+        little lower than the same word read frame-wide. A separator-insensitive
+        containment is strong textual evidence in its own right and must not be
+        discarded merely because the confidence dipped.
+        """
+        query_key = self._normalize(query)
+        if len(query_key) < 4:
+            return False
+        return any(query_key in self._normalize(m.text) for m in matches)
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -210,21 +418,24 @@ class TesseractOCREngine:
     def _digits(text: str) -> str:
         return re.sub(r"\D", "", text)
 
-    def find_text(
+    def _match(
         self,
-        frame: ScreenFrame,
         query: str,
-        fuzzy: bool = True,
-        min_confidence: float = 0.70,
+        regions: list[OCRResult],
+        fuzzy: bool,
+        min_confidence: float,
     ) -> list[OCRResult]:
-        if not query or not query.strip():
-            return []
+        """Apply the existing matching rules to a set of OCR regions.
+
+        Shared by the full-frame and region paths so both obey the same
+        separator-insensitive containment, digit guard and fuzzy ratio.
+        """
         import difflib
 
         query_norm = query.strip().lower()
         query_key = self._normalize(query)
         matched: list[OCRResult] = []
-        for region in self.extract_text_regions(frame):
+        for region in regions:
             text_norm = region.text.strip().lower()
             text_key = self._normalize(region.text)
             # Separator-insensitive containment: a marker rendered as "GUI-OK" must
@@ -260,6 +471,22 @@ class TesseractOCREngine:
                         )
                     )
         return matched
+
+    def find_text(
+        self,
+        frame: ScreenFrame,
+        query: str,
+        fuzzy: bool = True,
+        min_confidence: float = 0.70,
+    ) -> list[OCRResult]:
+        if not query or not query.strip():
+            return []
+        return self._match(
+            query,
+            self.extract_text_regions(frame),
+            fuzzy=fuzzy,
+            min_confidence=min_confidence,
+        )
 
     def register_mock_text(self, *_args, **_kwargs) -> None:  # interface parity with PixelOCREngine
         raise DesktopRuntimeUnavailable(

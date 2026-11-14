@@ -1,0 +1,159 @@
+{
+  "runs_off": [
+    {
+      "enable_region_hints": false,
+      "status": "failed",
+      "steps_executed": 2,
+      "grounding_ms": 1245.5,
+      "run_ms": 2124.6,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 2.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 2.0,
+        "ocr_total_ms": 1105.3,
+        "ocr_full_frame_ms": 1105.3,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 44.0
+      },
+      "receipt_statuses": [
+        "SUCCESS",
+        "SUCCESS"
+      ],
+      "receipt_deltas": [
+        "delta_0.0106",
+        "delta_0.0106"
+      ]
+    },
+    {
+      "enable_region_hints": false,
+      "status": "failed",
+      "steps_executed": 2,
+      "grounding_ms": 1301.4,
+      "run_ms": 2156.7,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 2.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 2.0,
+        "ocr_total_ms": 1151.2,
+        "ocr_full_frame_ms": 1151.2,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 44.0
+      },
+      "receipt_statuses": [
+        "SUCCESS",
+        "SUCCESS"
+      ],
+      "receipt_deltas": [
+        "delta_0.0106",
+        "delta_0.0106"
+      ]
+    },
+    {
+      "enable_region_hints": false,
+      "status": "failed",
+      "steps_executed": 2,
+      "grounding_ms": 1236.5,
+      "run_ms": 2089.8,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 2.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 2.0,
+        "ocr_total_ms": 1103.2,
+        "ocr_full_frame_ms": 1103.2,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 44.0
+      },
+      "receipt_statuses": [
+        "SUCCESS",
+        "SUCCESS"
+      ],
+      "receipt_deltas": [
+        "delta_0.0106",
+        "delta_0.0106"
+      ]
+    }
+  ],
+  "runs_on": [
+    {
+      "enable_region_hints": true,
+      "status": "failed",
+      "steps_executed": 2,
+      "grounding_ms": 840.2,
+      "run_ms": 1689.0,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 1.0,
+        "ocr_region_calls": 1.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 2.0,
+        "ocr_total_ms": 706.7,
+        "ocr_full_frame_ms": 515.2,
+        "ocr_region_ms": 191.5,
+        "ocr_regions_processed": 21.0
+      },
+      "receipt_statuses": [
+        "SUCCESS",
+        "SUCCESS"
+      ],
+      "receipt_deltas": [
+        "delta_0.0106",
+        "delta_0.0106"
+      ]
+    },
+    {
+      "enable_region_hints": true,
+      "status": "failed",
+      "steps_executed": 2,
+      "grounding_ms": 1007.1,
+      "run_ms": 1867.4,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 1.0,
+        "ocr_region_calls": 1.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 2.0,
+        "ocr_total_ms": 875.1,
+        "ocr_full_frame_ms": 681.1,
+        "ocr_region_ms": 194.0,
+        "ocr_regions_processed": 21.0
+      },
+      "receipt_statuses": [
+        "SUCCESS",
+        "SUCCESS"
+      ],
+      "receipt_deltas": [
+        "delta_0.0106",
+        "delta_0.0106"
+      ]
+    },
+    {
+      "enable_region_hints": true,
+      "status": "failed",
+      "steps_executed": 2,
+      "grounding_ms": 837.7,
+      "run_ms": 1701.3,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 1.0,
+        "ocr_region_calls": 1.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 2.0,
+        "ocr_total_ms": 704.3,
+        "ocr_full_frame_ms": 512.4,
+        "ocr_region_ms": 191.9,
+        "ocr_regions_processed": 21.0
+      },
+      "receipt_statuses": [
+        "SUCCESS",
+        "SUCCESS"
+      ],
+      "receipt_deltas": [
+        "delta_0.0106",
+        "delta_0.0106"
+      ]
+    }
+  ],
+  "grounding_ms_off_median": 1245.5,
+  "grounding_ms_on_median": 840.2,
+  "speedup": 1.48
+}

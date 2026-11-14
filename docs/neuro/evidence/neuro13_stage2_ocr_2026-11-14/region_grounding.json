@@ -1,0 +1,33 @@
+{
+  "target": "File",
+  "resolution": [
+    1280,
+    800
+  ],
+  "region": [
+    301,
+    145,
+    77,
+    67
+  ],
+  "full_frame_median_ms": 538.8,
+  "region_hint_median_ms": 198.8,
+  "region_hint_source": "region",
+  "region_cold_speedup": 2.71,
+  "warm_region_cache_median_ms": 0.017,
+  "warm_cache_stats": {
+    "hits": 20,
+    "misses": 1,
+    "evictions": 0,
+    "stores": 1
+  },
+  "same_coordinates": true,
+  "full_coords": [
+    339,
+    178
+  ],
+  "region_coords": [
+    339,
+    178
+  ]
+}

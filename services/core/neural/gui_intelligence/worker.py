@@ -84,6 +84,9 @@ class GuiWorkerResult:
     # "step_ms" (sum of per-action receipt execution), "verification_ms" (final
     # independent verifier), "run_ms" (total). Measured, not estimated.
     timings: dict[str, float] = field(default_factory=dict)
+    # Cumulative OCR counters for the run: full-frame vs region calls, cache
+    # hits/misses, and time split by path. Additive; consumers ignore if unknown.
+    ocr_metrics: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +100,7 @@ class GuiWorkerResult:
             "verification": self.verification,
             "error": self.error,
             "timings": self.timings,
+            "ocr_metrics": self.ocr_metrics,
         }
 
 
@@ -108,10 +112,17 @@ class GuiWorkerEngine:
         container_manager: Any,
         display: str = ":1",
         require_real_desktop: bool = True,
+        enable_region_hints: bool = True,
     ) -> None:
         self.container_manager = container_manager
         self.display = display
         self.require_real_desktop = require_real_desktop
+        # When enabled, a target already located once is re-grounded inside its
+        # last known region instead of re-reading the whole screen. Purely a
+        # performance optimization: the region result is still validated, and a
+        # weak region match falls back to a full-frame read, so correctness is
+        # unchanged. Kept switchable so the optimization can be A/B measured.
+        self.enable_region_hints = enable_region_hints
 
     def _build_loop(
         self,
@@ -157,11 +168,22 @@ class GuiWorkerEngine:
         receipts: list[dict] = []
         executed = 0
         last_coordinates: Optional[tuple[int, int]] = None
+        # Last screen region each target was grounded in. Re-grounding the *same*
+        # target (a retry, or a later step) can then look only inside that region
+        # instead of re-reading the whole screen. Keyed by target text so a hint is
+        # only ever used for a target we have actually located before.
+        target_regions: dict[str, Any] = {}
+        ocr_metrics: dict[str, float] = {}
         for raw_step in steps:
             step = raw_step if isinstance(raw_step, GuiStepPlan) else GuiStepPlan(**raw_step)
             # Ground against a fresh frame: a previous step (e.g. opening the
             # application menu) changes what is visible, so a target that only
             # appears afterwards cannot be located on the task-start frame.
+            hint = (
+                target_regions.get(step.target)
+                if (step.target and self.enable_region_hints)
+                else None
+            )
             _ground_start = time.perf_counter()
             request = self._to_request_with_fresh_frame(
                 driver,
@@ -169,12 +191,21 @@ class GuiWorkerEngine:
                 step,
                 grounder=loop.grounder,
                 fallback_coordinates=last_coordinates,
+                region_hint=hint,
             )
             # Fresh-frame capture + OCR target search is a real per-step cost that
             # happens before the action loop; attribute it separately.
             timings["grounding_ms"] = timings.get("grounding_ms", 0.0) + (
                 time.perf_counter() - _ground_start
             ) * 1000.0
+            self._accumulate_ocr_metrics(ocr_metrics, loop.grounder)
+            grounded = getattr(loop.grounder, "last_target", None)
+            if step.target and grounded is not None and grounded.bounding_box != (0, 0, 0, 0):
+                region = VisualGrounder.region_from_box(
+                    grounded.bounding_box, frame_before.resolution
+                )
+                if region is not None:
+                    target_regions[step.target] = region
             _step_start = time.perf_counter()
             receipt: GUIActionReceipt = loop.execute_action(request)
             timings["step_ms"] = timings.get("step_ms", 0.0) + (
@@ -241,6 +272,7 @@ class GuiWorkerEngine:
             verification=verification_dict,
             error=error,
             timings=timings,
+            ocr_metrics=ocr_metrics,
         )
         if status == "failed":
             logger.error("GUI task failed", employee_id=employee_id, error=error)
@@ -253,6 +285,7 @@ class GuiWorkerEngine:
         step: GuiStepPlan,
         grounder: VisualGrounder,
         fallback_coordinates: Optional[tuple[int, int]] = None,
+        region_hint=None,
     ) -> GUIActionRequest:
         """Resolve a step against a freshly captured frame, retrying while a target settles.
 
@@ -271,6 +304,7 @@ class GuiWorkerEngine:
                     frame=frame,
                     grounder=grounder,
                     fallback_coordinates=fallback_coordinates,
+                    region_hint=region_hint,
                 )
             except GuiWorkerExecutionError as exc:
                 last_error = exc
@@ -286,10 +320,11 @@ class GuiWorkerEngine:
         frame,
         grounder: VisualGrounder,
         fallback_coordinates: Optional[tuple[int, int]] = None,
+        region_hint=None,
     ) -> GUIActionRequest:
         coordinates = step.coordinates
         if coordinates is None and step.target:
-            coordinates = self._ground(grounder, frame, step.target)
+            coordinates = self._ground(grounder, frame, step.target, region_hint=region_hint)
         if (
             coordinates is None
             and step.action_type == "KEY_TYPE"
@@ -323,8 +358,17 @@ class GuiWorkerEngine:
         return GUIActionRequest(**payload)
 
     @staticmethod
-    def _ground(grounder: VisualGrounder, frame, target: str) -> tuple[int, int]:
-        grounded = grounder.ground_query(frame, target)
+    def _ground(
+        grounder: VisualGrounder,
+        frame,
+        target: str,
+        region_hint=None,
+    ) -> tuple[int, int]:
+        grounded = (
+            grounder.ground_query(frame, target, region_hint=region_hint)
+            if region_hint is not None
+            else grounder.ground_query(frame, target)
+        )
         coordinates = getattr(grounded, "coordinates", None) if grounded else None
         if grounded is None or coordinates is None or coordinates[0] < 0 or coordinates[1] < 0:
             # ground_query returns (-1, -1) when nothing matched; clicking that would
@@ -333,6 +377,19 @@ class GuiWorkerEngine:
                 f"Could not ground GUI target '{target}' on the live desktop; refusing to act blind."
             )
         return coordinates
+
+    @staticmethod
+    def _accumulate_ocr_metrics(acc: dict[str, float], grounder: VisualGrounder) -> None:
+        """Merge the grounder's OCR engine cumulative counters into ``acc``.
+
+        The counters are cumulative for the engine's lifetime, so the latest
+        snapshot already reflects every OCR call made so far in this run.
+        """
+        engine = getattr(grounder, "ocr_engine", None)
+        snapshot = getattr(engine, "metrics_snapshot", None)
+        if snapshot is None:
+            return
+        acc.update(snapshot())
 
 
 def build_gui_worker_engine(
