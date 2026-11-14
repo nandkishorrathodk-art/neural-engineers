@@ -1,0 +1,43 @@
+[
+  {
+    "title": "Open text editor and type NEURO13B-GUI-001",
+    "targets": [
+      "Applications",
+      "Accessories",
+      "Mousepad"
+    ],
+    "repeated_target": false
+  },
+  {
+    "title": "Create handoff.txt and perform hybrid GUI edit",
+    "targets": [
+      "Applications",
+      "Accessories",
+      "Mousepad"
+    ],
+    "repeated_target": false
+  },
+  {
+    "title": "Click File menu then click Edit menu",
+    "targets": [
+      "File"
+    ],
+    "repeated_target": false
+  },
+  {
+    "title": "Open text editor and type Y then type Y again",
+    "targets": [
+      "Applications",
+      "Accessories",
+      "Mousepad"
+    ],
+    "repeated_target": false
+  },
+  {
+    "title": "Save the document twice",
+    "targets": [
+      "handoff"
+    ],
+    "repeated_target": false
+  }
+]

@@ -1,0 +1,551 @@
+{
+  "broker_url": "http://172.19.0.2:12002",
+  "container": "ancos-desktop-anc-emp-repro0001",
+  "gui_only_contract": {
+    "raw": "1000\n1000\nCapEff:\t0000000000000000\nNoNewPrivs:\t0\ndocker_sock_absent\n/usr/bin/scrot\n"
+  },
+  "ocr_cold_warm": {
+    "full_frame_median_ms": 1064.6,
+    "region_cold_median_ms": 429.7,
+    "region_warm_median_ms": 0.288,
+    "region_vs_full_speedup": 2.48
+  },
+  "region_hint_ab": {
+    "off": [
+      {
+        "first_ms": 7.5,
+        "second_ms": 944.9,
+        "first_coords": [
+          74,
+          13
+        ],
+        "second_coords": [
+          64,
+          13
+        ],
+        "source": "full_frame"
+      },
+      {
+        "first_ms": 7.5,
+        "second_ms": 926.9,
+        "first_coords": [
+          74,
+          13
+        ],
+        "second_coords": [
+          64,
+          13
+        ],
+        "source": "full_frame"
+      },
+      {
+        "first_ms": 7.4,
+        "second_ms": 930.5,
+        "first_coords": [
+          74,
+          13
+        ],
+        "second_coords": [
+          64,
+          13
+        ],
+        "source": "full_frame"
+      }
+    ],
+    "on": [
+      {
+        "first_ms": 7.8,
+        "second_ms": 219.5,
+        "first_coords": [
+          74,
+          13
+        ],
+        "second_coords": [
+          59,
+          13
+        ],
+        "source": "region"
+      },
+      {
+        "first_ms": 7.6,
+        "second_ms": 222.9,
+        "first_coords": [
+          74,
+          13
+        ],
+        "second_coords": [
+          59,
+          13
+        ],
+        "source": "region"
+      },
+      {
+        "first_ms": 7.7,
+        "second_ms": 222.0,
+        "first_coords": [
+          74,
+          13
+        ],
+        "second_coords": [
+          59,
+          13
+        ],
+        "source": "region"
+      }
+    ]
+  },
+  "region_hint_ab_speedup": 4.19,
+  "worker_repeated_target_ab": {
+    "off": {
+      "grounding_ms": 1756.9,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 2.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 2.0,
+        "ocr_total_ms": 1501.9,
+        "ocr_full_frame_ms": 1501.9,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 167.0
+      }
+    },
+    "on": {
+      "grounding_ms": 1357.9,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 1.0,
+        "ocr_region_calls": 1.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 2.0,
+        "ocr_total_ms": 1094.9,
+        "ocr_full_frame_ms": 897.5,
+        "ocr_region_ms": 197.4,
+        "ocr_regions_processed": 135.0
+      }
+    },
+    "speedup": 1.29
+  },
+  "gui_objectives": [
+    {
+      "marker": "NEURO13B-GUI-001",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10376.7,
+      "grounding_ms": 3316.1,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2800.0,
+        "ocr_full_frame_ms": 2800.0,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 446.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-002",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10419.4,
+      "grounding_ms": 3398.1,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2894.7,
+        "ocr_full_frame_ms": 2894.7,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 440.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-003",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10343.9,
+      "grounding_ms": 3300.8,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2796.9,
+        "ocr_full_frame_ms": 2796.9,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 441.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-004",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10549.8,
+      "grounding_ms": 3262.7,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2739.8,
+        "ocr_full_frame_ms": 2739.8,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 446.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-005",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10339.4,
+      "grounding_ms": 3362.4,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2846.2,
+        "ocr_full_frame_ms": 2846.2,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 446.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-006",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10352.3,
+      "grounding_ms": 3320.7,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2780.6,
+        "ocr_full_frame_ms": 2780.6,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 446.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-007",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10427.5,
+      "grounding_ms": 3303.9,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2796.6,
+        "ocr_full_frame_ms": 2796.6,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 446.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-008",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10359.4,
+      "grounding_ms": 3395.4,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2891.1,
+        "ocr_full_frame_ms": 2891.1,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 446.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-009",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10544.5,
+      "grounding_ms": 3323.3,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2814.5,
+        "ocr_full_frame_ms": 2814.5,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 441.0
+      },
+      "error": null
+    },
+    {
+      "marker": "NEURO13B-GUI-010",
+      "status": "success",
+      "verified": true,
+      "steps_executed": 4,
+      "run_ms": 10404.3,
+      "grounding_ms": 3389.2,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2852.1,
+        "ocr_full_frame_ms": 2852.1,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 441.0
+      },
+      "error": null
+    }
+  ],
+  "hybrid_objectives": [
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22479.6,
+      "grounding_ms": 4800.2,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 3102.8,
+        "ocr_full_frame_ms": 3102.8,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 441.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22108.1,
+      "grounding_ms": 4542.2,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2862.8,
+        "ocr_full_frame_ms": 2862.8,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 440.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22062.6,
+      "grounding_ms": 4543.1,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2835.0,
+        "ocr_full_frame_ms": 2835.0,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 440.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22090.4,
+      "grounding_ms": 4528.0,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2831.4,
+        "ocr_full_frame_ms": 2831.4,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 440.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22257.1,
+      "grounding_ms": 4477.7,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2758.2,
+        "ocr_full_frame_ms": 2758.2,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 440.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22549.4,
+      "grounding_ms": 4875.1,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 3189.7,
+        "ocr_full_frame_ms": 3189.7,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 440.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22140.0,
+      "grounding_ms": 4484.2,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2816.0,
+        "ocr_full_frame_ms": 2816.0,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 447.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22339.7,
+      "grounding_ms": 4673.6,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2904.6,
+        "ocr_full_frame_ms": 2904.6,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 447.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22377.5,
+      "grounding_ms": 4861.5,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 3101.2,
+        "ocr_full_frame_ms": 3101.2,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 447.0
+      },
+      "error": null
+    },
+    {
+      "marker": "GUI_EDIT=HYBRID_GUI_OK",
+      "gui_status": "success",
+      "gui_verified": true,
+      "artifact_contains_payload": true,
+      "steps_executed": 14,
+      "run_ms": 22075.4,
+      "grounding_ms": 4505.3,
+      "ocr_metrics": {
+        "ocr_full_frame_calls": 3.0,
+        "ocr_region_calls": 0.0,
+        "ocr_cache_hits": 0.0,
+        "ocr_cache_misses": 3.0,
+        "ocr_total_ms": 2800.4,
+        "ocr_full_frame_ms": 2800.4,
+        "ocr_region_ms": 0.0,
+        "ocr_regions_processed": 445.0
+      },
+      "error": null
+    }
+  ],
+  "summary": {
+    "gui": {
+      "runs": 10,
+      "success_and_verified": 10,
+      "reliability": 1.0,
+      "run_ms_p50": 10376.7,
+      "run_ms_p95": 10549.8,
+      "grounding_ms_p50": 3320.7,
+      "grounding_ms_p95": 3398.1,
+      "ocr_full_frame_calls": 30.0,
+      "ocr_region_calls": 0.0,
+      "ocr_cache_hits": 0.0,
+      "ocr_cache_misses": 30.0,
+      "ocr_cache_hit_ratio": 0.0
+    },
+    "hybrid": {
+      "runs": 10,
+      "success_and_verified": 10,
+      "reliability": 1.0,
+      "run_ms_p50": 22140.0,
+      "run_ms_p95": 22549.4,
+      "grounding_ms_p50": 4542.2,
+      "grounding_ms_p95": 4875.1,
+      "ocr_full_frame_calls": 30.0,
+      "ocr_region_calls": 0.0,
+      "ocr_cache_hits": 0.0,
+      "ocr_cache_misses": 30.0,
+      "ocr_cache_hit_ratio": 0.0
+    }
+  }
+}
