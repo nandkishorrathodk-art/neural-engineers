@@ -1,0 +1,7 @@
+broken plan has ctrl+s: False
+2026-11-14 20:13:31 [warning  ] GUI step did not succeed; halting task action_id=gui_551f30e8fc employee_id=ANC-EMP-REPRO0001 status=BLOCKED_BY_SAFETY
+2026-11-14 20:13:31 [error    ] GUI task failed                employee_id=ANC-EMP-REPRO0001 error="Save not confirmed: no editor window reported the document as saved within 4000 ms (expected 'handoff.txt'); the edit was not persisted."
+
+NEG: status=failed steps=13 saved=False
+  last receipt: BLOCKED_BY_SAFETY | Save not confirmed: no editor window reported the document as saved within 4000 ms (expected 'handoff.txt'); the edit was not persisted.
+  titles: Xfwm4|Desktop|*~/workspace/handoff.txt - Mousepad|xfce4-panel|xfce4-panel|xfce4-panel|wrapper-2.0|wrapper-2.0|wrapper-2.0|

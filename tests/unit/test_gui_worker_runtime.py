@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from neural.gui_intelligence.action.keyboard_controller import canonicalize_hotkey
+from neural.gui_intelligence.models import GUIActionRequest
 from neural.gui_intelligence.perception.ocr_runtime import TesseractOCREngine
 from neural.gui_intelligence.runtime.desktop_driver import ContainerDesktopDriver
 from neural.gui_intelligence.runtime.planner import derive_gui_steps, expected_onscreen_text
@@ -563,3 +564,153 @@ def test_planner_prefers_gui_named_payload_over_terminal_named_one():
     assert "GUI_EDIT=HYBRID_GUI_OK" in typed
     assert "TERMINAL_PREPARED=1" not in typed
     assert expected_onscreen_text(steps) == "GUI_EDIT=HYBRID_GUI_OK"
+
+
+# ---------------------------------------------------------------------------
+# GUI save reliability (NEURO-12D): Ctrl+S is not proof of a save.
+# ---------------------------------------------------------------------------
+
+
+def test_planner_confirms_the_save_from_app_state_after_ctrl_s():
+    """A document edit must end with a CONFIRM_SAVED step, not just Ctrl+S.
+
+    Ctrl+S only proves a keystroke was sent. If the save is dropped (lost focus,
+    a modal dialog) the file is never written, yet every step still reports
+    success and the verify phase fails with no explanation. The plan must confirm
+    the save from the editor's own state, keyed on the document's file name.
+    """
+    steps = derive_gui_steps(
+        "Edit handoff.txt via GUI",
+        "Open handoff.txt in the graphical text editor and add the line "
+        "GUI_EDIT=HYBRID_GUI_OK, then save",
+    )
+    assert steps[-1]["action_type"] == "CONFIRM_SAVED"
+    assert steps[-1]["expected_text"] == "handoff.txt"
+    # The confirmation must follow the save keystroke, not replace it.
+    ctrl_s = next(i for i, s in enumerate(steps) if s.get("key_code") == "ctrl+s")
+    assert ctrl_s < len(steps) - 1
+
+
+def _make_loop(window_state_provider):
+    from neural.gui_intelligence.action.execution_loop import GUIExecutionLoop
+
+    return GUIExecutionLoop(window_state_provider=window_state_provider)
+
+
+def test_confirm_saved_succeeds_when_document_is_unmodified():
+    loop = _make_loop(lambda: ["~/workspace/handoff.txt - Mousepad"])
+    receipt = loop.execute_action(
+        GUIActionRequest(
+            action_id="act_saved",
+            employee_id="emp",
+            action_type="CONFIRM_SAVED",
+            confidence=0.95,
+            expected_text="handoff.txt",
+            settle_ms=200,
+        )
+    )
+    assert receipt.status == "SUCCESS"
+
+
+def test_confirm_saved_fails_closed_when_document_is_still_dirty():
+    """A document still carrying the '*' modified marker must fail the save step.
+
+    The window title names the file but is still prefixed with '*', so the editor
+    itself is reporting the edit as unsaved; the confirmation must not accept it.
+    """
+    loop = _make_loop(lambda: ["*~/workspace/handoff.txt - Mousepad"])
+    receipt = loop.execute_action(
+        GUIActionRequest(
+            action_id="act_dirty",
+            employee_id="emp",
+            action_type="CONFIRM_SAVED",
+            confidence=0.95,
+            expected_text="handoff.txt",
+            settle_ms=150,
+        )
+    )
+    assert receipt.status == "BLOCKED_BY_SAFETY"
+    assert "Save not confirmed" in (receipt.error_message or "")
+
+
+def test_confirm_saved_reissues_ctrl_s_when_document_remains_dirty():
+    """A dropped save keystroke must be retried, not failed immediately.
+
+    The target document is open but still dirty, so the loop re-issues Ctrl+S
+    and succeeds once the app reports it saved. A redundant Ctrl+S is harmless.
+    """
+    from neural.gui_intelligence.action.execution_loop import GUIExecutionLoop
+
+    states = iter(
+        [
+            ["*~/workspace/handoff.txt - Mousepad"],
+            ["~/workspace/handoff.txt - Mousepad"],
+        ]
+    )
+    sent: list[str] = []
+
+    class _Keyboard:
+        def send_hotkey(self, hotkey: str) -> float:
+            sent.append(hotkey)
+            return 0.0
+
+    loop = GUIExecutionLoop(
+        window_state_provider=lambda: next(states), keyboard_controller=_Keyboard()
+    )
+    receipt = loop.execute_action(
+        GUIActionRequest(
+            action_id="act_retry",
+            employee_id="emp",
+            action_type="CONFIRM_SAVED",
+            confidence=0.95,
+            expected_text="handoff.txt",
+            settle_ms=4000,
+        )
+    )
+    assert receipt.status == "SUCCESS"
+    assert sent == ["ctrl+s"]
+
+
+def test_confirm_saved_requires_a_window_state_provider():
+    """Without the live window state the confirmation cannot be honest, so it must
+    fail closed rather than assume the save worked."""
+    from neural.gui_intelligence.action.execution_loop import GUIExecutionLoop
+
+    loop = GUIExecutionLoop()
+    receipt = loop.execute_action(
+        GUIActionRequest(
+            action_id="act_noprovider",
+            employee_id="emp",
+            action_type="CONFIRM_SAVED",
+            confidence=0.95,
+            expected_text="handoff.txt",
+            settle_ms=150,
+        )
+    )
+    assert receipt.status == "BLOCKED_BY_SAFETY"
+    assert "window-state provider" in (receipt.error_message or "")
+
+
+def test_document_saved_ignores_dirty_marker_and_foreign_documents():
+    from neural.gui_intelligence.action.execution_loop import GUIExecutionLoop
+
+    dirty = ["*~/workspace/handoff.txt - Mousepad"]
+    foreign = ["~/workspace/other.txt - Mousepad"]
+    saved = ["~/workspace/handoff.txt - Mousepad"]
+    assert GUIExecutionLoop._document_saved(dirty, "handoff.txt") is False
+    assert GUIExecutionLoop._document_saved(foreign, "handoff.txt") is False
+    assert GUIExecutionLoop._document_saved(saved, "handoff.txt") is True
+    # Without a marker, a titled document window still counts, but a bare app
+    # window (no document) must not vouch for a save.
+    assert GUIExecutionLoop._document_saved(["Mousepad"], None) is False
+    assert GUIExecutionLoop._document_saved(["~/workspace/x - Mousepad"], None) is True
+
+
+def test_driver_window_titles_reads_visible_titles():
+    manager = _RecordingManager(stdout="Mousepad\n*~/workspace/handoff.txt - Mousepad\n")
+    driver = ContainerDesktopDriver(manager, "ancos-desktop-anc-emp-test", display=":1")
+    titles = driver.window_titles()
+    assert titles == ["Mousepad", "*~/workspace/handoff.txt - Mousepad"]
+    shell = manager.commands[-1][-1]
+    assert "xdotool search" in shell and "getwindowname" in shell
+

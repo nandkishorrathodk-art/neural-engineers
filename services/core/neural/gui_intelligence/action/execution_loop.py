@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from neural.exceptions import (
     EmergencyStopTriggered,
@@ -31,6 +31,10 @@ from neural.logger import get_logger
 
 logger = get_logger("ancos.gui_intelligence.action.execution_loop")
 
+# CONFIRM_SAVED re-issues Ctrl+S at most this many times when the target document
+# is open but still carries its modified marker (a dropped save keystroke).
+_MAX_RESAVE_ATTEMPTS = 2
+
 
 class GUIExecutionLoop:
     """
@@ -54,6 +58,7 @@ class GUIExecutionLoop:
         transition_tracker: Optional[VisualTransitionTracker] = None,
         detector: Optional[UIObjectDetector] = None,
         risk_guard: Optional[GUIRiskGuard] = None,
+        window_state_provider: Optional[Callable[[], list[str]]] = None,
     ) -> None:
         self.capture_engine = capture_engine or ScreenCaptureEngine()
         self.mouse_controller = mouse_controller or MouseController()
@@ -64,12 +69,36 @@ class GUIExecutionLoop:
         self.transition_tracker = transition_tracker or VisualTransitionTracker(self.change_detector)
         self.detector = detector or UIObjectDetector()
         self.risk_guard = risk_guard or GUIRiskGuard()
+        # Returns the visible window titles of the live desktop. Used to confirm a
+        # save from the application's own state rather than assuming Ctrl+S worked.
+        self.window_state_provider = window_state_provider
 
     @staticmethod
     def sign_receipt_payload(payload: dict) -> str:
         """Computes SHA-256 cryptographic signature over canonical JSON receipt."""
         canonical = json.dumps(payload, sort_keys=True, default=str)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _document_saved(titles: list[str], marker: Optional[str]) -> bool:
+        """True when a window reports the document is present and unmodified.
+
+        Text editors (Mousepad, gedit, ...) prefix a *modified* document's title
+        with ``*`` and drop the prefix once the file is written. A title that
+        names the document without that marker means the save persisted. When a
+        marker (file name) is given, the matching title must also contain it so a
+        stray unmodified window cannot vouch for the wrong document.
+        """
+        for title in titles:
+            if marker and marker not in title:
+                continue
+            if title.startswith("*"):
+                continue
+            # A bare application title (no document name) cannot confirm a save.
+            if marker is None and " - " not in title:
+                continue
+            return True
+        return False
 
     def execute_action(self, request: GUIActionRequest) -> GUIActionReceipt:
         """
@@ -102,7 +131,12 @@ class GUIExecutionLoop:
             act_type = request.action_type
 
             # Calibrated visual grounding confidence check
-            if request.confidence < 0.88 and act_type not in ("WAIT_SETTLE", "KEY_HOTKEY", "KEY_PRESS"):
+            if request.confidence < 0.88 and act_type not in (
+                "WAIT_SETTLE",
+                "KEY_HOTKEY",
+                "KEY_PRESS",
+                "CONFIRM_SAVED",
+            ):
                 raise VisualUncertaintyError(
                     f"Action '{act_type}' confidence {request.confidence:.2f} is below calibrated threshold 0.88; "
                     "uncertain visual grounding cannot be dispatched to screen."
@@ -230,6 +264,51 @@ class GUIExecutionLoop:
                 # Explicit settle wait: long enough for a window transition (e.g. a
                 # file dialog handing focus back to the editor) before the next step.
                 time.sleep((request.settle_ms or 50) / 1000.0)
+
+            elif act_type == "CONFIRM_SAVED":
+                # "Send Ctrl+S" is not "the file is saved". Read the editor's own
+                # modified marker and fail closed if the document is still dirty
+                # after the save settle: a silently lost edit must never be
+                # reported as a successful save.
+                if self.window_state_provider is None:
+                    raise GUIActionBlockedError(
+                        "CONFIRM_SAVED requires a window-state provider; the desktop driver "
+                        "must supply one so a save can be verified against app state."
+                    )
+                timeout_ms = request.settle_ms or 4000
+                marker = request.expected_text
+                deadline = time.monotonic() + timeout_ms / 1000.0
+                saved = False
+                resaves = 0
+                while True:
+                    titles = self.window_state_provider()
+                    if self._document_saved(titles, marker):
+                        saved = True
+                        break
+                    # The right document is open but still carries the modified
+                    # marker: the save keystroke was dropped (lost focus, a lagging
+                    # event queue). Re-issue the save rather than failing a save
+                    # that needs one more try. Saving an already-saved file is a
+                    # no-op, so a redundant Ctrl+S is harmless.
+                    if (
+                        resaves < _MAX_RESAVE_ATTEMPTS
+                        and marker
+                        and any(marker in title for title in titles)
+                    ):
+                        self.keyboard_controller.send_hotkey("ctrl+s")
+                        resaves += 1
+                        time.sleep(0.5)
+                        continue
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.2)
+                if not saved:
+                    raise GUIActionBlockedError(
+                        "Save not confirmed: no editor window reported the document as saved "
+                        f"within {timeout_ms} ms"
+                        + (f" (expected '{marker}')" if marker else "")
+                        + "; the edit was not persisted."
+                    )
 
         except (
             EmergencyStopTriggered,

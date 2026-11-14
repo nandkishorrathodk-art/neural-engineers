@@ -30,6 +30,7 @@ class GUIActionRequest(BaseModel):
         "KEY_TYPE",
         "KEY_HOTKEY",
         "WAIT_SETTLE",
+        "CONFIRM_SAVED",
     ]
     coordinates: Optional[tuple[int, int]] = Field(
         None, description="Explicit screen pixel coordinates (x, y)"
@@ -56,6 +57,11 @@ class GUIActionRequest(BaseModel):
     active_focus: bool = False
     # Optional WAIT_SETTLE duration in milliseconds; defaults to the loop's fixed wait.
     settle_ms: Optional[int] = None
+    # CONFIRM_SAVED: after a save, poll the editor's *application state* until the
+    # document is no longer marked modified (its window title drops the '*'
+    # prefix). This turns "I sent Ctrl+S" into "the app reports the file saved".
+    # ``expected_text`` is the file name the saved document's title must contain.
+    expected_text: Optional[str] = None
 
 
 class GUIActionReceipt(BaseModel):

@@ -63,6 +63,9 @@ class GuiStepPlan:
     # for a file dialog to hand focus back to the editor after Return; the next
     # keystroke then lands in the dialog instead of the document.
     settle_ms: Optional[int] = None
+    # CONFIRM_SAVED: file name the saved document's title must contain. Empty
+    # means "any unmodified document window confirms the save".
+    expected_text: Optional[str] = None
 
 
 @dataclass
@@ -118,6 +121,7 @@ class GuiWorkerEngine:
             keyboard_controller=keyboard,
             grounder=grounder,
             risk_guard=GUIRiskGuard(),
+            window_state_provider=driver.window_titles,
         )
 
     @staticmethod
@@ -286,6 +290,8 @@ class GuiWorkerEngine:
             payload["active_focus"] = True
         if step.settle_ms is not None:
             payload["settle_ms"] = step.settle_ms
+        if step.expected_text is not None:
+            payload["expected_text"] = step.expected_text
         if coordinates is not None:
             payload["coordinates"] = coordinates
         if step.text is not None:

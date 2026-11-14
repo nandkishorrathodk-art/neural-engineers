@@ -276,7 +276,8 @@ def derive_document_edit_steps(
     payload = _select_edit_payload(objective, blob, acceptance_criteria)
     if payload is None:
         return None
-    path = f"{_EMPLOYEE_WORKSPACE}/{file_match.group(1)}"
+    document_name = file_match.group(1)
+    path = f"{_EMPLOYEE_WORKSPACE}/{document_name}"
     steps: list[dict[str, Any]] = [
         {"action_type": "MOUSE_CLICK", "target": _MENU_LABEL, "confidence": 0.95},
         {"action_type": "MOUSE_CLICK", "target": "Accessories", "confidence": 0.95},
@@ -315,6 +316,20 @@ def derive_document_edit_steps(
     # objective may no longer name the save verb, so save unconditionally here
     # rather than keying off a verb that planning can drop.
     steps.append({"action_type": "KEY_HOTKEY", "key_code": "ctrl+s", "confidence": 0.95})
+    # Ctrl+S is fire-and-forget: it proves a keystroke was sent, not that the file
+    # was written. A silently lost edit (the save landed in a modal dialog or the
+    # editor never had focus) then reports success and the verify phase fails with
+    # no explanation. Confirm the save from the editor's own state — a saved
+    # document drops the '*' modified marker from its window title — so a lost
+    # edit fails here, at the point of the save, instead of silently later.
+    steps.append(
+        {
+            "action_type": "CONFIRM_SAVED",
+            "confidence": 0.95,
+            "expected_text": document_name,
+            "settle_ms": 4000,
+        }
+    )
     return steps
 
 

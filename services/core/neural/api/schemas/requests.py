@@ -360,6 +360,7 @@ class WorkerGuiStep(BaseModel):
         "KEY_TYPE",
         "KEY_HOTKEY",
         "WAIT_SETTLE",
+        "CONFIRM_SAVED",
     ]
     target: Optional[str] = Field(None, description="Text/descriptor to ground on the live screen")
     text: Optional[str] = Field(None, description="Text to type")
@@ -367,6 +368,13 @@ class WorkerGuiStep(BaseModel):
     coordinates: Optional[tuple[int, int]] = Field(None, description="Explicit pixel coordinates")
     confidence: float = Field(default=0.95, ge=0.0, le=1.0)
     expected_postcondition: Optional[str] = None
+    expected_text: Optional[str] = Field(
+        None,
+        description=(
+            "For CONFIRM_SAVED: file name the saved document's window title must "
+            "contain. Empty means any unmodified document window confirms the save."
+        ),
+    )
     type_into_active_focus: bool = Field(
         default=False,
         description=(

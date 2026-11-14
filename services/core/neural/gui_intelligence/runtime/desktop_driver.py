@@ -201,5 +201,21 @@ class ContainerDesktopDriver:
     def key(self, hotkey: str) -> None:
         self._xdotool("key", "--clearmodifiers", hotkey.strip())
 
+    # -- window state ------------------------------------------------------------
+
+    def window_titles(self) -> list[str]:
+        """Return the titles of all visible top-level windows on the display.
+
+        Used to read an application's own state (e.g. a text editor prefixes a
+        modified document's title with ``*``) instead of guessing that a save
+        keystroke worked. A display with no windows returns an empty list rather
+        than raising, so a transient empty frame is not mistaken for a failure.
+        """
+        result = self._shell(
+            f"DISPLAY={shlex.quote(self.display)} xdotool search --onlyvisible --name . "
+            "getwindowname %@ 2>/dev/null || true"
+        )
+        return [line.strip() for line in str(result.get("stdout", "")).splitlines() if line.strip()]
+
 
 __all__ = ["ContainerDesktopDriver", "MAX_CAPTURE_BYTES", "PNG_MAGIC"]
