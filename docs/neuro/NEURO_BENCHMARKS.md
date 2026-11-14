@@ -31,3 +31,19 @@ At minimum collect:
 - independent verification duration and rejection rate.
 
 The 4× human-speed target remains a research metric. Compare equivalent fully completed tasks under equivalent starting conditions, and include observation, waits, retries, recovery, and independent verification in ANCOS elapsed time.
+
+## 4× human-speed claim: FROZEN (2026-11-14, NEURO-13 research)
+
+**The 4× target is frozen and must not be advertised or used as a primary KPI until a real,
+documented human baseline exists for the specific task set.** Rationale and evidence in
+`docs/neuro/research/R6_humanspeed_feasibility.md`:
+
+- `HumanSpeedComparator` takes `human_time_seconds` as an **input**; ANCOS produces no
+  verified human median, so any 4× figure is only as real as the number supplied.
+- The disqualification rule means a failed task scores 0.0×; with measured 90% GUI / 90%
+  hybrid reliability (NEURO-12A), the headline is dominated by reliability, not speed.
+- No published computer-use system demonstrates a credible 4× human speedup; the strongest
+  verified comparable result is HCU's **21% mean-time reduction** on OSWorld 2.0.
+
+Report instead: **verified success rate** (independent verifier pass) and **cost per
+verified task** (USD). Keep latency as a secondary metric with per-step attribution.
