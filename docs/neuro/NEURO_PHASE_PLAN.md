@@ -25,6 +25,89 @@ This plan preserves the phase numbering and acceptance scope from the ANCOS NEUR
 | NEURO-13 — End-to-End Autonomous Company Mission | Integrate planning, recruitment, resource allocation, all execution modes, collaboration, verified artifacts, QA/security, reporting, meetings, memory/learning, self-improvement, approval, and rollback. | Complete the 21-step owner mission with real services/models/workers/artifacts and auditable receipts; no synthetic success. | **PARTIAL (Provisional pending master mission verification)**; 21-step live acceptance scenario passing cleanly (`test_neuro_phase13_live_acceptance.py`), backed by runner unit tests (`test_neuro13_acceptance_runner.py` [9 passed]). Full 21-step enterprise mission verified across BossBrain planning, dynamic workforce, unified execution fabric, desktop session pools, multi-tier intelligence routing, 6-tier memory, GUI intelligence, engineering worktrees, self-evolution, boardroom governance, virtual world dashboard, and zero-trust resilience. |
 | NEURO-14 — Developer CLI Platform & Interactive Terminal Operations (`ancos-cli`) | Terminal-first autonomous coding and operations interface; interactive syntax-highlighted diff reviews (`Rich`), AST repository maps, streaming subprocess execution with PTY deadlock guards, one-click terminal approval gates (`ancos approve`), and interactive autonomous self-evolution workflows (`ancos evolve`). Zero-argument default launch starts interactive AI coder REPL. | Developer or Boss executes end-to-end task and self-evolution cycle entirely from terminal CLI: detects bottleneck, inspects syntax-highlighted unified diff in terminal, verifies test pass in sandbox, and approves/merges with valid cryptographic approval token. | **PARTIAL (Provisional pending master mission verification)**; 7-step comprehensive live acceptance scenario passing cleanly (`test_neuro_phase14_live_acceptance.py`), backed by 22 unit tests across `test_cli_ast_repomap.py`, `test_cli_pty_guard.py`, `test_cli_diff_viewer.py`, `test_cli_coder_agent.py`, `test_cli_repl.py`, and `test_cli_self_evolution.py`. Default zero-argument invocation (`ancos` or `python -m neural.cli`) launches the Interactive AI Coder REPL with Rich terminal banner, active branch, loaded employee identity (`ANC-EMP-CODER`), and dual-brain model routing tier (`deepseek-coder`). Full agentic coding loop: AST codebase exploration, file edit planning, live syntax-highlighted diffs, PTY deadlock-guarded streaming subprocess test execution, and autonomous bug diagnosis & self-fixing loop until exit code 0. Interactive slash commands (`/diff`, `/test`, `/evolve`, `/approve`, `/status`, `/exit`) and autonomous self-evolution cycle (`/evolve`) profiling bottlenecks, staging in isolated worktree, achieving verified speedup, passing multi-gate verification, and merging with sovereign human approval. |
 
+## Lifecycle 4 — True hybrid execution acceptance (terminal → GUI → terminal)
+
+**Scope owner:** NEURO-3 (Unified Execution Fabric), `hybrid` execution mode. The NEURO-3 row above covers the contract and policy layer; this section records the first *live, independently verified* end-to-end hybrid run, which the earlier row did not include.
+
+**Status:** LIVE VERIFIED — real desktop, no DOM/accessibility/CLI shortcuts. Provisional as an acceptance slice: one objective, one attempt, one employee.
+
+**Commit:** `54a256c923a153a64caabd2f14f7c11913a950d7` (`main`, pushed to `origin`).
+
+**Objective (real task record):**
+
+| Field | Value |
+|---|---|
+| Task ID | `ANCOS_HYBRID_TEST` |
+| Task row ID | `9acfdf1d-7d3a-4a14-af28-f73cea1e457a` |
+| Parent task ID | `null` (standalone acceptance task) |
+| Project ID | `283609e6-f873-4b20-b27d-416ffb4d3f88` |
+| Execution mode | `hybrid` |
+| Title | Create handoff.txt with hybrid execution |
+| Acceptance criteria | `handoff.txt` contains `ANCOS_HYBRID_TEST`, `TERMINAL_PREPARED=1` and `GUI_EDIT=HYBRID_GUI_OK` |
+| Final status | `completed` |
+
+**Attempt and identities:**
+
+| Field | Value |
+|---|---|
+| Attempt ID | `fef8401f-aada-47a2-b508-d103f9269e24` |
+| Attempt number | 1 |
+| Attempt status | `verified` |
+| Fencing token | 21 |
+| Worker identity | `worker-service` (single shared worker token; per-worker distinct identity was **not** exercised — see gaps) |
+| Verifier identity | `verification-service` |
+| Employee (GUI) | `ANC-EMP-CC912FDCC82B` |
+| Desktop container | `ancos-desktop-anc-emp-cc912fdcc82b` (1280x800, VNC `:1`) |
+| Execution wall-clock | `2026-11-14T09:14:58.505Z` → `09:15:35.943Z` (≈37.4 s) |
+| Verified at | `2026-11-14T09:15:37.197Z` |
+
+**Three execution phases (from `attempt.execution_receipt.phases`):**
+
+| # | Phase | Kind | Items | Evidence |
+|---|---|---|---|---|
+| 1 | `prepare` | terminal | 1 command | `python3 -c "import base64; open('handoff.txt','wb').write(base64.b64decode('QU5DT1NfSFlCUklEX1RFU1QKVEVSTUlOQUxfUFJFUEFSRUQ9MQo='))"`, exit 0 |
+| 2 | `interaction` | gui | 13 steps | 13 real desktop action receipts, all `SUCCESS`; screen hash `3288a59a…` → `0ed11944…` |
+| 3 | `verify` | terminal | 2 commands | writes `test_handoff.py` then `python3 -m pytest -q` → `1 passed in 0.01s`, exit 0 |
+
+The prepare phase persisted exactly `ANCOS_HYBRID_TEST\nTERMINAL_PREPARED=1\n`. The GUI phase (only) typed `GUI_EDIT=HYBRID_GUI_OK` into the live Mousepad editor and saved via `Ctrl+S`. The verify phase read the finalized artifact and asserted each line appears exactly once.
+
+**GUI action trace (13 steps, all `SUCCESS`):** launcher → Accessories → Mousepad → settle 2500 ms → `Ctrl+O` → settle 1200 ms → `Ctrl+L` → type absolute path (active focus) → `Return` → settle 1500 ms → `Ctrl+End` → type payload → `Ctrl+S`. Per-step pixel deltas are recorded in the evidence JSON (`gui.receipts`). Final-state screenshot: `evidence/lifecycle4_hybrid_final_state_2026-11-14.png`.
+
+**Final artifact (independently read on the live desktop):**
+
+```
+ANCOS_HYBRID_TEST
+TERMINAL_PREPARED=1
+GUI_EDIT=HYBRID_GUI_OK
+```
+
+- Exactly 3 lines, no blank line.
+- SHA-256: `83c539209d4fdbfa5fcce89fba1db598b08484277952b6f576cef1352c49af04`
+
+**Independent verifier output** (`attempt.verification_receipt`, `passed: true`):
+
+| Check | Result | Evidence |
+|---|---|---|
+| `independent_live_desktop_hash_matches_worker_post_action_frame` | PASS | verifier captured the live desktop itself; hash `0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9` matched the worker's post-action frame exactly (`match_method: exact`) |
+| `worker_gui_loop_reported_success` | PASS | worker `passed: true`, `status: success` |
+| `hybrid_terminal_phase_independently_replayable` | PASS | 1 replayable command |
+
+Verifier note: *"Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success. The hybrid terminal verification phase was independently replayed."*
+
+**Machine-readable evidence:** `evidence/lifecycle4_hybrid_acceptance_2026-11-14.json` (full task/attempt rows, execution receipt, GUI trace, verification receipt).
+
+**Defects this run exposed and fixed (in commit `54a256c`):**
+
+1. **Verifier false positive.** `onscreen_expected_terms()` scraped hyphenated uppercase tokens from `title`, `objective` *and* `acceptance_criteria`. The hybrid objective's terminal prose ("print its SHA-256 hash") injected `SHA-256` as an impossible on-screen requirement, so an independent verifier rejected a correct run. On-screen deliverables are now read from `acceptance_criteria` alone.
+2. **GUI editor crash-recovery hazard.** An unclean desktop shutdown leaves Mousepad autosave state, so the next launch shows a modal "previous session did not end normally / restore data?" dialog that holds keyboard focus and swallows the plan's `Ctrl+O`, making the GUI edit silently no-op. `ContainerDesktopDriver.reset_editor_state()` now clears stale editor state before the choreography starts.
+
+**Known gaps (not covered by this acceptance):**
+
+- **Worker-crash recovery is NOT proven.** The `reset_editor_state` fix demonstrates *application* (GUI editor) startup normalization, not worker-process crash recovery. Recovery from worker termination, API restart, network interruption, and checkpoint restoration during a hybrid run remains **unverified**.
+- **Per-worker identity is not distinct.** The attempt was authenticated as the shared `worker-service` identity; distinct identities per worker were not exercised.
+- **Human-relative 4× speed is NOT measured.** No human median baseline was captured for this task; ANCOS-HumanSpeed remains unmeasured here.
+- **Single sample.** One objective, one attempt, one employee. No sustained workload, concurrency, or duplicate-execution test.
+
 ## Dependency order
 
 1. Keep NEURO-0 evidence current and resolve P0 authority/lifecycle gaps in NEURO-1 through NEURO-3.

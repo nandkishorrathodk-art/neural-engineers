@@ -1,0 +1,397 @@
+{
+  "_source": "Live ANCOS deployment query, task_id=ANCOS_HYBRID_TEST",
+  "_captured_utc": "2026-11-14T09:33:00Z",
+  "commit": "54a256c923a153a64caabd2f14f7c11913a950d7",
+  "task": {
+    "task_row_id": "9acfdf1d-7d3a-4a14-af28-f73cea1e457a",
+    "task_id": "ANCOS_HYBRID_TEST",
+    "parent_task_id": null,
+    "project_id": "283609e6-f873-4b20-b27d-416ffb4d3f88",
+    "title": "Create handoff.txt with hybrid execution",
+    "objective": "Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+    "acceptance_criteria": "handoff.txt contains ANCOS_HYBRID_TEST, TERMINAL_PREPARED=1 and GUI_EDIT=HYBRID_GUI_OK",
+    "execution_mode": "hybrid",
+    "status": "completed",
+    "assigned_to": "29b35819-2375-44da-82ef-c0405a8574c6"
+  },
+  "attempt": {
+    "attempt_id": "fef8401f-aada-47a2-b508-d103f9269e24",
+    "attempt_number": 1,
+    "status": "verified",
+    "fencing_token": 21,
+    "worker_id": "worker-service",
+    "verified_by": "verification-service",
+    "started_at": "2026-11-14 09:14:58.505194",
+    "finished_at": "2026-11-14 09:15:35.942964",
+    "verified_at": "2026-11-14 09:15:37.197300"
+  },
+  "execution_receipt_top": {
+    "executor": "gui-worker",
+    "execution_mode": "hybrid",
+    "phase_count": 3,
+    "capabilities_used": [
+      "terminal",
+      "gui"
+    ],
+    "verification_status": "awaiting_independent_verifier",
+    "passed": true
+  },
+  "phases": [
+    {
+      "kind": "terminal",
+      "phase": "prepare",
+      "items": [
+        {
+          "task_id": "ANCOS_HYBRID_TEST",
+          "fencing_token": 21,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "command": [
+            "python3",
+            "-c",
+            "import base64; open('handoff.txt', 'wb').write(base64.b64decode('QU5DT1NfSFlCUklEX1RFU1QKVEVSTUlOQUxfUFJFUEFSRUQ9MQo='))"
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "gui",
+      "phase": "interaction",
+      "items": [
+        {
+          "action_type": "MOUSE_CLICK",
+          "target": "Applications",
+          "confidence": 0.95
+        },
+        {
+          "action_type": "MOUSE_CLICK",
+          "target": "Accessories",
+          "confidence": 0.95
+        },
+        {
+          "action_type": "MOUSE_CLICK",
+          "target": "Mousepad",
+          "confidence": 0.95
+        },
+        {
+          "action_type": "WAIT_SETTLE",
+          "confidence": 0.99,
+          "settle_ms": 2500
+        },
+        {
+          "action_type": "KEY_HOTKEY",
+          "key_code": "ctrl+o",
+          "confidence": 0.95
+        },
+        {
+          "action_type": "WAIT_SETTLE",
+          "confidence": 0.99,
+          "settle_ms": 1200
+        },
+        {
+          "action_type": "KEY_HOTKEY",
+          "key_code": "ctrl+l",
+          "confidence": 0.95
+        },
+        {
+          "action_type": "KEY_TYPE",
+          "text": "/home/employee/workspace/handoff.txt",
+          "confidence": 0.95,
+          "type_into_active_focus": true
+        },
+        {
+          "action_type": "KEY_HOTKEY",
+          "key_code": "Return",
+          "confidence": 0.95
+        },
+        {
+          "action_type": "WAIT_SETTLE",
+          "confidence": 0.99,
+          "settle_ms": 1500
+        },
+        {
+          "action_type": "KEY_HOTKEY",
+          "key_code": "ctrl+End",
+          "confidence": 0.95
+        },
+        {
+          "action_type": "KEY_TYPE",
+          "text": "GUI_EDIT=HYBRID_GUI_OK",
+          "confidence": 0.95,
+          "type_into_active_focus": true
+        },
+        {
+          "action_type": "KEY_HOTKEY",
+          "key_code": "ctrl+s",
+          "confidence": 0.95
+        }
+      ]
+    },
+    {
+      "kind": "terminal",
+      "phase": "verify",
+      "items": [
+        {
+          "task_id": "ANCOS_HYBRID_TEST",
+          "fencing_token": 21,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "command": [
+            "python3",
+            "-c",
+            "import base64; open('test_handoff.py', 'wb').write(base64.b64decode('aW1wb3J0IGhhc2hsaWIKaW1wb3J0IHB5dGVzdAoKCmRlZiB0ZXN0X2hhbmRvZmZfbGluZXMoKToKICAgICIiIkFzc2VydCBoYW5kb2ZmLnR4dCBjb250YWlucyB0aGUgdGhyZWUgZXhwZWN0ZWQgbGluZXMgZXhhY3RseSBvbmNlIGVhY2guIiIiCiAgICB3aXRoIG9wZW4oImhhbmRvZmYudHh0IiwgInIiKSBhcyBmOgogICAgICAgIGNvbnRlbnQgPSBmLnJlYWQoKQogICAgCiAgICBsaW5lcyA9IFsiQU5DT1NfSFlCUklEX1RFU1QiLCAiVEVSTUlOQUxfUFJFUEFSRUQ9MSIsICJHVUlfRURJVD1IWUJSSURfR1VJX09LIl0KICAgIAogICAgZm9yIGxpbmUgaW4gbGluZXM6CiAgICAgICAgIyBDb3VudCBvY2N1cnJlbmNlczsgbXVzdCBiZSBleGFjdGx5IDEKICAgICAgICBjb3VudCA9IGNvbnRlbnQuY291bnQobGluZSkKICAgICAgICBhc3NlcnQgY291bnQgPT0gMSwgZiJFeHBlY3RlZCBleGFjdGx5IDEgb2NjdXJyZW5jZSBvZiAne2xpbmV9JywgZ290IHtjb3VudH0iCiAgICAKICAgICMgQ29tcHV0ZSBhbmQgcHJpbnQgU0hBLTI1NiBoYXNoCiAgICBzaGEgPSBoYXNobGliLnNoYTI1Nihjb250ZW50LmVuY29kZSgpKS5oZXhkaWdlc3QoKQogICAgcHJpbnQoc2hhKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICAjIEFsbG93IHJ1bm5pbmcgZGlyZWN0bHk6IHB5dGhvbjMgLW0gcHl0ZXN0IC1xCiAgICByYWlzZSBTeXN0ZW1FeGl0KHB5dGVzdC5tYWluKFtfX2ZpbGVfXywgIi1xIl0pKQ=='))"
+          ]
+        },
+        {
+          "task_id": "ANCOS_HYBRID_TEST",
+          "fencing_token": 21,
+          "exit_code": 0,
+          "stdout": ".                                                                        [100%]\n1 passed in 0.01s\n",
+          "stderr": "",
+          "command": [
+            "python3",
+            "-m",
+            "pytest",
+            "-q"
+          ]
+        }
+      ]
+    }
+  ],
+  "gui": {
+    "employee_id": "ANC-EMP-CC912FDCC82B",
+    "status": "success",
+    "steps_executed": 13,
+    "screen_hash_before": "3288a59af738cd09b51492a5d4613d35a86e3c2e7f155b6d521de8d870daf654",
+    "screen_hash_after": "0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9",
+    "verification": {
+      "passed": true,
+      "score": 1.0,
+      "delta_magnitude": 0.3424560546875,
+      "postcondition_checked": "GUI_EDIT=HYBRID_GUI_OK",
+      "details": "Expected text 'GUI_EDIT=HYBRID_GUI_OK' visually verified in screen pixels",
+      "screenshot_hash": "0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9"
+    },
+    "receipts": [
+      {
+        "action_id": "gui_b0b78fee6e",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 1189.6483790005732,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.0473486328125,
+        "observed_postcondition": "delta_0.0473",
+        "error_message": null,
+        "signature": "457dd6ec547821bc5211b0e62f63f6f3484660fda1e241a4341cb332a1cd113b"
+      },
+      {
+        "action_id": "gui_eae5655e5c",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 1199.5180789999722,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.02426171875,
+        "observed_postcondition": "delta_0.0243",
+        "error_message": null,
+        "signature": "408f239f5262668b6d82fba398a9f7e7a6828fca41cd7c001bb38621cb17d417"
+      },
+      {
+        "action_id": "gui_54dce5ab7f",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 1335.2565269997285,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.300375,
+        "observed_postcondition": "delta_0.3004",
+        "error_message": null,
+        "signature": "2a6d3e0bffd7c4be57260be76e7fae53f08790aec25493897864a59a0824d4b6"
+      },
+      {
+        "action_id": "gui_ce6ecfeef7",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 2801.0342409997975,
+        "screen_settled": true,
+        "pixel_delta_magnitude": 1.66015625e-05,
+        "observed_postcondition": "delta_0.0000",
+        "error_message": null,
+        "signature": "cb84d7dbdcf6e7ff6103299d7223c49281bc5d85533ff0d28c914df9d16d90f8"
+      },
+      {
+        "action_id": "gui_8acab153ca",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 409.8214929999813,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.015685546875,
+        "observed_postcondition": "delta_0.0157",
+        "error_message": null,
+        "signature": "9f103e2ba5a86ddfcef6b0bd59b3d4aa17a5e96fd8cbcebb7799625d837ee419"
+      },
+      {
+        "action_id": "gui_8fd5225e53",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 1477.0834430000832,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.01496875,
+        "observed_postcondition": "delta_0.0150",
+        "error_message": null,
+        "signature": "d6992e74f9b72ebb0736d8c6715bd65b7c006b916df06a96c59728ddd47ff9e2"
+      },
+      {
+        "action_id": "gui_4045c33eeb",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 364.36374400000204,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.0167685546875,
+        "observed_postcondition": "delta_0.0168",
+        "error_message": null,
+        "signature": "a04db4de139bf53c51fc2c2ed77e4c9b0d66b9b751b586b41bbb364848f8693c"
+      },
+      {
+        "action_id": "gui_c5e7dcde0b",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 2642.647302998739,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.0014306640625,
+        "observed_postcondition": "delta_0.0014",
+        "error_message": null,
+        "signature": "90bb4c23626da4edc0e2409c3e80a89070e6b8c282716adfaf8b3b88514bc544"
+      },
+      {
+        "action_id": "gui_fb09754eff",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 392.15053299994906,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.002248046875,
+        "observed_postcondition": "delta_0.0022",
+        "error_message": null,
+        "signature": "46a6c50d7fde24b299fab897f5fe87e4a03e2e9e1f3d68c711361da02542c6c2"
+      },
+      {
+        "action_id": "gui_e56dc30d4e",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 1804.3224369994277,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.57441015625,
+        "observed_postcondition": "delta_0.5744",
+        "error_message": null,
+        "signature": "0266c75a46e74f20e7557d55f123deb5fc6b8f940bb40f51c3775b3e70734096"
+      },
+      {
+        "action_id": "gui_dccd92b77f",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 404.9021629998606,
+        "screen_settled": true,
+        "pixel_delta_magnitude": 1.66015625e-05,
+        "observed_postcondition": "delta_0.0000",
+        "error_message": null,
+        "signature": "9c38df0f1a64aeba874d0ad4282a3763904ecfdf233f9791866f326a4dc90a02"
+      },
+      {
+        "action_id": "gui_0864d1865a",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 1749.6786489991791,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.0042578125,
+        "observed_postcondition": "delta_0.0043",
+        "error_message": null,
+        "signature": "0ab5473ebe39fac7ecbb40fbd29f686a776a5a03f5fa01168273543744e17ee7"
+      },
+      {
+        "action_id": "gui_0db9a20146",
+        "employee_id": "ANC-EMP-CC912FDCC82B",
+        "status": "SUCCESS",
+        "execution_time_ms": 400.80767200015543,
+        "screen_settled": false,
+        "pixel_delta_magnitude": 0.0032744140625,
+        "observed_postcondition": "delta_0.0033",
+        "error_message": null,
+        "signature": "28dc6055b32edb6871e8b10ada8c71bbf1f8c1d8e9ec00a0c4ebbc75dc7ce951"
+      }
+    ]
+  },
+  "verification_receipt": {
+    "passed": true,
+    "notes": "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success. The hybrid terminal verification phase was independently replayed.",
+    "evidence_refs": [
+      "screen:sha256:0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9",
+      "verifier:fef8401f-aada-47a2-b508-d103f9269e24:test:1"
+    ],
+    "checks": [
+      {
+        "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+        "passed": true,
+        "evidence": {
+          "live_captured": true,
+          "verifier_screenshot_hash": "0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9",
+          "worker_screenshot_hash": "0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9",
+          "match_method": "exact",
+          "verifier_screenshot_phash": "1282828280f0f0f0",
+          "worker_screenshot_phash": "1282828280f0f0f0",
+          "resolution": [
+            1280,
+            800
+          ]
+        }
+      },
+      {
+        "name": "worker_gui_loop_reported_success",
+        "passed": true,
+        "evidence": {
+          "worker_passed": true,
+          "status": "success"
+        }
+      },
+      {
+        "name": "hybrid_terminal_phase_independently_replayable",
+        "passed": true,
+        "evidence": {
+          "replayable_commands": 1
+        }
+      }
+    ],
+    "test_summary": {
+      "independent_screen_capture": {
+        "task_id": "ANCOS_HYBRID_TEST",
+        "attempt_id": "fef8401f-aada-47a2-b508-d103f9269e24",
+        "fencing_token": 21,
+        "resolution": [
+          1280,
+          800
+        ],
+        "screenshot_hash": "0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9",
+        "screenshot_phash": "1282828280f0f0f0",
+        "expected_terms": [],
+        "observed_terms": [],
+        "ocr_available": true,
+        "captured": true
+      },
+      "worker_visual_receipt": {
+        "screen_hash_before": "3288a59af738cd09b51492a5d4613d35a86e3c2e7f155b6d521de8d870daf654",
+        "screen_hash_after": "0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9",
+        "steps_executed": 13,
+        "verification": {
+          "passed": true,
+          "score": 1.0,
+          "delta_magnitude": 0.3424560546875,
+          "postcondition_checked": "GUI_EDIT=HYBRID_GUI_OK",
+          "details": "Expected text 'GUI_EDIT=HYBRID_GUI_OK' visually verified in screen pixels",
+          "screenshot_hash": "0ed119445fa0b00c1e6be2c78efe3a5997977124a9d86eedc423154fc4580fa9"
+        }
+      }
+    },
+    "verifier_id": "verification-service",
+    "attempt_id": "fef8401f-aada-47a2-b508-d103f9269e24",
+    "task_id": "ANCOS_HYBRID_TEST"
+  }
+}
