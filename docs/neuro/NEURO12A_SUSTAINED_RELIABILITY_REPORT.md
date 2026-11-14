@@ -135,3 +135,66 @@ defect that run 4 was measuring, and both are environment flakiness, not logic d
   with that limitation; it is not a tight confidence interval.
 - **No sustained 30–60 minute workflow has run**, and no concurrency-under-load batch has
   been measured. NEURO-12 remains **PARTIAL**.
+
+---
+
+## Update 2026-11-14 (later): GUI marker-read fix + task_id collision fix
+
+Two further defects were found by extending the same cohort instrument and fixed on
+`main`. Evidence: `cohort_prefix.json` (pre-fix, this round) vs
+`cohort_postfix_final.json` (post-fix). Both cohorts: 10 unique GUI + 10 unique hybrid
+objectives, HEAD stable throughout.
+
+### Defect 6 — GUI verifier misread trailing-zero markers (fixed)
+
+The verifier read the on-screen marker through Tesseract at a single upscale (3x).
+Trailing-zero markers were misread (`NEURO12A-GUI-010` → `...-016`), so only **39/46**
+real markers were read and the verifier failed closed on correct work. `TesseractOCREngine`
+now unions text regions across multiple upscales (`(2, 3)`) and the fuzzy branch carries a
+digit-agreement guard so a query cannot fuzzy-match a *different* marker's number.
+
+Measured: **39/46 → 46/46 markers read**, with cross-marker false positives held at the
+2/2070 baseline (the naive union first amplified them to 407/2070; the digit guard removed
+the amplification). Regression test: `test_gui_worker_runtime.py`.
+
+### Defect 7 — `task_id` collisions dropped samples mid-cohort (fixed)
+
+Phase/task indices restart at 1 for every objective, so the public task id carried only
+4 random hex characters (`TASK-01-01-82CA`) — 65,536 values per slot. One slot already held
+322 tasks, so a sustained workload collided. The duplicate insert raised an unhandled
+`IntegrityError`; the API returned **500** and the client connection dropped, losing the
+sample (`gui-005` in the first post-fix run) mid-cohort. The suffix is now 12 hex
+characters (`_unique_task_id`). Regression test:
+`test_unique_task_ids_do_not_collide_across_objectives`.
+
+### Results (this round)
+
+| Cohort | Mode | Samples | Counted | Completed | Failed | In-flight | Success rate | Retry freq | Mean (s) | p95 (s) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| pre-fix | gui | 10 | 10 | 9 | 1 | 0 | 90% | 0.3 | 34.3 | 58.0 |
+| pre-fix | hybrid | 10 | 10 | 1 | 9 | 0 | **10%** | 2.7 | 108.4 | 150.7 |
+| post-fix | gui | 10 | 10 | 10 | 0 | 0 | **100%** | 0.0 | 31.7 | 39.4 |
+| post-fix | hybrid | 10 | 10 | 8 | 2 | 0 | **80%** | 0.8 | 82.7 | 176.8 |
+
+Gate: **PASS** (min 0.8 success/mode, ≥10 counted samples/mode, HEAD stable).
+
+### What the remaining post-fix failures are
+
+Both hybrid failures (`hybrid-003`, `hybrid-007`) are genuine visual-verification
+failures after 4 attempts, not disconnects. Worker logs show the model-authored
+verification scripts were themselves malformed (e.g. `pytest.SubRequest` misuse,
+`NameError` in a session fixture, an unterminated triple-quoted string, a `splitlines`
+line-count mismatch) and one attempt hit a retryable **409** when the desktop vanished
+mid-task (defect 5). These are worker/model-output quality failures, **not fixed by this
+work** and reported honestly rather than masked.
+
+### Honest caveats (this round)
+
+- Sample sizes remain small (10/mode). The 100% GUI rate is a 10-sample rate, not a tight
+  interval.
+- The GUI 90% → 100% move is over 10 samples and includes `gui-010`, the marker that
+  previously failed deterministically; it is a real fix but the cohort is small.
+- Hybrid stayed at 80% this round (vs 90% in the earlier 3-run aggregate); the difference
+  is a small-sample model-output flake, not a regression in the fixes.
+- No sustained 30–60 minute workflow and no concurrency-under-load batch has run.
+  NEURO-12 remains **PARTIAL**.
