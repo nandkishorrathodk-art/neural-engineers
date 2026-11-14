@@ -81,6 +81,11 @@ class GUIActionReceipt(BaseModel):
     observed_postcondition: Optional[str]
     error_message: Optional[str] = None
     signature: str
+    # Per-phase latency attribution for this action, in milliseconds. Keys are
+    # phase names (e.g. "capture_ms", "dispatch_ms", "settle_ms", "delta_ms").
+    # Measured, not estimated: this is how the real per-step bottleneck is
+    # located instead of guessed. Absent keys mean the phase did not run.
+    timings: dict[str, float] = Field(default_factory=dict)
 
 
 class ExperienceTrajectoryRecord(BaseModel):

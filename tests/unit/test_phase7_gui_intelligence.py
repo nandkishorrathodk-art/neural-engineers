@@ -410,6 +410,34 @@ def test_gui_execution_loop_and_receipt_signature():
     assert receipt.execution_time_ms >= 0.0
 
 
+def test_gui_action_receipt_reports_per_phase_timings():
+    """A receipt must attribute its own wall-clock cost to measured phases.
+
+    Stage 1 latency instrumentation: capture and delta are measured around the
+    pixel work, and dispatch covers the action itself. Every phase must be a
+    finite non-negative number, and the parts must not exceed the whole.
+    """
+    loop = GUIExecutionLoop()
+    req = GUIActionRequest(
+        action_id="act_timing_test",
+        employee_id="emp_test",
+        action_type="MOUSE_MOVE",
+        coordinates=(450, 350),
+        confidence=0.99,
+    )
+    receipt = loop.execute_action(req)
+
+    assert receipt.status == "SUCCESS"
+    for key in ("capture_ms", "dispatch_ms", "delta_ms"):
+        assert key in receipt.timings, f"missing measured phase {key}"
+        assert receipt.timings[key] >= 0.0
+        assert receipt.timings[key] != float("inf")
+    measured = sum(receipt.timings.values())
+    # Phases are measured sequentially inside the action, so their sum cannot
+    # exceed the receipt's own elapsed time (small slack for perf_counter reads).
+    assert measured <= receipt.execution_time_ms + 1.0
+
+
 # ---------------------------------------------------------------------------
 # 4. Brain & Cognitive Controller Tests
 # ---------------------------------------------------------------------------

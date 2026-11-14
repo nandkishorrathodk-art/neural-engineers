@@ -714,3 +714,65 @@ def test_driver_window_titles_reads_visible_titles():
     shell = manager.commands[-1][-1]
     assert "xdotool search" in shell and "getwindowname" in shell
 
+
+class _ScreenshotManager:
+    """Serves real PNGs for scrot captures and success for every motor command.
+
+    Successive captures alternate between two colours so the final-frame delta is
+    a genuine visual change, exactly as a real desktop would report after an action.
+    """
+
+    def __init__(self) -> None:
+        import base64
+        import io
+
+        from PIL import Image
+
+        self._pngs: list[str] = []
+        for colour in ((20, 40, 60), (200, 220, 240)):
+            buffer = io.BytesIO()
+            Image.new("RGB", (128, 80), colour).save(buffer, format="PNG")
+            self._pngs.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+        self._captures = 0
+
+    def execute_command_sync(
+        self, docker_id: str, command: list[str], workdir: str | None = None
+    ) -> dict[str, Any]:
+        script = command[-1] if command else ""
+        if "scrot" in script:
+            png = self._pngs[min(self._captures, len(self._pngs) - 1)]
+            self._captures += 1
+            return {"exit_code": 0, "stdout": png, "stderr": ""}
+        if "getwindowname" in script:
+            return {"exit_code": 0, "stdout": "Mousepad\n", "stderr": ""}
+        return {"exit_code": 0, "stdout": "", "stderr": ""}
+
+
+def test_worker_result_reports_phase_latency_attribution():
+    """The whole-run result must attribute wall-clock time to measured phases.
+
+    Stage 1 latency instrumentation: without this, "how slow is the GUI loop and
+    where does the time go" is a guess. The run must report grounding, per-step
+    execution, verification and total time, each finite and non-negative, and the
+    parts must not exceed the whole.
+    """
+    from neural.gui_intelligence.worker import GuiStepPlan, GuiWorkerEngine
+
+    engine = GuiWorkerEngine(container_manager=_ScreenshotManager(), require_real_desktop=False)
+    result = engine.execute(
+        employee_id="ANC-EMP-TEST",
+        docker_id="ancos-desktop-anc-emp-test",
+        steps=[GuiStepPlan(action_type="MOUSE_MOVE", coordinates=(60, 40))],
+    )
+
+    assert result.status == "success", result.error
+    assert result.steps_executed == 1
+    for key in ("grounding_ms", "step_ms", "verification_ms", "run_ms"):
+        assert key in result.timings, f"missing measured phase {key}"
+        assert result.timings[key] >= 0.0
+        assert result.timings[key] != float("inf")
+    phases = result.timings["grounding_ms"] + result.timings["step_ms"]
+    assert phases <= result.timings["run_ms"] + 1.0
+    # The phase breakdown must survive serialisation to the API response.
+    assert result.to_dict()["timings"] == result.timings
+

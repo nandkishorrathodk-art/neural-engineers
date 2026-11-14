@@ -79,6 +79,11 @@ class GuiWorkerResult:
     screen_phash_after: Optional[str] = None
     verification: Optional[dict] = None
     error: Optional[str] = None
+    # Wall-clock attribution for the whole run, in milliseconds, split by phase:
+    # "grounding_ms" (fresh-frame capture + OCR target search per step),
+    # "step_ms" (sum of per-action receipt execution), "verification_ms" (final
+    # independent verifier), "run_ms" (total). Measured, not estimated.
+    timings: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +96,7 @@ class GuiWorkerResult:
             "screen_phash_after": self.screen_phash_after,
             "verification": self.verification,
             "error": self.error,
+            "timings": self.timings,
         }
 
 
@@ -137,6 +143,8 @@ class GuiWorkerEngine:
         expected_postcondition: Optional[str] = None,
         min_delta_magnitude: float = 0.0005,
     ) -> GuiWorkerResult:
+        run_start = time.perf_counter()
+        timings: dict[str, float] = {}
         driver = ContainerDesktopDriver(self.container_manager, docker_id, display=self.display)
         if self.require_real_desktop:
             driver.assert_available()
@@ -154,6 +162,7 @@ class GuiWorkerEngine:
             # Ground against a fresh frame: a previous step (e.g. opening the
             # application menu) changes what is visible, so a target that only
             # appears afterwards cannot be located on the task-start frame.
+            _ground_start = time.perf_counter()
             request = self._to_request_with_fresh_frame(
                 driver,
                 employee_id,
@@ -161,7 +170,16 @@ class GuiWorkerEngine:
                 grounder=loop.grounder,
                 fallback_coordinates=last_coordinates,
             )
+            # Fresh-frame capture + OCR target search is a real per-step cost that
+            # happens before the action loop; attribute it separately.
+            timings["grounding_ms"] = timings.get("grounding_ms", 0.0) + (
+                time.perf_counter() - _ground_start
+            ) * 1000.0
+            _step_start = time.perf_counter()
             receipt: GUIActionReceipt = loop.execute_action(request)
+            timings["step_ms"] = timings.get("step_ms", 0.0) + (
+                time.perf_counter() - _step_start
+            ) * 1000.0
             receipts.append(receipt.model_dump())
             executed += 1
             if request.coordinates is not None:
@@ -179,6 +197,7 @@ class GuiWorkerEngine:
         hash_after = self._hash_frame(frame_after)
         phash_after = frame_dhash(frame_after.pixels)
 
+        _verify_start = time.perf_counter()
         verifier = IndependentVisualVerifier(ocr_engine=TesseractOCREngine())
         verification = verifier.verify_postcondition(
             frame_initial=frame_before,
@@ -187,6 +206,7 @@ class GuiWorkerEngine:
             min_delta_magnitude=min_delta_magnitude,
             expected_postcondition=expected_postcondition,
         )
+        timings["verification_ms"] = (time.perf_counter() - _verify_start) * 1000.0
         verification_dict = {
             "passed": verification.passed,
             "score": verification.score,
@@ -209,6 +229,7 @@ class GuiWorkerEngine:
                 )
             )
 
+        timings["run_ms"] = (time.perf_counter() - run_start) * 1000.0
         result = GuiWorkerResult(
             status=status,
             employee_id=employee_id,
@@ -219,6 +240,7 @@ class GuiWorkerEngine:
             screen_phash_after=phash_after,
             verification=verification_dict,
             error=error,
+            timings=timings,
         )
         if status == "failed":
             logger.error("GUI task failed", employee_id=employee_id, error=error)

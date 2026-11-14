@@ -1,0 +1,6 @@
+tesseract available: True
+FULL-frame OCR (cold): median=1154ms
+REGION OCR 400x300 (cold): median=544ms
+ground_query (fresh frame): median=1206ms
+compute_delta (in-process): median=37.6ms
+PNG decode 1280x800: median=9.5ms (36KB)

@@ -105,7 +105,11 @@ class GUIExecutionLoop:
         Executes a single GUI action within the strict GUI interaction loop.
         """
         start = time.perf_counter()
+        timings: dict[str, float] = {}
         frame_before = self.capture_engine.capture_frame()
+        timings["capture_ms"] = (time.perf_counter() - start) * 1000.0
+        dispatch_start = time.perf_counter()
+        settle_ms = 0.0
         status = "SUCCESS"
         error_msg = None
         delta_mag = 0.0
@@ -263,13 +267,16 @@ class GUIExecutionLoop:
             elif act_type == "WAIT_SETTLE":
                 # Explicit settle wait: long enough for a window transition (e.g. a
                 # file dialog handing focus back to the editor) before the next step.
+                _settle_start = time.perf_counter()
                 time.sleep((request.settle_ms or 50) / 1000.0)
+                settle_ms += (time.perf_counter() - _settle_start) * 1000.0
 
             elif act_type == "CONFIRM_SAVED":
                 # "Send Ctrl+S" is not "the file is saved". Read the editor's own
                 # modified marker and fail closed if the document is still dirty
                 # after the save settle: a silently lost edit must never be
                 # reported as a successful save.
+                _confirm_start = time.perf_counter()
                 if self.window_state_provider is None:
                     raise GUIActionBlockedError(
                         "CONFIRM_SAVED requires a window-state provider; the desktop driver "
@@ -309,6 +316,7 @@ class GUIExecutionLoop:
                         + (f" (expected '{marker}')" if marker else "")
                         + "; the edit was not persisted."
                     )
+                timings["confirm_ms"] = (time.perf_counter() - _confirm_start) * 1000.0
 
         except (
             EmergencyStopTriggered,
@@ -328,10 +336,21 @@ class GUIExecutionLoop:
             status = "TIMEOUT"
             error_msg = str(e)
 
+        # Dispatch covers policy check + grounding + motor events + settle/confirm
+        # waits. capture/delta are measured separately so the OCR/pixel cost can be
+        # told apart from the action cost. Explicit settle sleeps are pulled out of
+        # dispatch so "time spent waiting" is not confused with "time spent acting".
+        dispatch_total_ms = (time.perf_counter() - dispatch_start) * 1000.0
+        timings["dispatch_ms"] = max(0.0, dispatch_total_ms - settle_ms)
+        if settle_ms:
+            timings["settle_ms"] = settle_ms
+
         # 3. Post-action screen capture & delta calculation
+        _delta_start = time.perf_counter()
         frame_after = self.capture_engine.capture_frame()
         visual_delta = self.change_detector.compute_delta(frame_before, frame_after)
         delta_mag = visual_delta.magnitude
+        timings["delta_ms"] = (time.perf_counter() - _delta_start) * 1000.0
 
         # 4. Settle status
         screen_settled = visual_delta.is_settled
@@ -360,6 +379,7 @@ class GUIExecutionLoop:
             observed_postcondition=payload["observed_postcondition"],
             error_message=error_msg,
             signature=signature,
+            timings=timings,
         )
 
     def execute_chunk(self, chunk: list[GUIActionRequest]) -> list[GUIActionReceipt]:
