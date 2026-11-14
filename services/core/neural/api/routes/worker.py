@@ -703,6 +703,14 @@ async def execute_gui_plan(
         )
     except DesktopRuntimeUnavailable as exc:
         raise HTTPException(status_code=409, detail=f"Live desktop unavailable: {exc}") from exc
+    except ContainerError as exc:
+        # The workstation can disappear between the liveness check above and the
+        # first broker call (lease reaper, operator terminate, daemon restart). That
+        # is a retryable capacity condition, not a server fault, so surface it as a
+        # conflict the worker can re-claim against instead of an unhandled 500.
+        raise HTTPException(
+            status_code=409, detail=f"Live desktop became unavailable mid-task: {exc}"
+        ) from exc
     except GuiWorkerExecutionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"task_id": task_id, "fencing_token": request.fencing_token, "result": result.to_dict()}
@@ -751,6 +759,10 @@ async def execute_gui_step(
         )
     except DesktopRuntimeUnavailable as exc:
         raise HTTPException(status_code=409, detail=f"Live desktop unavailable: {exc}") from exc
+    except ContainerError as exc:
+        raise HTTPException(
+            status_code=409, detail=f"Live desktop became unavailable mid-step: {exc}"
+        ) from exc
     except GuiWorkerExecutionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"task_id": task_id, "fencing_token": request.fencing_token, "result": result.to_dict()}

@@ -356,3 +356,97 @@ async def test_worker_start_rechecks_lease_after_slow_manifest_capture(async_ses
     attempt = await async_session.get(TaskAttempt, claim["attempt_id"])
     assert attempt.status == "leased"
     assert attempt.workspace_manifest_before is None
+
+
+@pytest.mark.asyncio
+async def test_gui_execute_returns_conflict_when_desktop_vanishes_mid_task(
+    async_session, monkeypatch
+):
+    """The workstation can disappear between the liveness check and the first
+    broker call (lease reaper, operator terminate, daemon restart). That must be a
+    retryable 409, not an unhandled 500 that reads as a server fault."""
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("WORKER_API_TOKENS", f'{{"{WORKER_ID}":"{WORKER_TOKEN}"}}')
+    monkeypatch.setenv("WORKER_API_TOKEN", "")
+    get_settings.cache_clear()
+
+    employee_repo = EmployeeRepository(async_session)
+    employee = await employee_repo.create(
+        employee_id="ANC-EMP-GUI-VANISH",
+        name="GUI Vanish Validation",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.IDLE,
+        execution_capabilities=["terminal", "gui"],
+    )
+    container = await ContainerRepository(async_session).create(
+        docker_id="ancos-desktop-anc-emp-gui-vanish",
+        image="ancos/employee-base:latest",
+        status=ContainerStatus.RUNNING,
+        resource_limits={},
+        network_config={},
+        workspace_path="/tmp/gui-vanish-validation",
+    )
+    await employee_repo.assign_container(employee.employee_id, container.id)
+    await async_session.refresh(employee)
+    project = await ProjectRepository(async_session).create(
+        name="GUI vanish",
+        objective="A vanished workstation must surface as a conflict",
+    )
+    task = await TaskRepository(async_session).create(
+        task_id="TASK-GUI-VANISH",
+        project_id=project.id,
+        assigned_to=employee.id,
+        title="Drive the desktop",
+        objective="Type a line into the editor",
+        scope="Worker route validation",
+        acceptance_criteria="Automated tests pass",
+        execution_mode=ExecutionMode.GUI,
+        priority=TaskPriority.HIGH,
+        status=TaskStatus.ASSIGNED,
+    )
+    claim = await TaskRepository(async_session).claim_next_task(
+        WORKER_ID,
+        execution_modes=[ExecutionMode.GUI],
+    )
+    assert claim is not None
+
+    class VanishingContainerManager:
+        async def get_desktop_by_employee_id(self, employee_id, **_kwargs):
+            return {"status": "running", "docker_id": container.docker_id}
+
+        async def capture_verifier_manifest(self, employee_id):
+            return _complete_manifest()
+
+        def execute_command_sync(self, docker_id, command, workdir=None):
+            raise ContainerError("Restricted Docker broker rejected operation: Workstation not found.")
+
+        async def execute_command(self, docker_id, command, workdir=None):
+            raise ContainerError("Restricted Docker broker rejected operation: Workstation not found.")
+
+    app = create_app()
+
+    async def override_get_db_session():
+        yield async_session
+
+    app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_container_manager] = lambda: VanishingContainerManager()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
+        started = await client.post(
+            f"/internal/worker/tasks/{task.task_id}/start",
+            headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
+            json={"fencing_token": claim["fencing_token"]},
+        )
+        assert started.status_code == 200
+        response = await client.post(
+            f"/internal/worker/tasks/{task.task_id}/gui/execute",
+            headers={"Authorization": f"Bearer {WORKER_TOKEN}"},
+            json={
+                "fencing_token": claim["fencing_token"],
+                "steps": [{"action_type": "KEY_TYPE", "text": "GUI_EDIT=HYBRID_GUI_OK"}],
+            },
+        )
+    get_settings.cache_clear()
+
+    assert response.status_code == 409
+    assert "unavailable mid-task" in response.json()["detail"]

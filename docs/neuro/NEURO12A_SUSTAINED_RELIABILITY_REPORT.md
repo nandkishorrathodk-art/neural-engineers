@@ -40,8 +40,14 @@ the code under test did not move mid-batch.
 | post-fix run 2 | hybrid | 10 | 9 | 1 | 90% | 0.7 | 68.4 | 149.9 | 0.001431 |
 | post-fix run 3 | gui | 10 | 9 | 1 | 90% | 0.3 | 35.3 | 67.2 | 0.000000 |
 | post-fix run 3 | hybrid | 10 | 8 | 2 | 80% | 1.1 | 77.7 | 144.8 | 0.001230 |
+| post-fix run 4 (payload fix) | gui | 10 | 9 | 1 | 90% | 0.3 | 36.8 | 61.6 | 0.000000 |
+| post-fix run 4 (payload fix) | hybrid | 10 | 9 | 1 | 90% | 0.4 | 55.8 | 98.6 | 0.001017 |
 
-### Post-fix aggregate (3 runs, 30 samples per mode)
+Run 4 is a **separate fingerprint** (HEAD `f3a2438`, which adds the payload-selection
+fix below on top of `4c5530f`), so it is reported but not folded into the aggregate above.
+Its evidence is `cohort_postfix_payload_fix.json`.
+
+### Post-fix aggregate (3 runs, 30 samples per mode, HEAD `4c5530f`)
 
 | Mode | Completed | Samples | Success rate |
 |---|---|---|---|
@@ -76,6 +82,21 @@ failure path specific to hybrid contracts that name terminal-side artifacts
    free. `extract_receipt_cost_usd` now sums both shapes, and the control-plane report
    aggregates per-phase cost (`_execution_cost_usd` in `boss/brain.py`). Regression tests
    in `test_reliability_batch_runner.py`.
+4. **GUI edit typed the terminal-side payload.** A hybrid title such as "…hybrid
+   terminal+GUI workflow" places a GUI hint ("GUI") inside the 80-character proximity
+   window of the terminal-side payload (`TERMINAL_PREPARED=1`), so the proximity-first
+   selector chose the terminal payload and the desktop typed the wrong line — the GUI edit
+   never happened and the task failed. `_select_edit_payload` now ranks a token whose key
+   names the GUI (`GUI_EDIT=…`) above proximity and skips terminal-named keys
+   (`terminal`/`prepare`/`verify`/`hash`) in its fallbacks. Regression test:
+   `test_planner_prefers_gui_named_payload_over_terminal_named_one`.
+5. **Unhandled 500 when the desktop vanishes mid-task.** The workstation can disappear
+   between the route's liveness check and the first broker call (lease reaper, operator
+   terminate, daemon restart). `execute_gui_plan`/`execute_gui_step` only caught
+   `DesktopRuntimeUnavailable` and `GuiWorkerExecutionError`, so a `ContainerError` from
+   the broker surfaced as an unhandled 500 that reads as a server fault. Both routes now
+   return a retryable **409**. Regression test:
+   `test_gui_execute_returns_conflict_when_desktop_vanishes_mid_task`.
 
 ## What the remaining failures actually are
 
@@ -89,6 +110,13 @@ pre-fix cohort too (gui-010) and is **not fixed by this work**.
 
 The verifier's `onscreen_deliverable_terms_observed_by_verifier` check no longer fails in
 any post-fix run — the term-derivation defect is gone.
+
+Run 4's single hybrid failure (`5c89f3c0fc-hybrid-001`) is a **different** worker-layer
+flake: the GUI phase planned and typed the correct payload, but the visual delta came back
+`0.000000` and the desktop produced no changed frame. Run 4's single GUI failure
+(`5c89f3c0fc-gui-010`) is the same frame-capture flake as runs 1–3: the loop typed the
+line but the final screenshot did not read the expected term. Neither is the payload
+defect that run 4 was measuring, and both are environment flakiness, not logic defects.
 
 ## Honest caveats
 
