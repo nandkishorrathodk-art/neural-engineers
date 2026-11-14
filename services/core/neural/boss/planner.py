@@ -80,6 +80,19 @@ class ObjectivePlan(BaseModel):
     phases: list[PlannedPhase] = Field(default_factory=list, max_length=12)
 
 
+def _unique_task_id(phase_index: int, task_index: int) -> str:
+    """Public task id that stays unique across objectives on a persistent database.
+
+    Phase and task indices restart at 1 for every objective, so the id needs an
+    independent random component. Four hex characters left only 65,536 values per
+    slot; a sustained workload collided, and the duplicate raised an unhandled
+    IntegrityError that dropped the request. Twelve hex characters match the
+    employee-id convention and keep collisions negligible for any realistic
+    deployment.
+    """
+    return f"TASK-{phase_index:02d}-{task_index:02d}-{uuid.uuid4().hex[:12].upper()}"
+
+
 def validate_plan_dag(plan: ObjectivePlan) -> None:
     """
     Strict DAG cycle and dependency validation:
@@ -311,7 +324,7 @@ class TaskPlanner:
             tasks = []
             for task_index, task in enumerate(phase.tasks, start=1):
                 tasks.append({
-                    "task_id": f"TASK-{phase_index:02d}-{task_index:02d}-{uuid.uuid4().hex[:4].upper()}",
+                    "task_id": _unique_task_id(phase_index, task_index),
                     "source_task_id": task.task_id,
                     "title": task.title,
                     "objective": _terminal_task_objective(task.objective or task.title, task.execution_mode),
@@ -625,7 +638,7 @@ class TaskPlanner:
             tasks = []
             for task_index, task in enumerate(phase.tasks, start=1):
                 tasks.append({
-                    "task_id": f"TASK-{phase_index:02d}-{task_index:02d}-{uuid.uuid4().hex[:4].upper()}",
+                    "task_id": _unique_task_id(phase_index, task_index),
                     "source_task_id": task.task_id,
                     "title": task.title,
                     "objective": _terminal_task_objective(task.objective or task.title, task.execution_mode),

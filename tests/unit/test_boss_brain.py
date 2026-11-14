@@ -578,3 +578,16 @@ async def test_dag_forward_dependency_rejection():
         validate_plan_dag(forward_plan)
 
 
+
+
+def test_unique_task_ids_do_not_collide_across_objectives():
+    """Sustained workloads persist many objectives in one database. The public
+    task id must not collide when phase/task indices restart, or the insert
+    raises an IntegrityError that drops the request."""
+    from neural.boss.planner import _unique_task_id
+
+    ids = {_unique_task_id(1, 1) for _ in range(20000)}
+    assert len(ids) == 20000
+    assert all(tid.startswith("TASK-01-01-") for tid in ids)
+    # A widened suffix must remain well inside the String(64) task_id column.
+    assert max(len(tid) for tid in ids) <= 64
