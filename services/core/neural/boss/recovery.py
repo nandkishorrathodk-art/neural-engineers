@@ -140,13 +140,19 @@ def classify_failure(
             diagnostic_feedback="Security violation detected: code attempted unauthorized operations or forbidden constructs.",
         )
 
-    # 2. Code Quality / Syntax issues (retryable with feedback)
+    # 2. Code Quality / Syntax issues (retryable with feedback). A generated
+    #    script rejected before execution is a generation failure: the task's own
+    #    code never ran, so it is retryable with the concrete problem as feedback
+    #    and is kept distinct from infrastructure failures above.
     if (
         "syntaxerror" in err_lower
         or "indentationerror" in err_lower
         or "nameerror" in err_lower
         or "linter" in err_lower
         or "syntax error" in err_lower
+        or "generated script is not executable" in err_lower
+        or "invalid_pytest_api" in err_lower
+        or "undefined_name" in err_lower
     ):
         return FailureClassification(
             category=FailureCategory.CODE_QUALITY,

@@ -219,6 +219,10 @@ def build_scorecard(
 
 # Ordered most-specific first: the first marker found names the failure class.
 _FAILURE_MARKERS: tuple[tuple[str, str], ...] = (
+    (
+        "Generated script is not executable",
+        "generation: model-authored script rejected before execution",
+    ),
     ("on-screen deliverable terms", "verifier: required on-screen terms not observed"),
     ("live desktop could not be observed", "verifier: live desktop not observed"),
     ("did not match the worker", "verifier: frame mismatch"),

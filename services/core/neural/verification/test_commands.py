@@ -116,6 +116,48 @@ def persisted_paths(planned: Any) -> set[str]:
     return _python_persisted_paths(planned if isinstance(planned, list) else [])
 
 
+def _is_bare_pytest(command: list[str]) -> bool:
+    """True for a pytest invocation with no positional test path to collect."""
+    if command[0] == "pytest":
+        rest = command[1:]
+    elif command[0] in {"python", "python3"} and command[1:3] == ["-m", "pytest"]:
+        rest = command[3:]
+    else:
+        return False
+    return not any(not arg.startswith("-") for arg in rest)
+
+
+def scope_test_commands_to_plan(planned: Any) -> list[Any]:
+    """Target a bare pytest command at the test modules the plan itself persists.
+
+    Employee workspaces are reused across objectives, so a bare ``pytest`` collects
+    every leftover ``test_*.py`` in the directory — including a stale module from an
+    earlier objective that shadows the fresh one and fails the run for reasons that
+    have nothing to do with this task. Naming the modules the plan persists makes the
+    invocation hermetic without changing which tests it is meant to run.
+    """
+    commands = planned if isinstance(planned, list) else []
+    modules = sorted(
+        path
+        for path in _python_persisted_paths(commands)
+        if re.search(r"(?i)(^|/)test_.+\.py$", path.replace("\\", "/"))
+        or re.search(r"(?i)(^|/).+_test\.py$", path.replace("\\", "/"))
+    )
+    if not modules:
+        return commands
+    scoped: list[Any] = []
+    for command in commands:
+        if (
+            isinstance(command, list)
+            and command
+            and all(isinstance(arg, str) for arg in command)
+            and _is_bare_pytest(command)
+        ):
+            command = [*command, *modules]
+        scoped.append(command)
+    return scoped
+
+
 def validate_verify_phase_plan(protected_paths: Any, planned: Any) -> None:
     """Fail closed when a hybrid verify phase would corrupt or not verify the artifact.
 

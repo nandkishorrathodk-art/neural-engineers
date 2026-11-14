@@ -64,6 +64,14 @@ class GuiWorker:
             raise RuntimeError("Core API returned an invalid worker response.")
         return result
 
+    async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        response = await self.client.get(path, params=params)
+        response.raise_for_status()
+        result = response.json()
+        if not isinstance(result, dict):
+            raise RuntimeError("Core API returned an invalid worker response.")
+        return result
+
     async def _heartbeat_loop(
         self, task_id: str, fencing_token: int, lease_lost: asyncio.Event
     ) -> None:
@@ -105,6 +113,12 @@ class GuiWorker:
 
             if lease_lost.is_set():
                 return
+            if receipt.get("infrastructure_failure"):
+                # The desktop was unavailable, so the task's own work never got a
+                # fair chance. Report it as a failure (not a submitted receipt) so
+                # the control plane requeues it without consuming the retry budget.
+                await self._report_failure(task_id, fence, str(receipt.get("error", "")))
+                return
             await self._post(
                 f"/internal/worker/tasks/{task_id}/submit",
                 {"fencing_token": fence, "execution_receipt": receipt},
@@ -135,15 +149,29 @@ class GuiWorker:
         # The plan declares the literal deliverable it types on screen; verifying
         # that text (not a generic screen change) is the correct postcondition.
         expected_text = plan_response.get("expected_text") or task.get("expected_text")
-        result = await self._post(
-            f"/internal/worker/tasks/{task['task_id']}/gui/execute",
-            {
-                "fencing_token": fence,
-                "steps": steps,
-                "expected_text": expected_text,
-                "display": self.display,
-            },
-        )
+        try:
+            result = await self._post(
+                f"/internal/worker/tasks/{task['task_id']}/gui/execute",
+                {
+                    "fencing_token": fence,
+                    "steps": steps,
+                    "expected_text": expected_text,
+                    "display": self.display,
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (409, 503):
+                # The desktop vanished mid-task. This is an environment failure,
+                # not a failed task: surface it so it is requeued, not submitted.
+                return {
+                    "executor": "gui-worker",
+                    "execution_mode": "gui",
+                    "infrastructure_failure": True,
+                    "error": f"Live desktop unavailable during GUI execution: {exc.response.text[:400]}",
+                    "verification_status": "awaiting_independent_verifier",
+                    "passed": False,
+                }
+            raise
         gui_result = result.get("result", {})
         passed = gui_result.get("status") == "success"
         return {

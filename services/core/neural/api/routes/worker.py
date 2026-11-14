@@ -1,12 +1,16 @@
 import asyncio
 import base64
 import binascii
+import json
+import os
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from neural.api.deps import (
     get_audit_repo,
+    get_checkpoint_manager,
     get_container_manager,
     get_container_repo,
     get_employee_repo,
@@ -18,6 +22,7 @@ from neural.api.deps import (
 )
 from neural.api.schemas.requests import (
     RuntimeHeartbeatRequest,
+    WorkerCheckpointRequest,
     WorkerClaimRequest,
     WorkerCommandRequest,
     WorkerFailureRequest,
@@ -63,8 +68,14 @@ from neural.llm.budget import load_budget_scope_caps
 from neural.llm.gateway import LLMGateway
 from neural.logger import get_logger
 from neural.security.kill_switch import get_kill_switch
+from neural.verification.generated_script import (
+    iter_persisted_python,
+    validate_generated_commands,
+    validate_generated_files,
+)
 from neural.verification.test_commands import (
     replayable_test_commands,
+    scope_test_commands_to_plan,
     validate_test_plan,
     validate_verify_phase_plan,
     validate_workspace_artifact_plan,
@@ -79,6 +90,45 @@ router = APIRouter(
     dependencies=[Depends(require_worker_token), Depends(require_execution_not_halted)],
 )
 logger = get_logger("ancos.api.worker")
+
+# Rejected model output is kept verbatim so an operator can see exactly what the
+# model produced and which rule rejected it. The directory is host-visible under
+# the mounted ./data volume; files are written best-effort and never block replan.
+_GENERATION_EVIDENCE_DIR = os.path.join("data", "evidence", "generation_failures")
+
+
+def _persist_generation_failure_evidence(
+    *,
+    task_id: str,
+    phase: str,
+    attempt: int,
+    files: list[tuple[str, str]],
+    problems: list[Any],
+) -> None:
+    """Preserve a rejected generated plan and the rules that rejected it."""
+    try:
+        safe_task = re.sub(r"[^A-Za-z0-9_.-]", "_", task_id)[:120] or "task"
+        safe_phase = re.sub(r"[^A-Za-z0-9_.-]", "_", phase)[:40] or "single"
+        target_dir = os.path.join(_GENERATION_EVIDENCE_DIR, safe_task)
+        os.makedirs(target_dir, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        payload = {
+            "task_id": task_id,
+            "phase": phase,
+            "planning_attempt": attempt,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "problems": [problem.render() for problem in problems],
+            "files": [{"path": path, "content": content} for path, content in files],
+        }
+        target = os.path.join(target_dir, f"{safe_phase}_attempt{attempt}_{stamp}.json")
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        logger.warning(
+            "Could not persist generation-failure evidence",
+            task_id=task_id,
+            error=str(exc),
+        )
 
 
 def _without_excluded_line(content: str, excluded: str) -> str:
@@ -468,6 +518,34 @@ async def plan_terminal_task(
                     )
                     for workspace_file in provider_plan.files
                 ]
+            script_problems = validate_generated_files(
+                (workspace_file.path, workspace_file.content)
+                for workspace_file in provider_plan.files
+            )
+            if script_problems:
+                # The model wrote a script that cannot run. Preserve it verbatim
+                # as diagnostic evidence, then replan with the concrete problem.
+                _persist_generation_failure_evidence(
+                    task_id=task.task_id,
+                    phase=phase or "single",
+                    attempt=planning_attempt + 1,
+                    files=[
+                        (workspace_file.path, workspace_file.content)
+                        for workspace_file in provider_plan.files
+                    ],
+                    problems=script_problems,
+                )
+                validation_error = ValueError(
+                    "Generated script is not executable: "
+                    + "; ".join(problem.render() for problem in script_problems)
+                )
+                logger.warning(
+                    "Generated script rejected before execution",
+                    task_id=task.task_id,
+                    planning_attempt=planning_attempt + 1,
+                    problems=[problem.render() for problem in script_problems],
+                )
+                continue
             try:
                 plan = provider_plan.materialize()
             except ValueError as exc:
@@ -498,6 +576,35 @@ async def plan_terminal_task(
                     plan = TerminalCommandPlan(
                         commands=[c for c in plan.commands if tuple(c) not in test_runners]
                     )
+            # Workspaces are reused across objectives, so a bare `pytest` would also
+            # collect leftover test modules from earlier objectives. Scope it to the
+            # modules this plan persists so the run is hermetic.
+            scoped_commands = scope_test_commands_to_plan(plan.commands)
+            if scoped_commands != plan.commands:
+                plan = TerminalCommandPlan(commands=scoped_commands)
+            # The model sometimes persists a Python script as a raw base64 write
+            # command instead of a `files` entry. Those scripts bypass the file
+            # validator above, so validate what the commands would actually write.
+            command_script_problems = validate_generated_commands(plan.commands)
+            if command_script_problems:
+                _persist_generation_failure_evidence(
+                    task_id=task.task_id,
+                    phase=phase or "single",
+                    attempt=planning_attempt + 1,
+                    files=list(iter_persisted_python(plan.commands)),
+                    problems=command_script_problems,
+                )
+                validation_error = ValueError(
+                    "Generated script is not executable: "
+                    + "; ".join(problem.render() for problem in command_script_problems)
+                )
+                logger.warning(
+                    "Generated script in commands rejected before execution",
+                    task_id=task.task_id,
+                    planning_attempt=planning_attempt + 1,
+                    problems=[problem.render() for problem in command_script_problems],
+                )
+                continue
             try:
                 validate_test_plan(task.acceptance_criteria, plan.commands)
                 task_context = "\n".join((task.title or "", task.objective or "", task.scope or ""))
@@ -766,6 +873,100 @@ async def execute_gui_step(
     except GuiWorkerExecutionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"task_id": task_id, "fencing_token": request.fencing_token, "result": result.to_dict()}
+
+
+@router.post("/tasks/{task_id}/checkpoint")
+async def record_task_checkpoint(
+    task_id: str,
+    request: WorkerCheckpointRequest,
+    worker_id: str = Depends(require_worker_token),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    checkpoint_manager=Depends(get_checkpoint_manager),
+):
+    """Persist the ordered phases a hybrid task has durably completed.
+
+    Written after each phase so a mid-task desktop disappearance can resume from
+    the last completed phase instead of replaying GUI side effects that already
+    happened. The checkpoint is bound to the task's current fencing token, so a
+    stale worker cannot resurrect a superseded attempt.
+    """
+    get_kill_switch().guard_active()
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
+    if not task.assigned_to:
+        raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
+    checkpoint_manager.save_checkpoint(
+        employee_id=task.assigned_to,
+        task_id=task.task_id,
+        step_index=request.step_index,
+        state_dict={
+            "phase": request.phase,
+            "completed_phases": list(request.completed_phases),
+            "protected_paths": list(request.protected_paths),
+            "prepare_plan": [list(command) for command in request.prepare_plan],
+            "fencing_token": request.fencing_token,
+        },
+    )
+    return {
+        "task_id": task_id,
+        "phase": request.phase,
+        "completed_phases": list(request.completed_phases),
+        "fencing_token": request.fencing_token,
+    }
+
+
+@router.get("/tasks/{task_id}/checkpoint")
+async def read_task_checkpoint(
+    task_id: str,
+    fencing_token: int,
+    worker_id: str = Depends(require_worker_token),
+    task_repo: TaskRepository = Depends(get_task_repo),
+    checkpoint_manager=Depends(get_checkpoint_manager),
+):
+    """Return the durable checkpoint for a task, or null when none is usable.
+
+    The reading worker must hold the task's current lease (stale workers are
+    rejected above). A checkpoint written by an *earlier* attempt of the same task
+    is still returned: its GUI side effects live in the durable workspace, so
+    resuming from it prevents replaying them. A checkpoint whose recorded token is
+    ahead of the task's current token cannot exist for this lineage and is ignored.
+    """
+    get_kill_switch().guard_active()
+    task = await task_repo.get_by_task_id(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if not await task_repo.worker_lease_is_current(task_id, worker_id, fencing_token):
+        raise HTTPException(
+            status_code=409, detail="Worker lease expired or fencing token was superseded."
+        )
+    if not task.assigned_to:
+        raise HTTPException(status_code=409, detail="Task has no assigned employee workspace.")
+    checkpoint = checkpoint_manager.load_checkpoint(task.assigned_to, task.task_id)
+    state = (checkpoint or {}).get("state_dict") or {}
+    recorded_fence = state.get("fencing_token")
+    if (
+        not checkpoint
+        or not isinstance(recorded_fence, int)
+        or recorded_fence > task.fencing_token
+    ):
+        return {"task_id": task_id, "checkpoint": None}
+    return {
+        "task_id": task_id,
+        "fencing_token": fencing_token,
+        "checkpoint": {
+            "phase": state.get("phase"),
+            "completed_phases": list(state.get("completed_phases") or []),
+            "protected_paths": list(state.get("protected_paths") or []),
+            "prepare_plan": [list(command) for command in (state.get("prepare_plan") or [])],
+            "step_index": checkpoint.get("step_index", 0),
+            "saved_at": checkpoint.get("saved_at"),
+        },
+    }
 
 
 @router.post("/tasks/{task_id}/submit")

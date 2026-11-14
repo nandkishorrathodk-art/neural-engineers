@@ -320,6 +320,23 @@ class WorkerCommandRequest(WorkerLeaseRequest):
         return command
 
 
+class WorkerCheckpointRequest(WorkerLeaseRequest):
+    """Durable execution checkpoint for a hybrid task's ordered phases.
+
+    Persisted after each phase completes so a mid-task infrastructure failure can
+    resume without re-running GUI phases that already produced side effects.
+    """
+
+    phase: str = Field(..., min_length=1, max_length=40)
+    completed_phases: list[str] = Field(default_factory=list, max_length=8)
+    # Artifacts an earlier phase produced and the verify phase must only read.
+    protected_paths: list[str] = Field(default_factory=list, max_length=16)
+    # The deterministic prepare-phase commands, replayed verbatim on a retry so the
+    # artifact reset is byte-identical instead of a fresh (possibly different) plan.
+    prepare_plan: list[list[str]] = Field(default_factory=list, max_length=16)
+    step_index: int = Field(default=0, ge=0, le=100000)
+
+
 class WorkerSubmitRequest(WorkerLeaseRequest):
     execution_receipt: dict[str, Any] = Field(..., min_length=1)
 

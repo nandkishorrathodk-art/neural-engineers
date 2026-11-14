@@ -442,6 +442,18 @@ async def get_decision_record_repo(session: AsyncSession = Depends(get_db_sessio
     return DecisionRecordRepository(session)
 
 
+_checkpoint_manager_instance = None
+
+
+def get_checkpoint_manager():
+    global _checkpoint_manager_instance
+    if _checkpoint_manager_instance is None:
+        from neural.resource_scheduler.checkpoint_manager import CheckpointManager
+
+        _checkpoint_manager_instance = CheckpointManager()
+    return _checkpoint_manager_instance
+
+
 
 
 
