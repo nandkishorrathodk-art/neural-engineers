@@ -108,6 +108,47 @@ Verifier note: *"Independent visual verification passed: the verifier observed t
 - **Human-relative 4× speed is NOT measured.** No human median baseline was captured for this task; ANCOS-HumanSpeed remains unmeasured here.
 - **Single sample.** One objective, one attempt, one employee. No sustained workload, concurrency, or duplicate-execution test.
 
+## NEURO-12 sustained-workload reliability baseline (2026-11-14)
+
+The single hybrid acceptance above proves one objective can complete with independent
+verification. It does **not** answer whether ANCOS is reliable across many real tasks.
+This section records the first honest measurement of that, taken from the live
+deployment database (`data/neural_company.db`, 76 tasks / 149 attempts) with the new
+reusable scorecard (`neural.reliability.scorecard`).
+
+**Measured success rate by execution mode (decided tasks only):**
+
+| Mode | Completed | Failed | In flight | Decided | Success rate |
+|---|---|---|---|---|---|
+| terminal | 30 | 4 | 8 | 34 | 88% |
+| gui | 7 | 11 | 1 | 18 | 39% |
+| hybrid | 1 | 14 | 0 | 15 | 7% |
+
+Overall: **57% (38/67 decided tasks)**. GUI-bearing (gui + hybrid): **24% (8/33)**.
+Human-relative speed: **NOT_MEASURED** (no human median baseline captured).
+
+**Dominant failure mode:** `verifier: required on-screen terms not observed` — the
+same class of defect fixed in `54a256c`. Every rejected attempt (`rejected`=87,
+`failed`=23) failed the independent verifier, and **all 87 rejections predate
+2026-11-14 07:00**; the only post-fix verification on record is the successful hybrid
+run at 09:15. There is therefore **no post-fix sample large enough to claim the
+GUI/hybrid failure rate has improved.** The 7% hybrid figure is historical.
+
+**What this proves:** terminal execution is broadly reliable on this instance;
+GUI-bearing execution is not yet reliable, and the measurement instrument now exists
+to prove or disprove improvement over a batch.
+
+**What this does NOT prove (NEURO-12 gaps remain open):**
+
+- No sustained 30–60 minute workflow has run.
+- Worker/API crash, network interruption, and checkpoint-restoration recovery during
+  a real run remain unverified (fault-injection tests pass, live recovery does not).
+- Concurrency across many employees/tasks with atomic ownership under load is not
+  exercised live; only unit/integration atomic-claim tests exist.
+- The 4× human benchmark is unmeasured; no baseline exists.
+- The batch that would validate the `54a256c` fix (N similar objectives, post-fix)
+  has not been run.
+
 ## Dependency order
 
 1. Keep NEURO-0 evidence current and resolve P0 authority/lifecycle gaps in NEURO-1 through NEURO-3.
