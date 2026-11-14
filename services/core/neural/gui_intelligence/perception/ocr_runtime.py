@@ -29,22 +29,34 @@ logger = get_logger("ancos.gui_intelligence.runtime.ocr")
 
 # Desktop UI text (menu labels, document markers) is often only 9-11px tall; at
 # native resolution tesseract misreads it ("GUI-OK" -> "GUI-K|"). Upscaling the
-# frame before OCR restores legibility. 3x balances accuracy against latency.
-_OCR_UPSCALE = 3
+# frame before OCR restores legibility.
+#
+# No single scale is reliable. Measured on 46 real markers rendered by Mousepad
+# on a live X desktop, a 3x upscale reads only 39/46: markers whose last digit is
+# zero are systematically misread ("NEURO12A-GUI-010" -> "...-016", "...-014",
+# "...-919"), so verification fails closed on correct work. 2x reads those but
+# drops other glyphs. Reading the frame at several scales and unioning the
+# results reads all 46 with no false positive on an empty document.
+_OCR_UPSCALES = (2, 3)
 
 
 class TesseractOCREngine:
     """Real pixel OCR using the tesseract binary (no DOM / AT-SPI access)."""
 
     def __init__(
-        self, tesseract_bin: str = "tesseract", psm: int = 6, upscale: int = _OCR_UPSCALE
+        self,
+        tesseract_bin: str = "tesseract",
+        psm: int = 6,
+        upscales: tuple[int, ...] = _OCR_UPSCALES,
     ) -> None:
         self.tesseract_bin = tesseract_bin
         # psm 6 = "single uniform block of text": reliably reads the menu bars,
         # window titles, and labels of a desktop screenshot. Sparse mode (psm 11)
         # fragments those labels into unreadable noise on a real X desktop.
         self.psm = psm
-        self.upscale = max(1, int(upscale))
+        self.upscales = tuple(sorted({max(1, int(u)) for u in upscales})) or (1,)
+        self._cache_key: str | None = None
+        self._cache_regions: list[OCRResult] = []
 
     @property
     def available(self) -> bool:
@@ -58,7 +70,7 @@ class TesseractOCREngine:
             )
         return path
 
-    def _run_tsv(self, frame: ScreenFrame) -> str:
+    def _run_tsv(self, frame: ScreenFrame, upscale: int) -> str:
         binary = self._require()
         import numpy as np
         from PIL import Image
@@ -67,12 +79,12 @@ class TesseractOCREngine:
             tmp_path = handle.name
         try:
             image = Image.fromarray(np.asarray(frame.pixels, dtype="uint8"))
-            if self.upscale > 1:
+            if upscale > 1:
                 # Grayscale + nearest-neighbour upscale: nearest preserves the crisp
                 # pixel edges tesseract's classifier expects, whereas smoothing
                 # resampling blurs 10px glyphs into unreadable shapes.
                 image = image.convert("L").resize(
-                    (image.width * self.upscale, image.height * self.upscale),
+                    (image.width * upscale, image.height * upscale),
                     Image.NEAREST,
                 )
             image.save(tmp_path)
@@ -157,12 +169,32 @@ class TesseractOCREngine:
         return results
 
     def extract_text_regions(self, frame: ScreenFrame) -> list[OCRResult]:
+        """Read text by running tesseract at every configured scale and unioning.
+
+        Tesseract's digit recognition is scale-sensitive: a marker legible at one
+        upscale is misread at another, and which scale wins varies with the glyphs.
+        Unioning several scales makes a single correct reading sufficient, so a
+        correct on-screen marker is not lost to one scale's misread. Results are
+        cached per frame so a verification pass reads each frame once.
+        """
+        if frame.frame_hash and frame.frame_hash == self._cache_key:
+            return self._cache_regions
         start = time.perf_counter()
-        tsv = self._run_tsv(frame)
-        regions = self._parse_tsv(tsv, scale=self.upscale)
+        regions: list[OCRResult] = []
+        seen: set[tuple[str, tuple[int, int, int, int]]] = set()
+        for upscale in self.upscales:
+            for region in self._parse_tsv(self._run_tsv(frame, upscale), scale=upscale):
+                key = (region.text, region.bounding_box)
+                if key in seen:
+                    continue
+                seen.add(key)
+                regions.append(region)
+        self._cache_key = frame.frame_hash
+        self._cache_regions = regions
         logger.debug(
             "Tesseract OCR scan completed",
             regions=len(regions),
+            upscales=list(self.upscales),
             elapsed_ms=(time.perf_counter() - start) * 1000.0,
         )
         return regions
@@ -173,6 +205,10 @@ class TesseractOCREngine:
         matches the intended token ("GUI-OK"). A live desktop renders markers with
         hyphens, spaces, or trailing cursor glyphs that tesseract reads inconsistently."""
         return re.sub(r"[^a-z0-9]", "", text.lower())
+
+    @staticmethod
+    def _digits(text: str) -> str:
+        return re.sub(r"\D", "", text)
 
     def find_text(
         self,
@@ -202,6 +238,15 @@ class TesseractOCREngine:
             if query_norm == text_norm or query_norm in text_norm:
                 matched.append(region)
             elif fuzzy:
+                # Marker queries ("NEURO12A-GUI-010") share a long prefix, so the
+                # fuzzy ratio stays high against a *different* marker ("...-039"),
+                # which would let a wrong document satisfy the postcondition. When
+                # both sides carry digits, the query's digits must appear in the
+                # reading; a digit mismatch is a different token, not OCR noise.
+                query_digits = self._digits(query_norm)
+                text_digits = self._digits(text_norm)
+                if query_digits and text_digits and query_digits not in text_digits:
+                    continue
                 ratio = max(
                     difflib.SequenceMatcher(None, query_norm, text_norm).ratio(),
                     difflib.SequenceMatcher(None, query_key, text_key).ratio(),

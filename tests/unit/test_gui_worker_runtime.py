@@ -262,6 +262,84 @@ def test_ocr_normalize_folds_case_and_separators():
     assert TesseractOCREngine._normalize("GUI - OK") == "guiok"
 
 
+def test_ocr_reads_marker_misread_at_one_scale_by_unioning_scales(tmp_path, monkeypatch):
+    """A marker tesseract misreads at one upscale must still be found.
+
+    Reproduces the measured real-desktop defect: at 3x upscale tesseract reads
+    the trailing zero of ``NEURO12A-GUI-010`` as ``6`` (a confident-but-wrong
+    reading), so the verifier fails closed on correct work. The stub binary
+    misreads at 3x and reads correctly at 2x; the engine must union both scales
+    and report the marker.
+    """
+    import sys
+
+    import numpy as np
+    from neural.gui_intelligence.models import ScreenFrame
+
+    stub = tmp_path / "tesseract"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "from PIL import Image\n"
+        "img = Image.open(sys.argv[1])\n"
+        "scale = img.width // 100  # frame is 100px wide; tesseract ran on width*scale\n"
+        "text = 'NEURO12A-GUI-010' if scale == 2 else 'NEURO12A-GUI-016'\n"
+        "print('level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\t"
+        "left\\ttop\\twidth\\theight\\tconf\\ttext')\n"
+        "print(f'5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t{40*scale}\\t{10*scale}\\t90\\t{text}')\n"
+    )
+    stub.chmod(0o755)
+
+    engine = TesseractOCREngine(tesseract_bin=str(stub))
+    pixels = np.zeros((40, 100, 3), dtype=np.uint8)
+    frame = ScreenFrame(
+        timestamp=0.0, resolution=(100, 40), pixels=pixels, frame_hash="h1"
+    )
+    matches = engine.find_text(frame, "NEURO12A-GUI-010", fuzzy=True, min_confidence=0.7)
+    assert matches, "unioning scales must recover the marker misread at 3x"
+
+    # A frame already read is served from cache: one OCR pass per frame.
+    calls = {"n": 0}
+    original = engine._run_tsv
+
+    def counting(frame, upscale):
+        calls["n"] += 1
+        return original(frame, upscale)
+
+    monkeypatch.setattr(engine, "_run_tsv", counting)
+    engine.extract_text_regions(frame)
+    assert calls["n"] == 0, "a repeated frame must not re-run tesseract"
+
+
+def test_ocr_does_not_fuzzy_match_a_different_marker_number(tmp_path):
+    """A wrong marker on screen must not satisfy a query for a different marker.
+
+    Marker queries share the ``NEURO12A-GUI-`` prefix, so the fuzzy ratio against
+    ``...-039`` stays high for a query of ``...-100``. Without a digit guard the
+    verifier would accept the wrong document.
+    """
+    import sys
+
+    import numpy as np
+    from neural.gui_intelligence.models import ScreenFrame
+
+    stub = tmp_path / "tesseract"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "print('level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\t"
+        "left\\ttop\\twidth\\theight\\tconf\\ttext')\n"
+        "print('5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t120\\t20\\t92\\tNEURO12A-GUI-039')\n"
+    )
+    stub.chmod(0o755)
+
+    engine = TesseractOCREngine(tesseract_bin=str(stub), upscales=(2,))
+    pixels = np.zeros((40, 100, 3), dtype=np.uint8)
+    frame = ScreenFrame(timestamp=0.0, resolution=(100, 40), pixels=pixels, frame_hash="h2")
+    assert engine.find_text(frame, "NEURO12A-GUI-100", fuzzy=True, min_confidence=0.7) == []
+    assert engine.find_text(frame, "NEURO12A-GUI-039", fuzzy=True, min_confidence=0.7)
+
+
 def test_engine_refuses_blind_click_when_grounding_returns_negative():
     from neural.gui_intelligence.worker import GuiStepPlan, GuiWorkerEngine
 
