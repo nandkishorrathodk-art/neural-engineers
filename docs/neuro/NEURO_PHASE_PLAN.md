@@ -149,6 +149,27 @@ to prove or disprove improvement over a batch.
 - The batch that would validate the `54a256c` fix (N similar objectives, post-fix)
   has not been run.
 
+### Follow-up: pre-fix vs post-fix cohorts (NEURO-12A, 2026-11-14)
+
+The follow-up batch has now been run. Controlled 10+10 unique-objective cohorts were
+measured on the same HEAD fingerprint (`4c5530f`, `head_stable=true`): one pre-fix batch
+and three post-fix batches.
+
+| Mode | Pre-fix | Post-fix (3 runs, n=30) |
+|---|---|---|
+| gui | 90% (9/10) | 90% (27/30) |
+| hybrid | **10% (1/10)** | **90% (27/30)** |
+
+Three defects were fixed and regression-tested: (1) the verifier now derives required
+on-screen terms from the worker's GUI plan instead of scraping prose; (2) the verifier
+queue now carries `scope`, so worker and verifier derive from the identical contract;
+(3) hybrid per-phase model cost is aggregated instead of reported as $0.00. The remaining
+post-fix failures are a genuine **worker-layer GUI flake** (no post-action frame;
+`worker_gui_loop_reported_success=false`) present in both cohorts, not a verifier false
+negative. Cost/sample: GUI $0.00 (no LLM call), hybrid ~$0.0012–0.0014. Worker-crash
+recovery, per-worker distinct identity, and human-relative 4× speed remain unproven. Full
+report: `NEURO12A_SUSTAINED_RELIABILITY_REPORT.md`.
+
 ## Dependency order
 
 1. Keep NEURO-0 evidence current and resolve P0 authority/lifecycle gaps in NEURO-1 through NEURO-3.

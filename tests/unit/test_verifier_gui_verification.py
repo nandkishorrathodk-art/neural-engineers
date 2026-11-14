@@ -377,3 +377,32 @@ def test_onscreen_expected_terms_ignores_markers_only_in_objective_prose():
     )
     assert "SHA-256" not in terms
     assert "GUI-OK" in terms
+
+
+def test_onscreen_expected_terms_excludes_terminal_artifact_from_acceptance():
+    """The acceptance criteria for a hybrid task names the terminal-side artifact
+    ("SHA-256 hash computed from terminal matches file contents") alongside the GUI
+    payload. The derived plan types exactly one literal on screen, so verification
+    must demand that payload only, never the terminal token, or a correct hybrid run
+    fails closed on text the GUI was never asked to show."""
+    from neural.workers.verifier import onscreen_expected_terms
+
+    terms = onscreen_expected_terms(
+        {
+            "title": "Create handoff.txt with required terminal lines",
+            "objective": (
+                "Stage 1 (terminal): create handoff.txt containing ANCOS_HYBRID_TEST and "
+                "TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in "
+                "the text editor via the graphical desktop and add the line "
+                "GUI_EDIT=HYBRID_GUI_OK, then save. Stage 3 (terminal): print its SHA-256 hash."
+            ),
+            "acceptance_criteria": (
+                "handoff.txt exists with exactly three lines: ANCOS_HYBRID_TEST, "
+                "TERMINAL_PREPARED=1, GUI_EDIT=HYBRID_GUI_OK; SHA-256 hash computed from "
+                "terminal matches file contents"
+            ),
+        }
+    )
+    assert terms == ["GUI_EDIT=HYBRID_GUI_OK"]
+    assert "SHA-256" not in terms
+

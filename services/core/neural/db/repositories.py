@@ -1318,6 +1318,7 @@ class TaskRepository:
                 "execution_mode": task.execution_mode.value,
                 "title": task.title,
                 "objective": task.objective,
+                "scope": task.scope,
                 "acceptance_criteria": task.acceptance_criteria,
                 "attempt_number": attempt.attempt_number,
                 "worker_id": attempt.worker_id,

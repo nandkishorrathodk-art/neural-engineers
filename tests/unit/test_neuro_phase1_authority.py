@@ -1489,6 +1489,56 @@ async def test_verifier_rejection_retries_with_backoff_then_fails_closed(async_s
 
 
 @pytest.mark.asyncio
+async def test_verifier_queue_exposes_scope_for_onscreen_term_derivation(async_session):
+    """The verifier derives required on-screen terms from the same contract the
+    worker planned with. If the queue drops ``scope``, a hybrid contract whose GUI
+    payload is only named in the scope falls back to scraping prose and demands a
+    terminal-only token (e.g. "SHA-256") on the desktop, failing correct work."""
+    from neural.workers.verifier import onscreen_expected_terms
+
+    project = await ProjectRepository(async_session).create(
+        name="Verifier scope", objective="Verify hybrid contract parity"
+    )
+    task_repo = TaskRepository(async_session)
+    task = await task_repo.create(
+        task_id="TASK-VERIFIER-SCOPE",
+        project_id=project.id,
+        title="Create and verify handoff.txt via hybrid workflow",
+        objective="Produce handoff.txt with terminal-created content and GUI editing",
+        scope=(
+            "Create handoff.txt with two terminal lines, open and edit via GUI, "
+            "then compute SHA-256 hash in terminal"
+        ),
+        acceptance_criteria=(
+            "handoff.txt exists with exactly three lines: ANCOS_HYBRID_TEST, "
+            "TERMINAL_PREPARED=1, GUI_EDIT=HYBRID_GUI_OK; SHA-256 hash printed in "
+            "terminal matches file contents"
+        ),
+        status=TaskStatus.RUNNING,
+        fencing_token=1,
+    )
+    async_session.add(
+        TaskAttempt(
+            task_id=task.id,
+            attempt_number=1,
+            worker_id="worker-test",
+            fencing_token=1,
+            status="submitted",
+            lease_expires_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            execution_receipt={"verification_status": "awaiting_independent_verifier"},
+        )
+    )
+    await async_session.commit()
+
+    items = await task_repo.list_pending_verification()
+    item = next(i for i in items if i["task_id"] == "TASK-VERIFIER-SCOPE")
+    assert item["scope"] == task.scope
+    # With scope present the derivation finds the real GUI payload, not the
+    # terminal-side "SHA-256" token.
+    assert onscreen_expected_terms(item) == ["GUI_EDIT=HYBRID_GUI_OK"]
+
+
+@pytest.mark.asyncio
 async def test_expired_worker_lease_consumes_retry_budget(async_session):
     project = await ProjectRepository(async_session).create(
         name="Lease recovery", objective="Recover worker loss"

@@ -429,3 +429,37 @@ def test_planner_does_not_press_return_before_the_appended_payload():
     )
     between = steps[ctrl_end_index + 1 : payload_index]
     assert not any(s.get("key_code") in {"Return", "KP_Enter"} for s in between)
+
+
+def test_planner_recovers_paraphrased_hybrid_payload_from_acceptance_criteria():
+    """The Boss planner paraphrases free-form objectives and can drop the literal
+    graphical payload, keeping it only in the acceptance criteria. The planner
+    must still build the open→edit→save choreography from that authoritative
+    contract instead of degrading to a few clicks with nothing typed."""
+    steps = derive_gui_steps(
+        "Create handoff.txt and perform hybrid GUI edit",
+        "Stage 1: Create handoff.txt with two lines. Stage 2: Open handoff.txt in GUI "
+        "text editor and add GUI_EDIT line. Stage 3: Read file and print SHA-256 hash.",
+        "",
+        "handoff.txt exists with exactly three lines: ANCOS_HYBRID_TEST, "
+        "TERMINAL_PREPARED=1, GUI_EDIT=HYBRID_GUI_OK; SHA-256 hash is printed and "
+        "matches the file content",
+    )
+    typed = [step["text"] for step in steps if step["action_type"] == "KEY_TYPE"]
+    assert "/home/employee/workspace/handoff.txt" in typed
+    assert "GUI_EDIT=HYBRID_GUI_OK" in typed
+    # The terminal-phase payload belongs to prepare, not to the graphical phase.
+    assert "TERMINAL_PREPARED=1" not in typed
+    assert expected_onscreen_text(steps) == "GUI_EDIT=HYBRID_GUI_OK"
+
+
+def test_planner_saves_the_document_edit_even_when_the_save_verb_is_paraphrased():
+    """An unsaved edit fails the verify phase, so a document-edit choreography
+    must persist unconditionally, not only when the objective still says "save"."""
+    steps = derive_gui_steps(
+        "Edit handoff.txt on the desktop",
+        "Open handoff.txt in the graphical editor and add the line GUI_EDIT=HYBRID_GUI_OK",
+        "",
+        "handoff.txt contains the line GUI_EDIT=HYBRID_GUI_OK",
+    )
+    assert {"action_type": "KEY_HOTKEY", "key_code": "ctrl+s", "confidence": 0.95} in steps

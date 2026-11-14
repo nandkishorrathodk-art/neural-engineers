@@ -1,0 +1,2428 @@
+{
+  "blocked_reasons": [],
+  "cohort": "smoke",
+  "cohort_stats": {
+    "smoke/gui": {
+      "cancelled": 0,
+      "cohort": "smoke",
+      "completed": 9,
+      "contract_violations": 0,
+      "cost_per_sample_usd": 0.0,
+      "counted_samples": 10,
+      "decided": 10,
+      "failed": 1,
+      "failure_reasons": {
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.": 4,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-001'].": 1,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-002'].": 1,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-003'].": 1,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-005'].": 1,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-006'].": 1,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-007'].": 1,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-008'].": 1,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-009'].": 1,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (perceptual match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-004'].": 1
+      },
+      "in_flight": 0,
+      "mean_latency_seconds": 34.31,
+      "mode": "gui",
+      "p95_latency_seconds": 58.0,
+      "peak_cpu_percent": 136.58,
+      "peak_mem_mib": 168.1,
+      "planner_first_try_rate": 1.0,
+      "planner_retried_samples": 0,
+      "retry_frequency": 0.3,
+      "samples_submitted": 10,
+      "success_rate": 0.9,
+      "timed_out": 0,
+      "timeout_rate": 0.0,
+      "total_cost_usd": 0.0,
+      "total_planner_resubmissions": 0,
+      "total_retries": 3
+    },
+    "smoke/hybrid": {
+      "cancelled": 0,
+      "cohort": "smoke",
+      "completed": 1,
+      "contract_violations": 0,
+      "cost_per_sample_usd": 0.0,
+      "counted_samples": 10,
+      "decided": 10,
+      "failed": 9,
+      "failure_reasons": {
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.": 36,
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success. The hybrid terminal verification phase was independently replayed.": 1
+      },
+      "in_flight": 0,
+      "mean_latency_seconds": 108.43,
+      "mode": "hybrid",
+      "p95_latency_seconds": 150.7,
+      "peak_cpu_percent": 137.71,
+      "peak_mem_mib": 187.6,
+      "planner_first_try_rate": 1.0,
+      "planner_retried_samples": 0,
+      "retry_frequency": 2.7,
+      "samples_submitted": 10,
+      "success_rate": 0.1,
+      "timed_out": 0,
+      "timeout_rate": 0.0,
+      "total_cost_usd": 0.0,
+      "total_planner_resubmissions": 0,
+      "total_retries": 27
+    }
+  },
+  "comparisons": [],
+  "fingerprint": {
+    "branch": "main",
+    "captured_at_unix": 1794653876.2601924,
+    "desktop_image": "ancos/employee-base:latest",
+    "head_commit": "4c5530f2026cb8cb2f9928b6a4088b41e85dfbea",
+    "head_subject": "Add sustained-workload reliability scorecard and record the NEURO-12 baseline",
+    "model_config": {
+      "routes": {
+        "boss_brain": "reasoning",
+        "code_debugging": "coding",
+        "code_generation": "coding",
+        "code_review": "reasoning",
+        "independent_verifier": "reasoning",
+        "log_summarization": "fast",
+        "meeting_moderator": "reasoning",
+        "status_reporting": "fast",
+        "task_decomposer": "reasoning"
+      },
+      "tiers": {
+        "coding": {
+          "fallbacks": [
+            "nim/nvidia/nemotron-3.5-bolt-e4b",
+            "openai/gpt-6.1-sol",
+            "anthropic/claude-sonnet-5-5",
+            "gemini/gemini-3.5-flash"
+          ],
+          "primary": "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+        },
+        "fast": {
+          "fallbacks": [
+            "nim/nvidia/nemotron-3.5-lightning-30b-a3b",
+            "openai/gpt-6-luna",
+            "anthropic/claude-haiku-5-5",
+            "gemini/gemini-3.5-flash-lite"
+          ],
+          "primary": "nim/openai/gpt-oss-20b"
+        },
+        "reasoning": {
+          "fallbacks": [
+            "nim/nvidia/nemotron-3.5-bolt-e4b",
+            "openai/gpt-6.1-sol",
+            "anthropic/claude-sonnet-5-5",
+            "gemini/gemini-3.5-flash"
+          ],
+          "primary": "nim/nvidia/nemotron-3.5-lightning-30b-a3b"
+        }
+      }
+    },
+    "required_fix_commit": "54a256c",
+    "required_fix_commit_present": true,
+    "worker_config": {
+      "service_runtimes": [
+        {
+          "age_seconds": 4.09,
+          "instance_id": "95de1e468aa342aa8842659bd7e6566d",
+          "last_seen_at": "2026-11-14T10:57:52.129030",
+          "service_id": "verification-service",
+          "service_type": "verifier",
+          "status": "healthy"
+        },
+        {
+          "age_seconds": 4.76,
+          "instance_id": "b7cb8a6dd31944299a6f92a635d1b9f1",
+          "last_seen_at": "2026-11-14T10:57:51.451928",
+          "service_id": "worker-service",
+          "service_type": "worker",
+          "status": "healthy"
+        }
+      ],
+      "verifier_auth_configured": true,
+      "verifier_runtime": "healthy",
+      "worker_auth_configured": true,
+      "worker_runtime": "healthy"
+    }
+  },
+  "finished_at_utc": "2026-11-14T11:21:43.720856+00:00",
+  "head_stable_during_cohort": true,
+  "notes": [
+    "Extended cohort not requested for this run."
+  ],
+  "observations": [
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-001']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 29.45,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-001 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "6a70f636-bebf-4dbe-9354-30b253a94db5",
+      "receipts": [
+        {
+          "attempt_id": "aec3c746-54b7-4ae4-be8f-6b766de69b45",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 129.73,
+          "mem_mib": 81.34
+        },
+        {
+          "cpu_percent": 27.29,
+          "mem_mib": 147.3
+        },
+        {
+          "cpu_percent": 0.16,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 40.58,
+          "mem_mib": 149.0
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-001",
+      "task_id": "TASK-01-01-BFCD",
+      "verified": true
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-002']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 28.17,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-002 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "7144775f-3925-4d9e-9f8b-c4f6a751c6d3",
+      "receipts": [
+        {
+          "attempt_id": "24ac467d-9ae5-4e09-a0df-92697179d118",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 132.58,
+          "mem_mib": 81.54
+        },
+        {
+          "cpu_percent": 46.24,
+          "mem_mib": 147.2
+        },
+        {
+          "cpu_percent": 8.45,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 45.32,
+          "mem_mib": 148.5
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-002",
+      "task_id": "TASK-01-01-EAF3",
+      "verified": true
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-003']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 29.05,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-003 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "a7597506-a91d-4093-bd6d-c05aad7b7d44",
+      "receipts": [
+        {
+          "attempt_id": "aa5cec86-9475-4d09-b9ba-13b1067ab590",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 136.58,
+          "mem_mib": 87.23
+        },
+        {
+          "cpu_percent": 63.02,
+          "mem_mib": 155.9
+        },
+        {
+          "cpu_percent": 0.24,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 51.29,
+          "mem_mib": 148.6
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-003",
+      "task_id": "TASK-01-01-AEF1",
+      "verified": true
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (perceptual match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-004']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 28.6,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-004 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "d81bf78e-2702-41f2-98a1-c7e41d77a8bd",
+      "receipts": [
+        {
+          "attempt_id": "343eaff6-0362-46cd-bfc0-b23b62fb2c68",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 130.87,
+          "mem_mib": 86.3
+        },
+        {
+          "cpu_percent": 41.4,
+          "mem_mib": 147.2
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 165.5
+        },
+        {
+          "cpu_percent": 29.05,
+          "mem_mib": 148.5
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-004",
+      "task_id": "TASK-01-01-AAF9",
+      "verified": true
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-005']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 28.54,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-005 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "4d2f0a77-f74b-49bb-b556-8aab7c4a90ad",
+      "receipts": [
+        {
+          "attempt_id": "01775a0d-4cf7-4b43-b0aa-64b265b08e35",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 131.91,
+          "mem_mib": 81.27
+        },
+        {
+          "cpu_percent": 73.33,
+          "mem_mib": 165.6
+        },
+        {
+          "cpu_percent": 0.22,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 46.21,
+          "mem_mib": 148.5
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-005",
+      "task_id": "TASK-01-01-4415",
+      "verified": true
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-006']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 28.71,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-006 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "8439c30b-a082-4133-9bb9-96c5efc77eb8",
+      "receipts": [
+        {
+          "attempt_id": "4d5298fe-506a-413c-820a-270d37094f3e",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 130.05,
+          "mem_mib": 81.7
+        },
+        {
+          "cpu_percent": 32.88,
+          "mem_mib": 148.2
+        },
+        {
+          "cpu_percent": 0.21,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 36.7,
+          "mem_mib": 151.2
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-006",
+      "task_id": "TASK-01-01-92CB",
+      "verified": true
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-007']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 34.66,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-007 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "c5fbed89-7951-4392-b060-ee15da401269",
+      "receipts": [
+        {
+          "attempt_id": "e3b489f3-7d63-4a62-bb0f-3bfd002a495a",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 130.05,
+          "mem_mib": 81.3
+        },
+        {
+          "cpu_percent": 32.5,
+          "mem_mib": 151.2
+        },
+        {
+          "cpu_percent": 8.57,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 26.07,
+          "mem_mib": 148.4
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-007",
+      "task_id": "TASK-01-01-23BA",
+      "verified": true
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-008']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 29.96,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-008 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "1097fabb-b82d-4231-8d18-37c7f8a1edbc",
+      "receipts": [
+        {
+          "attempt_id": "8a08023a-db6c-4821-ad73-ec999b23ab2d",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 129.57,
+          "mem_mib": 82.74
+        },
+        {
+          "cpu_percent": 50.88,
+          "mem_mib": 147.1
+        },
+        {
+          "cpu_percent": 1.03,
+          "mem_mib": 168.1
+        },
+        {
+          "cpu_percent": 54.43,
+          "mem_mib": 148.4
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-008",
+      "task_id": "TASK-01-01-C2B8",
+      "verified": true
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success, and the verifier read the required on-screen deliverable terms ['NEURO12A-GUI-009']."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 28.91,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-009 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "09c3eb9b-d4b8-4c48-83a1-aee1421872d2",
+      "receipts": [
+        {
+          "attempt_id": "d9aaf12b-39e0-4e29-b2d3-da1976173cf8",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "onscreen_deliverable_terms_observed_by_verifier",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 129.78,
+          "mem_mib": 81.56
+        },
+        {
+          "cpu_percent": 43.17,
+          "mem_mib": 147.2
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 56.66,
+          "mem_mib": 148.6
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-gui-009",
+      "task_id": "TASK-01-01-EB4C",
+      "verified": true
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 77.09,
+      "mode": "gui",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"gui\" (not terminal, not terminal_only, not hybrid). Do NOT return multiple tasks. Using ONLY the graphical desktop, open the default text editor and type the exact string NEURO12A-GUI-010 into a new document. Do not create, modify, or run any files from the terminal.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "0db4395f-d298-4bf5-9b71-538a06f19e28",
+      "receipts": [
+        {
+          "attempt_id": "7dab1f8a-a468-438a-862a-750afdf11f7a",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "95124da7-f6bf-499f-a836-f4ed9e8c1fe7",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "cc5812ab-e69c-498d-99bd-22a06323e973",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "cbf7e9d9-a643-43a3-a6c1-81c3bba49096",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 128.81,
+          "mem_mib": 82.42
+        },
+        {
+          "cpu_percent": 27.12,
+          "mem_mib": 147.9
+        },
+        {
+          "cpu_percent": 8.34,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 26.3,
+          "mem_mib": 158.4
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 26.97,
+          "mem_mib": 152.5
+        },
+        {
+          "cpu_percent": 0.14,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 41.2,
+          "mem_mib": 148.7
+        },
+        {
+          "cpu_percent": 0.16,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 35.74,
+          "mem_mib": 158.4
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-gui-010",
+      "task_id": "TASK-01-01-E6F4",
+      "verified": false
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 155.95,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "88d123c9-7b62-4fa9-b915-1a1336ddc8d1",
+      "receipts": [
+        {
+          "attempt_id": "d4153346-cd09-4f6a-a966-aa007f8448f3",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "2ea1a99e-3059-4a50-b01b-ec560da99f58",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "db5f68a8-fd87-4afc-806c-c044492f3cf6",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "ceab11ee-459e-4f87-8fb9-a27a830bb0a3",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 132.78,
+          "mem_mib": 81.27
+        },
+        {
+          "cpu_percent": 0.09,
+          "mem_mib": 146.7
+        },
+        {
+          "cpu_percent": 35.5,
+          "mem_mib": 150.8
+        },
+        {
+          "cpu_percent": 43.35,
+          "mem_mib": 180.4
+        },
+        {
+          "cpu_percent": 57.49,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 0.22,
+          "mem_mib": 164.7
+        },
+        {
+          "cpu_percent": 0.25,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 40.78,
+          "mem_mib": 152.6
+        },
+        {
+          "cpu_percent": 42.5,
+          "mem_mib": 175.7
+        },
+        {
+          "cpu_percent": 55.7,
+          "mem_mib": 173.0
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 0.09,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 37.74,
+          "mem_mib": 150.4
+        },
+        {
+          "cpu_percent": 6.25,
+          "mem_mib": 176.6
+        },
+        {
+          "cpu_percent": 67.89,
+          "mem_mib": 187.6
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 54.87,
+          "mem_mib": 150.5
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 166.7
+        },
+        {
+          "cpu_percent": 65.0,
+          "mem_mib": 181.7
+        },
+        {
+          "cpu_percent": 0.16,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 0.14,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 0.08,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 39.5,
+          "mem_mib": 150.5
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-001",
+      "task_id": "TASK-01-01-4914",
+      "verified": false
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 137.45,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "3d564455-ed82-44ba-9c4a-60b3f20a0e62",
+      "receipts": [
+        {
+          "attempt_id": "df24d033-117d-4bbf-9019-5e9ee76a2489",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "811842c6-627d-4c38-b056-8bae7e8aa8fa",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "70100a7d-c5b1-4141-a46f-285e012ee4fd",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "5051502d-a128-4ab2-a9b1-a875bd38f36e",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 133.77,
+          "mem_mib": 81.45
+        },
+        {
+          "cpu_percent": 31.52,
+          "mem_mib": 151.2
+        },
+        {
+          "cpu_percent": 50.46,
+          "mem_mib": 184.8
+        },
+        {
+          "cpu_percent": 55.13,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 0.24,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 10.64,
+          "mem_mib": 166.2
+        },
+        {
+          "cpu_percent": 68.6,
+          "mem_mib": 165.4
+        },
+        {
+          "cpu_percent": 66.63,
+          "mem_mib": 177.0
+        },
+        {
+          "cpu_percent": 63.18,
+          "mem_mib": 168.1
+        },
+        {
+          "cpu_percent": 23.83,
+          "mem_mib": 168.1
+        },
+        {
+          "cpu_percent": 0.32,
+          "mem_mib": 168.1
+        },
+        {
+          "cpu_percent": 33.45,
+          "mem_mib": 152.3
+        },
+        {
+          "cpu_percent": 14.15,
+          "mem_mib": 185.4
+        },
+        {
+          "cpu_percent": 37.83,
+          "mem_mib": 169.3
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 169.3
+        },
+        {
+          "cpu_percent": 0.22,
+          "mem_mib": 169.3
+        },
+        {
+          "cpu_percent": 46.98,
+          "mem_mib": 160.6
+        },
+        {
+          "cpu_percent": 19.34,
+          "mem_mib": 167.2
+        },
+        {
+          "cpu_percent": 64.0,
+          "mem_mib": 180.1
+        },
+        {
+          "cpu_percent": 65.71,
+          "mem_mib": 181.1
+        },
+        {
+          "cpu_percent": 23.73,
+          "mem_mib": 171.2
+        },
+        {
+          "cpu_percent": 0.27,
+          "mem_mib": 171.2
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-002",
+      "task_id": "TASK-01-01-5B6D",
+      "verified": false
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 144.28,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "183aa88e-0cfe-4828-bc18-cc36ea64017c",
+      "receipts": [
+        {
+          "attempt_id": "8aca247f-4b3a-4200-912c-0acfb0bb51c0",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "6b462ed7-b29e-4fe9-aafd-8758b166bbea",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "e6edcc6c-97cb-4787-90f3-c0a3d8b1fb21",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "93cf039d-31a5-4ede-afe8-8658e94bcaa5",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 130.78,
+          "mem_mib": 81.3
+        },
+        {
+          "cpu_percent": 35.03,
+          "mem_mib": 151.5
+        },
+        {
+          "cpu_percent": 56.18,
+          "mem_mib": 174.5
+        },
+        {
+          "cpu_percent": 47.54,
+          "mem_mib": 164.7
+        },
+        {
+          "cpu_percent": 0.28,
+          "mem_mib": 164.7
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 45.2,
+          "mem_mib": 153.1
+        },
+        {
+          "cpu_percent": 0.38,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 62.67,
+          "mem_mib": 179.7
+        },
+        {
+          "cpu_percent": 16.17,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 0.08,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 55.07,
+          "mem_mib": 151.3
+        },
+        {
+          "cpu_percent": 63.64,
+          "mem_mib": 175.5
+        },
+        {
+          "cpu_percent": 6.24,
+          "mem_mib": 171.1
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 171.1
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 171.2
+        },
+        {
+          "cpu_percent": 57.66,
+          "mem_mib": 153.4
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 168.7
+        },
+        {
+          "cpu_percent": 64.8,
+          "mem_mib": 181.5
+        },
+        {
+          "cpu_percent": 0.19,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 9.61,
+          "mem_mib": 172.6
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-003",
+      "task_id": "TASK-01-01-139F",
+      "verified": false
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 131.53,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "d7ff744d-ced0-4a06-827e-07d0a573c898",
+      "receipts": [
+        {
+          "attempt_id": "ffb37d67-9c0c-4877-aed9-7b00cc8a4b3b",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "c0e27a5b-ddd5-418c-b82a-ae43f4117ea6",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "ba57adbc-369f-4dbb-983a-fbee09be2a61",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "f01dd397-30c6-4179-8cf1-117be459778d",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 130.49,
+          "mem_mib": 81.21
+        },
+        {
+          "cpu_percent": 39.0,
+          "mem_mib": 147.0
+        },
+        {
+          "cpu_percent": 41.7,
+          "mem_mib": 174.5
+        },
+        {
+          "cpu_percent": 60.52,
+          "mem_mib": 165.8
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 0.25,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 78.29,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 68.34,
+          "mem_mib": 181.4
+        },
+        {
+          "cpu_percent": 61.93,
+          "mem_mib": 172.7
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 169.0
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 169.0
+        },
+        {
+          "cpu_percent": 36.56,
+          "mem_mib": 154.5
+        },
+        {
+          "cpu_percent": 78.45,
+          "mem_mib": 175.7
+        },
+        {
+          "cpu_percent": 35.27,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 0.26,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 36.73,
+          "mem_mib": 153.3
+        },
+        {
+          "cpu_percent": 53.16,
+          "mem_mib": 185.3
+        },
+        {
+          "cpu_percent": 49.61,
+          "mem_mib": 169.6
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 169.1
+        },
+        {
+          "cpu_percent": 0.16,
+          "mem_mib": 169.1
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-004",
+      "task_id": "TASK-01-01-B758",
+      "verified": false
+    },
+    {
+      "attempts": 1,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification passed: the verifier observed the live employee desktop itself and its frame matched the worker's post-action frame (exact match), the worker's GUI loop reported success. The hybrid terminal verification phase was independently replayed."
+      ],
+      "final_status": "completed",
+      "is_decided": true,
+      "latency_seconds": 27.51,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "completed",
+      "planner_resubmissions": 1,
+      "project_id": "0ba8962c-4ea2-4620-af67-c376e37da80c",
+      "receipts": [
+        {
+          "attempt_id": "7e6573bf-5047-4594-8464-4e2703c2977f",
+          "error_message": null,
+          "execution_receipt": null,
+          "status": "verified",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "task_verification_evidence": {
+            "checks": [
+              {
+                "name": "independent_live_desktop_hash_matches_worker_post_action_frame",
+                "passed": true
+              },
+              {
+                "name": "worker_gui_loop_reported_success",
+                "passed": true
+              },
+              {
+                "name": "hybrid_terminal_phase_independently_replayable",
+                "passed": true
+              }
+            ],
+            "evidence_refs": [
+              "verifier:7e6573bf-5047-4594-8464-4e2703c2977f:test:1"
+            ],
+            "independent_test_runs": [],
+            "passed": true,
+            "workspace_delta": {
+              "complete": false,
+              "counts": {},
+              "created": [],
+              "modified": []
+            },
+            "workspace_manifest": {
+              "complete": false,
+              "file_count": null,
+              "files": [],
+              "returned_file_count": 0
+            },
+            "workspace_manifest_before": {
+              "complete": false,
+              "file_count": null
+            }
+          }
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 122.23,
+          "mem_mib": 76.51
+        },
+        {
+          "cpu_percent": 70.28,
+          "mem_mib": 165.5
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 32.53,
+          "mem_mib": 148.8
+        }
+      ],
+      "retries": 0,
+      "sample_id": "e864780a1c-hybrid-005",
+      "task_id": "TASK-01-01-AA3C",
+      "verified": true
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 107.66,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "6a986241-899b-4dfd-af9a-0ccfb9f7dd6c",
+      "receipts": [
+        {
+          "attempt_id": "1eed6f6f-3704-4a74-a68b-5a1c4807a531",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "02c99644-336a-4f35-90ef-60db31f50ed9",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "a81480c9-4ac0-40be-922c-37b6765d1387",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "7bad26f3-4fbb-49a4-9b30-300a4664a61d",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 128.04,
+          "mem_mib": 81.46
+        },
+        {
+          "cpu_percent": 45.35,
+          "mem_mib": 147.2
+        },
+        {
+          "cpu_percent": 0.21,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 3.53,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 0.07,
+          "mem_mib": 165.0
+        },
+        {
+          "cpu_percent": 32.1,
+          "mem_mib": 148.8
+        },
+        {
+          "cpu_percent": 0.65,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 0.08,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 74.66,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 0.16,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 0.08,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 39.42,
+          "mem_mib": 148.9
+        },
+        {
+          "cpu_percent": 0.27,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 0.14,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 8.49,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 53.32,
+          "mem_mib": 152.0
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-006",
+      "task_id": "TASK-01-01-5BE6",
+      "verified": false
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 78.29,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "7890c828-ef2c-4f3e-9fb1-e549504239fa",
+      "receipts": [
+        {
+          "attempt_id": "357fc437-b6d9-4516-9b4c-a61e7f0f3c19",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "df5234b6-f8bc-46c5-8db0-6ae9c17586be",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "f8381400-baa2-486c-9373-6b0ae9ac1215",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "db392125-b26d-4bb9-866c-3988e52b105f",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 132.79,
+          "mem_mib": 87.34
+        },
+        {
+          "cpu_percent": 30.5,
+          "mem_mib": 147.2
+        },
+        {
+          "cpu_percent": 0.11,
+          "mem_mib": 159.0
+        },
+        {
+          "cpu_percent": 0.13,
+          "mem_mib": 156.8
+        },
+        {
+          "cpu_percent": 8.35,
+          "mem_mib": 156.7
+        },
+        {
+          "cpu_percent": 8.02,
+          "mem_mib": 157.0
+        },
+        {
+          "cpu_percent": 8.07,
+          "mem_mib": 156.7
+        },
+        {
+          "cpu_percent": 0.07,
+          "mem_mib": 157.0
+        },
+        {
+          "cpu_percent": 0.08,
+          "mem_mib": 156.7
+        },
+        {
+          "cpu_percent": 30.02,
+          "mem_mib": 156.7
+        },
+        {
+          "cpu_percent": 8.17,
+          "mem_mib": 156.7
+        },
+        {
+          "cpu_percent": 8.29,
+          "mem_mib": 156.7
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-007",
+      "task_id": "TASK-01-01-5900",
+      "verified": false
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 138.03,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "0f2442a3-66ea-4516-852a-fb398592503a",
+      "receipts": [
+        {
+          "attempt_id": "a3b3cb6f-6091-4502-9691-2dbfa4fff24c",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "38491e88-8c6c-46a1-a6bf-172a0f71c4a2",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "44fe04b3-cf0d-4d0f-965d-57317e2b8f8d",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "4b141d10-0220-417f-87ae-2122d2317597",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 131.41,
+          "mem_mib": 81.31
+        },
+        {
+          "cpu_percent": 40.5,
+          "mem_mib": 147.2
+        },
+        {
+          "cpu_percent": 5.25,
+          "mem_mib": 174.7
+        },
+        {
+          "cpu_percent": 9.64,
+          "mem_mib": 166.6
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 164.9
+        },
+        {
+          "cpu_percent": 0.22,
+          "mem_mib": 165.5
+        },
+        {
+          "cpu_percent": 54.81,
+          "mem_mib": 158.8
+        },
+        {
+          "cpu_percent": 63.89,
+          "mem_mib": 175.5
+        },
+        {
+          "cpu_percent": 2.37,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 0.24,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 0.24,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 52.87,
+          "mem_mib": 150.6
+        },
+        {
+          "cpu_percent": 0.22,
+          "mem_mib": 166.9
+        },
+        {
+          "cpu_percent": 64.13,
+          "mem_mib": 179.8
+        },
+        {
+          "cpu_percent": 32.97,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 169.2
+        },
+        {
+          "cpu_percent": 55.21,
+          "mem_mib": 159.7
+        },
+        {
+          "cpu_percent": 0.35,
+          "mem_mib": 166.9
+        },
+        {
+          "cpu_percent": 64.79,
+          "mem_mib": 179.9
+        },
+        {
+          "cpu_percent": 12.56,
+          "mem_mib": 171.2
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 171.2
+        },
+        {
+          "cpu_percent": 39.37,
+          "mem_mib": 152.6
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-008",
+      "task_id": "TASK-01-01-3C01",
+      "verified": false
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 86.23,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "e7a0ce64-1a39-4b38-a95a-d58477e93f4c",
+      "receipts": [
+        {
+          "attempt_id": "3f678547-174b-4a0b-afd8-05cf8a3ce8b2",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "543ee8c2-7e2e-4f42-98a8-a7d29923951f",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "83e98ec8-c26b-4c45-970a-cabd01777c5d",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "f616f8ca-5032-4750-a978-f7b36b2a4c65",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 125.76,
+          "mem_mib": 78.48
+        },
+        {
+          "cpu_percent": 45.62,
+          "mem_mib": 147.2
+        },
+        {
+          "cpu_percent": 0.27,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 54.62,
+          "mem_mib": 157.5
+        },
+        {
+          "cpu_percent": 0.16,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 0.21,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 32.79,
+          "mem_mib": 149.0
+        },
+        {
+          "cpu_percent": 22.57,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 0.21,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 57.49,
+          "mem_mib": 149.9
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 165.5
+        },
+        {
+          "cpu_percent": 14.38,
+          "mem_mib": 165.2
+        },
+        {
+          "cpu_percent": 0.08,
+          "mem_mib": 165.2
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-009",
+      "task_id": "TASK-01-01-5CF4",
+      "verified": false
+    },
+    {
+      "attempts": 4,
+      "cohort": "smoke",
+      "contract_violation": "",
+      "cost_usd": 0.0,
+      "counted_as_sample": true,
+      "failure_reasons": [
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+        "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable."
+      ],
+      "final_status": "failed",
+      "is_decided": true,
+      "latency_seconds": 77.37,
+      "mode": "hybrid",
+      "objective": "CRITICAL CONSTRAINTS: Return exactly ONE phase with exactly ONE task. That task's execution_mode MUST be exactly the string \"hybrid\" (not terminal, not gui, not terminal_only). Do NOT return multiple tasks. A single hybrid task is the only acceptable plan because the same task needs both a terminal and a graphical desktop. Stage 1 (terminal): create handoff.txt in the workspace containing exactly the two lines ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1. Stage 2 (graphical desktop only): open handoff.txt in the text editor via the graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document using the GUI. Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+      "outcome": "failed",
+      "planner_resubmissions": 1,
+      "project_id": "a333feae-603b-4b9c-bd3b-6e604c09c07e",
+      "receipts": [
+        {
+          "attempt_id": "5c5d1f42-89f1-4819-a750-85de6cae5922",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "9e3be11c-578b-4b8c-b72c-48df5febd71b",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "e5dacc5e-7735-46a3-b1bb-eed28f4cef9a",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        },
+        {
+          "attempt_id": "3c2b3b8e-764c-4c89-8d91-9614efde3ea1",
+          "error_message": "Independent visual verification failed closed: the live desktop could not be observed, the independently captured frame did not match the worker's post-action frame, the worker's GUI loop did not report success, the required on-screen deliverable terms were not read by the verifier, or a hybrid terminal phase was not independently replayable.",
+          "execution_receipt": null,
+          "status": "rejected",
+          "verification_receipt": null,
+          "verifier_id": "verification-service",
+          "worker_id": "worker-service"
+        }
+      ],
+      "resource_samples": [
+        {
+          "cpu_percent": 137.71,
+          "mem_mib": 88.79
+        },
+        {
+          "cpu_percent": 0.1,
+          "mem_mib": 146.6
+        },
+        {
+          "cpu_percent": 43.5,
+          "mem_mib": 147.1
+        },
+        {
+          "cpu_percent": 0.26,
+          "mem_mib": 164.7
+        },
+        {
+          "cpu_percent": 0.16,
+          "mem_mib": 164.7
+        },
+        {
+          "cpu_percent": 48.8,
+          "mem_mib": 148.5
+        },
+        {
+          "cpu_percent": 0.23,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 0.15,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 35.1,
+          "mem_mib": 148.9
+        },
+        {
+          "cpu_percent": 0.36,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 8.49,
+          "mem_mib": 165.1
+        },
+        {
+          "cpu_percent": 31.81,
+          "mem_mib": 153.0
+        }
+      ],
+      "retries": 3,
+      "sample_id": "e864780a1c-hybrid-010",
+      "task_id": "TASK-01-01-4202",
+      "verified": false
+    }
+  ],
+  "run_id": "e864780a1c",
+  "smoke_gate": {
+    "min_success_rate": 0.8,
+    "passed": false,
+    "per_mode": {
+      "gui": {
+        "counted_samples": 10,
+        "min_success_rate": 0.8,
+        "passed": true,
+        "required": 10,
+        "success_rate": 0.9
+      },
+      "hybrid": {
+        "counted_samples": 10,
+        "min_success_rate": 0.8,
+        "passed": false,
+        "required": 10,
+        "success_rate": 0.1
+      }
+    }
+  },
+  "started_at_utc": "2026-11-14T10:57:56.180479+00:00",
+  "status": "FAIL"
+}

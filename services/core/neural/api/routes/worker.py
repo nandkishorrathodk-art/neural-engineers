@@ -108,9 +108,7 @@ _SINGLE_CHUNK_WRITE = re.compile(
 )
 
 
-def _normalize_prepare_write_commands(
-    commands: list[list[str]], excluded: str
-) -> list[list[str]]:
+def _normalize_prepare_write_commands(commands: list[list[str]], excluded: str) -> list[list[str]]:
     """Apply the prepare-phase artifact invariant to raw base64 write commands.
 
     The planner asks for the artifact under ``files``, but the model sometimes
@@ -124,11 +122,7 @@ def _normalize_prepare_write_commands(
         return commands
     normalized: list[list[str]] = []
     for command in commands:
-        if (
-            len(command) == 3
-            and command[0] in {"python", "python3"}
-            and command[1] == "-c"
-        ):
+        if len(command) == 3 and command[0] in {"python", "python3"} and command[1] == "-c":
             match = _SINGLE_CHUNK_WRITE.match(command[2])
             if match:
                 try:
@@ -491,15 +485,15 @@ async def plan_terminal_task(
                 # normalization above; normalize those commands too so the
                 # single-trailing-newline invariant always holds.
                 if excluded:
-                    normalized_commands = _normalize_prepare_write_commands(
-                        plan.commands, excluded
-                    )
+                    normalized_commands = _normalize_prepare_write_commands(plan.commands, excluded)
                     if normalized_commands != plan.commands:
                         plan = TerminalCommandPlan(commands=normalized_commands)
                 # The graphical phase owns verification; a prepare-phase plan that
                 # appends its own test runner fails closed on missing files and
                 # would verify the artifact before the GUI edit. Drop those runners.
-                test_runners = set(map(tuple, replayable_test_commands({"planned_commands": plan.commands})))
+                test_runners = set(
+                    map(tuple, replayable_test_commands({"planned_commands": plan.commands}))
+                )
                 if test_runners:
                     plan = TerminalCommandPlan(
                         commands=[c for c in plan.commands if tuple(c) not in test_runners]
@@ -637,7 +631,12 @@ async def plan_gui_task(
         raise HTTPException(
             status_code=409, detail="Worker lease expired or fencing token was superseded."
         )
-    steps = derive_gui_steps(task.title or "", task.objective or "", task.scope or "")
+    steps = derive_gui_steps(
+        task.title or "",
+        task.objective or "",
+        task.scope or "",
+        task.acceptance_criteria or "",
+    )
     return {
         "task_id": task_id,
         "fencing_token": request.fencing_token,

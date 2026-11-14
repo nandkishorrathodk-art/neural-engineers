@@ -11,6 +11,10 @@ from typing import Any
 
 import httpx
 
+from neural.gui_intelligence.runtime.planner import (
+    derive_gui_steps,
+    expected_onscreen_text,
+)
 from neural.verification.test_commands import (
     TEST_ONLY_ACCEPTANCE,
     normalize_acceptance_criteria,
@@ -28,13 +32,26 @@ _QUOTED_TERM = re.compile(r"['\"]([^'\"]{2,64})['\"]")
 def onscreen_expected_terms(item: dict[str, Any]) -> list[str]:
     """Extract on-screen deliverable markers the task contract requires to be visible.
 
-    Only the acceptance criteria is authoritative for what verification must observe:
-    it is the signed pass condition. The title and objective are natural-language
-    *instructions* and, for hybrid tasks, describe terminal-side work too ("print its
-    SHA-256 hash"). Scraping markers from that prose would demand a hyphenated token
-    like ``SHA-256`` appear on the GUI screen, rejecting a correct hybrid run for a
-    requirement the contract never made.
+    The authoritative source is the derived GUI plan: it already separates the one
+    literal payload the graphical phase types on screen from terminal-side artifacts.
+    A hybrid contract also names terminal outputs (for example "print its SHA-256
+    hash"), and those must never be demanded on the desktop, or a correct hybrid run
+    is rejected for text the contract never asked the GUI to display.
+
+    When the plan is not a typed-deliverable choreography, fall back to scraping
+    hyphenated uppercase tokens and quoted strings from the signed acceptance
+    criteria, which is the pass condition.
     """
+    steps = derive_gui_steps(
+        str(item.get("title") or ""),
+        str(item.get("objective") or ""),
+        str(item.get("scope") or ""),
+        str(item.get("acceptance_criteria") or ""),
+    )
+    derived = expected_onscreen_text(steps)
+    if derived:
+        return [derived]
+
     text = str(item.get("acceptance_criteria") or "")
     terms: list[str] = []
     for marker in _UPPER_MARKER.findall(text):

@@ -82,8 +82,6 @@ _DOCUMENT_EDIT_VERBS = ("append", "add", "edit", "insert", "modify", "update", "
 _EMPLOYEE_WORKSPACE = "/home/employee/workspace"
 # A concrete payload token such as GUI_EDIT=HYBRID_GUI_OK or DONE.
 _EDIT_PAYLOAD = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./-]+\b")
-# A save request that closes out a document edit ("then save the document").
-_SAVE_VERB = re.compile(r"\bsave\b", re.IGNORECASE)
 
 # A negation within this window before an application alias means the objective
 # names that application as an exclusion ("without a terminal"), not a target.
@@ -198,27 +196,40 @@ def _typed_value(text: str) -> str | None:
     return None
 
 
-def _select_edit_payload(objective: str, blob: str) -> "re.Match[str] | None":
+def _select_edit_payload(
+    objective: str, blob: str, acceptance_criteria: str = ""
+) -> "re.Match[str] | None":
     """Choose which ``KEY=value`` token the GUI edit should type.
 
     A hybrid objective names one payload for its terminal phase (file setup) and
     a different one for its graphical phase. The graphical phase is the one this
-    choreography types, so a token introduced near a GUI hint ("GUI editor",
-    "graphical desktop") wins; otherwise fall back to the first token.
+    choreography types, so the selection prefers, in order: a token introduced
+    near a GUI hint ("GUI editor", "graphical desktop"); a token whose key names
+    the GUI itself (``GUI_EDIT=...``); and finally the first token.
+
+    The signed acceptance criteria is searched as well as the objective, because
+    the Boss planner paraphrases free-form objectives and can drop the literal
+    graphical payload from the task objective while preserving it in the
+    acceptance criteria (the authoritative pass condition).
     """
-    tokens = list(_EDIT_PAYLOAD.finditer(blob))
+    combined = f"{blob} {acceptance_criteria}".strip()
+    tokens = list(_EDIT_PAYLOAD.finditer(combined))
     if not tokens:
         return None
     gui_hints = ("gui", "graphical", "desktop", "editor")
     for token in tokens:
-        window = blob[max(0, token.start() - 80) : token.start()].lower()
+        window = combined[max(0, token.start() - 80) : token.start()].lower()
         if any(hint in window for hint in gui_hints):
+            return token
+    for token in tokens:
+        key = token.group(0).split("=", 1)[0].lower()
+        if any(hint in key for hint in gui_hints):
             return token
     return _EDIT_PAYLOAD.search(objective) or tokens[0]
 
 
 def derive_document_edit_steps(
-    title: str, objective: str, scope: str = ""
+    title: str, objective: str, scope: str = "", acceptance_criteria: str = ""
 ) -> list[dict[str, Any]] | None:
     """Plan a GUI edit of an existing workspace document, or return ``None``.
 
@@ -228,10 +239,15 @@ def derive_document_edit_steps(
     editor, use its Open dialog with the GTK location bar (Ctrl+O then Ctrl+L,
     typing the absolute path straight into the focused bar), move to the end of
     the document, append the payload, and save with Ctrl+S.
+
+    ``acceptance_criteria`` is consulted when the objective prose has been
+    paraphrased and no longer names the file or payload literally; it is the
+    signed pass condition and therefore authoritative.
     """
     blob = " ".join(part for part in (title, objective, scope) if part).strip()
-    lowered = blob.lower()
-    file_match = _DOCUMENT_FILE.search(blob)
+    contract_blob = f"{blob} {acceptance_criteria}".strip()
+    lowered = contract_blob.lower()
+    file_match = _DOCUMENT_FILE.search(blob) or _DOCUMENT_FILE.search(acceptance_criteria)
     if file_match is None:
         return None
     # Only an edit verb turns a named file into an edit choreography; a bare
@@ -243,7 +259,7 @@ def derive_document_edit_steps(
     # it; require a positive GUI signal instead of rejecting on the word alone.
     if not any(hint in lowered for hint in ("gui", "graphical", "desktop", "editor")):
         return None
-    payload = _select_edit_payload(objective, blob)
+    payload = _select_edit_payload(objective, blob, acceptance_criteria)
     if payload is None:
         return None
     path = f"{_EMPLOYEE_WORKSPACE}/{file_match.group(1)}"
@@ -280,12 +296,17 @@ def derive_document_edit_steps(
             "type_into_active_focus": True,
         },
     ]
-    if _SAVE_VERB.search(blob):
-        steps.append({"action_type": "KEY_HOTKEY", "key_code": "ctrl+s", "confidence": 0.95})
+    # A document-edit choreography always persists the change: the verify phase
+    # reads the finalized file, so an unsaved edit fails closed. The paraphrased
+    # objective may no longer name the save verb, so save unconditionally here
+    # rather than keying off a verb that planning can drop.
+    steps.append({"action_type": "KEY_HOTKEY", "key_code": "ctrl+s", "confidence": 0.95})
     return steps
 
 
-def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[str, Any]]:
+def derive_gui_steps(
+    title: str, objective: str, scope: str = "", acceptance_criteria: str = ""
+) -> list[dict[str, Any]]:
     """Return a list of GUI step dicts (see ``WorkerGuiStep``) for a task."""
     blob = " ".join(part for part in (title, objective, scope) if part).strip()
     lowered = blob.lower()
@@ -296,7 +317,7 @@ def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[s
 
     # A named-document edit ("open handoff.txt ... and save") is a full open→edit
     # →save choreography, not a single click; plan it before generic click routing.
-    document_steps = derive_document_edit_steps(title, objective, scope)
+    document_steps = derive_document_edit_steps(title, objective, scope, acceptance_criteria)
     if document_steps is not None:
         return document_steps
 

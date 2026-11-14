@@ -33,6 +33,29 @@ def _json_object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _execution_cost_usd(execution: dict[str, Any]) -> float:
+    """Total model cost of an attempt, including hybrid per-phase inference.
+
+    A GUI attempt records its cost on ``execution['model']``; a hybrid attempt
+    records none there and instead costs each phase, so summing only the
+    top-level model would silently report hybrid work as free.
+    """
+    total = 0.0
+    models = [execution.get("model")]
+    phases = execution.get("phases")
+    if isinstance(phases, list):
+        models.extend(phase.get("model") for phase in phases if isinstance(phase, dict))
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        cost = model.get("cost_usd")
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+            continue
+        if 0 <= cost <= 1_000_000:
+            total += float(cost)
+    return round(total, 8)
+
+
 def _json_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
@@ -74,13 +97,14 @@ class BossBrain:
             self.scheduler = scheduler
         elif task_repo and employee_repo:
             from neural.tasks.scheduler import TaskScheduler
+
             self.scheduler = TaskScheduler(
                 task_repo=task_repo,
                 employee_repo=employee_repo,
                 delegator=self.delegator,
                 verifier=self.verifier,
                 recovery_manager=self.recovery_manager,
-                message_bus=message_bus
+                message_bus=message_bus,
             )
         else:
             self.scheduler = None
@@ -88,6 +112,7 @@ class BossBrain:
         self._is_paused: bool = False
         try:
             from neural.security.kill_switch import get_kill_switch
+
             get_kill_switch().register_boss_brain(self)
         except Exception:
             pass
@@ -101,17 +126,17 @@ class BossBrain:
         logger.info("BossBrain resumed from emergency halt")
 
     def get_scheduler(self) -> Any:
-
         """Returns or creates the TaskScheduler instance."""
         if not self.scheduler:
             from neural.tasks.scheduler import TaskScheduler
+
             self.scheduler = TaskScheduler(
                 task_repo=self.task_repo,
                 employee_repo=self.employee_repo,
                 delegator=self.delegator,
                 verifier=self.verifier,
                 recovery_manager=self.recovery_manager,
-                message_bus=self.message_bus
+                message_bus=self.message_bus,
             )
         return self.scheduler
 
@@ -137,7 +162,9 @@ class BossBrain:
             project_budget_usd = budget_usd
         elif project_budget_usd is not None and budget_usd is not None:
             if project_budget_usd != budget_usd:
-                raise ValueError("project_budget_usd and budget_usd must match if both are provided")
+                raise ValueError(
+                    "project_budget_usd and budget_usd must match if both are provided"
+                )
 
         logger.info("Boss AI analyzing incoming objective", objective=objective)
         plan = await self.planner.decompose_objective(
@@ -150,7 +177,9 @@ class BossBrain:
         if plan.get("clarification_required") is True:
             questions = plan.get("clarifying_questions")
             if not isinstance(questions, list) or not questions:
-                raise ValueError("Boss plan requested clarification without any specific questions.")
+                raise ValueError(
+                    "Boss plan requested clarification without any specific questions."
+                )
             raise ClarificationRequiredError([str(question) for question in questions[:3]])
         logger.info("Decomposition complete", phases_count=len(plan.get("phases", [])))
         return plan
@@ -190,7 +219,9 @@ class BossBrain:
             project_budget_usd = budget_usd
         elif project_budget_usd is not None and budget_usd is not None:
             if project_budget_usd != budget_usd:
-                raise ValueError("project_budget_usd and budget_usd must match if both are provided")
+                raise ValueError(
+                    "project_budget_usd and budget_usd must match if both are provided"
+                )
 
         if budget_usd is not None and (
             not math.isfinite(budget_usd) or budget_usd <= 0 or budget_usd > 1_000_000
@@ -236,7 +267,9 @@ class BossBrain:
                         reason=f"Planning cancelled or unbilled failure: {exc}",
                     )
                 except Exception as release_exc:
-                    logger.warning("Failed to release planning budget reservation", error=str(release_exc))
+                    logger.warning(
+                        "Failed to release planning budget reservation", error=str(release_exc)
+                    )
             raise
 
         if reservation is not None and budget_repo is not None:
@@ -247,7 +280,9 @@ class BossBrain:
                     usage_receipt={"plan_source": plan.get("plan_source", "unknown")},
                 )
             except Exception as settle_exc:
-                logger.warning("Failed to settle planning budget reservation", error=str(settle_exc))
+                logger.warning(
+                    "Failed to settle planning budget reservation", error=str(settle_exc)
+                )
 
         if budget_usd is not None:
             plan["budget_usd"] = budget_usd
@@ -256,7 +291,9 @@ class BossBrain:
         if deadline_days is not None:
             if deadline_days < 1 or deadline_days > 3650:
                 raise ValueError("deadline_days must be between 1 and 3650")
-            project_deadline = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=deadline_days)
+            project_deadline = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+                days=deadline_days
+            )
             plan["owner_constraints"] = {
                 **_json_object(plan.get("owner_constraints")),
                 "deadline_days": deadline_days,
@@ -288,25 +325,33 @@ class BossBrain:
         if t_repo:
             phases = plan.get("phases", [])
             for phase_idx, phase in enumerate(phases):
-                phase_id = phase.get("phase_id", f"PHASE-{phase_idx+1:02d}")
-                phase_title = phase.get("title", f"Phase {phase_idx+1}")
+                phase_id = phase.get("phase_id", f"PHASE-{phase_idx + 1:02d}")
+                phase_title = phase.get("title", f"Phase {phase_idx + 1}")
                 priority = TaskPriority.HIGH if phase_idx == 0 else TaskPriority.MEDIUM
                 phase_to_task_ids[phase_id] = []
 
                 for task_info in phase.get("tasks", []):
-                    raw_tid = task_info.get("task_id", f"TASK-{phase_id}-{len(created_tasks)+1:02d}")
+                    raw_tid = task_info.get(
+                        "task_id", f"TASK-{phase_id}-{len(created_tasks) + 1:02d}"
+                    )
                     task = await t_repo.create(
                         task_id=raw_tid,
                         project_id=project.id,
                         title=task_info.get("title", "Untitled Task"),
                         objective=task_info.get("objective", task_info.get("title", objective)),
                         scope=task_info.get("scope", phase_title),
-                        acceptance_criteria=task_info.get("acceptance_criteria", "Verification passing with clean receipts."),
-                        execution_mode=ExecutionMode(task_info.get("execution_mode", ExecutionMode.TERMINAL)),
+                        acceptance_criteria=task_info.get(
+                            "acceptance_criteria", "Verification passing with clean receipts."
+                        ),
+                        execution_mode=ExecutionMode(
+                            task_info.get("execution_mode", ExecutionMode.TERMINAL)
+                        ),
                         required_capabilities=task_info.get("skills_required", []),
                         priority=priority,
                         status=TaskStatus.PENDING,
-                        resource_budget=task_info.get("resource_budget", {"estimated_hours": 4, "max_tokens": 50000}),
+                        resource_budget=task_info.get(
+                            "resource_budget", {"estimated_hours": 4, "max_tokens": 50000}
+                        ),
                         deadline=project_deadline,
                         scheduled_at=scheduled_at,
                     )
@@ -324,14 +369,10 @@ class BossBrain:
                         for prereq_tid in phase_to_task_ids[dep]:
                             if prereq_tid != task.task_id:
                                 await t_repo.add_dependency(
-                                    task_id=task.task_id,
-                                    depends_on_task_id=prereq_tid
+                                    task_id=task.task_id, depends_on_task_id=prereq_tid
                                 )
                     else:
-                        await t_repo.add_dependency(
-                            task_id=task.task_id,
-                            depends_on_task_id=dep
-                        )
+                        await t_repo.add_dependency(task_id=task.task_id, depends_on_task_id=dep)
 
             # Auto-assign first task if requested
             if auto_assign_first_task and created_tasks and e_repo:
@@ -359,6 +400,7 @@ class BossBrain:
                                 current.append(skill)
                 if auto_recruit_workforce and skill_gaps:
                     from neural.employees.factory import EmployeeFactory
+
                     factory = EmployeeFactory(e_repo)
                     recruited = await factory.recruit_workforce_for_plan(
                         plan,
@@ -378,7 +420,7 @@ class BossBrain:
                             "Assigned first task to employee",
                             task_id=first_task.task_id,
                             employee_id=assignee.employee_id,
-                            assignee_name=assignee.name
+                            assignee_name=assignee.name,
                         )
 
         # Notify via Message Bus if present
@@ -386,7 +428,7 @@ class BossBrain:
             try:
                 await self.message_bus.broadcast(
                     title=f"New Mission Initialized: {project.name}",
-                    content=f"Boss AI planned objective '{objective}' with {len(created_tasks)} DAG tasks across {len(plan.get('phases', []))} phases."
+                    content=f"Boss AI planned objective '{objective}' with {len(created_tasks)} DAG tasks across {len(plan.get('phases', []))} phases.",
                 )
             except Exception as e:
                 logger.warning("Could not emit broadcast for new project", error=str(e))
@@ -418,9 +460,7 @@ class BossBrain:
         return {role_id: skills for role_id, skills in skill_gaps.items() if skills}
 
     async def execute_project_dag(
-        self,
-        project_id: str,
-        worker_func: Optional[Callable[[Task], Any]] = None
+        self, project_id: str, worker_func: Optional[Callable[[Task], Any]] = None
     ) -> dict[str, Any]:
         """
         Executes all tasks in a project following topological DAG dependencies
@@ -432,7 +472,9 @@ class BossBrain:
     async def build_project_report(self, project_id: str) -> Optional[dict[str, Any]]:
         """Build an owner report solely from persisted project/task/verifier state."""
         if not self.project_repo or not self.task_repo:
-            raise ValueError("ProjectRepository and TaskRepository are required for a project report")
+            raise ValueError(
+                "ProjectRepository and TaskRepository are required for a project report"
+            )
 
         project = await self.project_repo.get_by_id(project_id)
         if not project:
@@ -451,34 +493,57 @@ class BossBrain:
             execution = _json_object(attempt.execution_receipt)
             model = _json_object(execution.get("model"))
             receipt = _json_object(attempt.verification_receipt)
+            phase_models = [
+                phase.get("model")
+                for phase in _json_list(execution.get("phases"))
+                if isinstance(phase, dict)
+            ]
+            identity_model = model or next(
+                (pm for pm in phase_models if isinstance(pm, dict) and pm),
+                {},
+            )
             safe_model: dict[str, Any] = {}
             for key in ("provider", "model"):
-                value = model.get(key)
+                value = identity_model.get(key) if isinstance(identity_model, dict) else None
                 if isinstance(value, str) and 0 < len(value) <= 128:
                     safe_model[key] = value
-            for key in ("input_tokens", "output_tokens"):
-                value = model.get(key)
-                if type(value) is int and 0 <= value <= 10_000_000:
-                    safe_model[key] = value
-            model_cost = model.get("cost_usd")
-            if isinstance(model_cost, (int, float)) and not isinstance(model_cost, bool) and 0 <= model_cost <= 1_000_000:
-                safe_model["cost_usd"] = round(float(model_cost), 8)
-            attempts_by_task.setdefault(attempt.task_id, []).append({
-                "attempt_id": attempt.id,
-                "attempt_number": attempt.attempt_number,
-                "worker_id": attempt.worker_id,
-                "status": attempt.status,
-                "fencing_token": attempt.fencing_token,
-                "lease_expires_at": attempt.lease_expires_at,
-                "heartbeat_at": attempt.heartbeat_at,
-                "started_at": attempt.started_at,
-                "finished_at": attempt.finished_at,
-                "error_message": attempt.error_message,
-                "verifier_id": attempt.verified_by,
-                "verification_passed": receipt.get("passed"),
-                "verification_notes": receipt.get("notes"),
-                "execution_model": safe_model,
-            })
+            input_tokens = 0
+            output_tokens = 0
+            for candidate in [model, *phase_models]:
+                if not isinstance(candidate, dict):
+                    continue
+                for key in ("input_tokens", "output_tokens"):
+                    value = candidate.get(key)
+                    if type(value) is int and 0 <= value <= 10_000_000:
+                        if key == "input_tokens":
+                            input_tokens += value
+                        else:
+                            output_tokens += value
+            if input_tokens:
+                safe_model["input_tokens"] = input_tokens
+            if output_tokens:
+                safe_model["output_tokens"] = output_tokens
+            cost = _execution_cost_usd(execution)
+            if cost:
+                safe_model["cost_usd"] = cost
+            attempts_by_task.setdefault(attempt.task_id, []).append(
+                {
+                    "attempt_id": attempt.id,
+                    "attempt_number": attempt.attempt_number,
+                    "worker_id": attempt.worker_id,
+                    "status": attempt.status,
+                    "fencing_token": attempt.fencing_token,
+                    "lease_expires_at": attempt.lease_expires_at,
+                    "heartbeat_at": attempt.heartbeat_at,
+                    "started_at": attempt.started_at,
+                    "finished_at": attempt.finished_at,
+                    "error_message": attempt.error_message,
+                    "verifier_id": attempt.verified_by,
+                    "verification_passed": receipt.get("passed"),
+                    "verification_notes": receipt.get("notes"),
+                    "execution_model": safe_model,
+                }
+            )
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         counts = {
             "planned": 0,
@@ -495,12 +560,8 @@ class BossBrain:
             "failed_attempts": 0,
             "rejected_attempts": 0,
         }
-        counts["failed_attempts"] = sum(
-            1 for attempt in attempts if attempt.status == "failed"
-        )
-        counts["rejected_attempts"] = sum(
-            1 for attempt in attempts if attempt.status == "rejected"
-        )
+        counts["failed_attempts"] = sum(1 for attempt in attempts if attempt.status == "failed")
+        counts["rejected_attempts"] = sum(1 for attempt in attempts if attempt.status == "rejected")
         task_reports: list[dict[str, Any]] = []
 
         for task in sorted(tasks, key=lambda row: row.task_id):
@@ -513,7 +574,8 @@ class BossBrain:
             overdue = bool(
                 deadline
                 and deadline < now
-                and status not in {
+                and status
+                not in {
                     TaskStatus.COMPLETED.value,
                     TaskStatus.FAILED.value,
                     TaskStatus.CANCELLED.value,
@@ -586,17 +648,30 @@ class BossBrain:
                         continue
                     command = _json_list(run.get("command"))
                     executable = command[0] if command else None
-                    if not isinstance(executable, str) or executable not in {"python", "python3", "pytest", "npm"}:
+                    if not isinstance(executable, str) or executable not in {
+                        "python",
+                        "python3",
+                        "pytest",
+                        "npm",
+                    }:
                         continue
                     worker_exit_code = run.get("worker_exit_code")
                     verifier_exit_code = run.get("verifier_exit_code")
                     evidence_ref = run.get("evidence_ref")
-                    safe_runs.append({
-                        "executable": executable,
-                        "worker_exit_code": worker_exit_code if type(worker_exit_code) is int and -255 <= worker_exit_code <= 255 else None,
-                        "verifier_exit_code": verifier_exit_code if type(verifier_exit_code) is int and -255 <= verifier_exit_code <= 255 else None,
-                        "evidence_ref": evidence_ref[:256] if isinstance(evidence_ref, str) else None,
-                    })
+                    safe_runs.append(
+                        {
+                            "executable": executable,
+                            "worker_exit_code": worker_exit_code
+                            if type(worker_exit_code) is int and -255 <= worker_exit_code <= 255
+                            else None,
+                            "verifier_exit_code": verifier_exit_code
+                            if type(verifier_exit_code) is int and -255 <= verifier_exit_code <= 255
+                            else None,
+                            "evidence_ref": evidence_ref[:256]
+                            if isinstance(evidence_ref, str)
+                            else None,
+                        }
+                    )
                 safe_manifest = safe_manifest_files(manifest)
                 raw_counts = _json_object(delta.get("counts"))
                 safe_counts: dict[str, int] = {}
@@ -607,11 +682,21 @@ class BossBrain:
                 verification_evidence = {
                     "passed": receipt.get("passed") is True,
                     "evidence_refs": [
-                        ref[:256] for ref in _json_list(receipt.get("evidence_refs"))
-                        if isinstance(ref, str) and ref.startswith((
-                            "verifier:", "sha256:", "workspace:sha256:", "workspace-baseline:sha256:", "workspace-delta:sha256:"
-                        ))
-                    ][:256] if isinstance(receipt.get("evidence_refs"), list) else [],
+                        ref[:256]
+                        for ref in _json_list(receipt.get("evidence_refs"))
+                        if isinstance(ref, str)
+                        and ref.startswith(
+                            (
+                                "verifier:",
+                                "sha256:",
+                                "workspace:sha256:",
+                                "workspace-baseline:sha256:",
+                                "workspace-delta:sha256:",
+                            )
+                        )
+                    ][:256]
+                    if isinstance(receipt.get("evidence_refs"), list)
+                    else [],
                     "checks": [
                         {"name": check["name"][:128], "passed": check.get("passed") is True}
                         for check in _json_list(receipt.get("checks"))[:64]
@@ -632,8 +717,12 @@ class BossBrain:
                         "complete": delta.get("complete") is True,
                         "created": safe_manifest_files({"files": delta.get("created", [])}),
                         "modified": [
-                            {key: item[key] for key in ("path", "after_size_bytes", "after_sha256") if key in item}
-                        for item in _json_list(delta.get("modified"))[:32]
+                            {
+                                key: item[key]
+                                for key in ("path", "after_size_bytes", "after_sha256")
+                                if key in item
+                            }
+                            for item in _json_list(delta.get("modified"))[:32]
                             if isinstance(item, dict)
                             and isinstance(item.get("path"), str)
                             and len(item["path"]) <= 256
@@ -644,7 +733,9 @@ class BossBrain:
                             and re.fullmatch(r"[0-9a-f]{64}", item["after_sha256"]) is not None
                             and type(item.get("after_size_bytes")) is int
                             and item["after_size_bytes"] >= 0
-                        ] if isinstance(delta.get("modified"), list) else [],
+                        ]
+                        if isinstance(delta.get("modified"), list)
+                        else [],
                         "counts": safe_counts,
                     },
                 }
@@ -652,7 +743,8 @@ class BossBrain:
             if status == TaskStatus.RUNNING.value:
                 current_attempt = next(
                     (
-                        attempt for attempt in reversed(task_attempts)
+                        attempt
+                        for attempt in reversed(task_attempts)
                         if attempt["fencing_token"] == task.fencing_token
                         and attempt["status"] in {"leased", "running", "submitted"}
                     ),
@@ -662,37 +754,46 @@ class BossBrain:
                     execution_health = "missing_current_attempt"
                 elif current_attempt["status"] == "submitted":
                     execution_health = "awaiting_verification"
-                elif current_attempt["lease_expires_at"] and current_attempt["lease_expires_at"] <= now:
+                elif (
+                    current_attempt["lease_expires_at"]
+                    and current_attempt["lease_expires_at"] <= now
+                ):
                     execution_health = "expired_worker_lease"
                 elif current_attempt["status"] == "leased":
                     execution_health = "claimed_not_started"
                 else:
                     execution_health = "active"
 
-            task_reports.append({
-                "task_id": task.task_id,
-                "title": task.title,
-                "objective": task.objective,
-                "acceptance_criteria": task.acceptance_criteria,
-                "execution_mode": task.execution_mode.value,
-                "status": task.status,
-                "retry_count": task.retry_count,
-                "max_retries": task.max_retries,
-                "priority": task.priority.value if hasattr(task.priority, "value") else str(task.priority),
-                "assigned_employee_id": employee.employee_id if employee else None,
-                "assigned_employee_name": employee.name if employee else None,
-                "deadline": task.deadline,
-                "scheduled_at": task.scheduled_at,
-                "overdue": overdue,
-                "started_at": task.started_at,
-                "completed_at": task.completed_at,
-                "verified": verified,
-                "execution_health": execution_health,
-                "verification_notes": str(receipt.get("notes", ""))[:1000] if receipt else None,
-                "evidence_refs": verification_evidence.get("evidence_refs", []) if verified else [],
-                "verification_evidence": verification_evidence,
-                "attempts": task_attempts,
-            })
+            task_reports.append(
+                {
+                    "task_id": task.task_id,
+                    "title": task.title,
+                    "objective": task.objective,
+                    "acceptance_criteria": task.acceptance_criteria,
+                    "execution_mode": task.execution_mode.value,
+                    "status": task.status,
+                    "retry_count": task.retry_count,
+                    "max_retries": task.max_retries,
+                    "priority": task.priority.value
+                    if hasattr(task.priority, "value")
+                    else str(task.priority),
+                    "assigned_employee_id": employee.employee_id if employee else None,
+                    "assigned_employee_name": employee.name if employee else None,
+                    "deadline": task.deadline,
+                    "scheduled_at": task.scheduled_at,
+                    "overdue": overdue,
+                    "started_at": task.started_at,
+                    "completed_at": task.completed_at,
+                    "verified": verified,
+                    "execution_health": execution_health,
+                    "verification_notes": str(receipt.get("notes", ""))[:1000] if receipt else None,
+                    "evidence_refs": verification_evidence.get("evidence_refs", [])
+                    if verified
+                    else [],
+                    "verification_evidence": verification_evidence,
+                    "attempts": task_attempts,
+                }
+            )
 
         tasks_sorted = sorted(tasks, key=lambda row: row.task_id)
         verified_deliverables = [
@@ -703,7 +804,9 @@ class BossBrain:
                 "completed_at": tr["completed_at"].isoformat() if tr["completed_at"] else None,
                 "receipt_id": _json_object(task.verification_result).get("receipt_id"),
                 "artifacts": _json_object(task.verification_result).get("artifacts", []),
-                "artifact_digests": _json_object(task.verification_result).get("artifact_digests", {}),
+                "artifact_digests": _json_object(task.verification_result).get(
+                    "artifact_digests", {}
+                ),
                 "evidence_refs": tr["evidence_refs"],
             }
             for tr, task in zip(task_reports, tasks_sorted)
@@ -714,12 +817,18 @@ class BossBrain:
             {
                 "task_id": tr["task_id"],
                 "title": tr["title"],
-                "status": tr["status"].value if hasattr(tr["status"], "value") else str(tr["status"]),
+                "status": tr["status"].value
+                if hasattr(tr["status"], "value")
+                else str(tr["status"]),
                 "assigned_employee_id": tr["assigned_employee_id"],
                 "reason": "missing_or_failed_verification",
             }
             for tr in task_reports
-            if not tr["verified"] and (tr["completed_at"] is not None or tr["status"] in {TaskStatus.COMPLETED, TaskStatus.FAILED})
+            if not tr["verified"]
+            and (
+                tr["completed_at"] is not None
+                or tr["status"] in {TaskStatus.COMPLETED, TaskStatus.FAILED}
+            )
         ]
 
         tasks_by_id = {task.id: task.task_id for task in tasks}
@@ -731,7 +840,9 @@ class BossBrain:
                 "worker_id": att.get("worker_id"),
                 "status": att.get("status"),
                 "error_message": att.get("error_message"),
-                "finished_at": att.get("finished_at").isoformat() if att.get("finished_at") else None,
+                "finished_at": att.get("finished_at").isoformat()
+                if att.get("finished_at")
+                else None,
             }
             for task_id, att_list in attempts_by_task.items()
             for att in att_list
@@ -743,7 +854,9 @@ class BossBrain:
             "project_id": project.id,
             "project_name": project.name,
             "objective": project.objective,
-            "project_status": project.status.value if hasattr(project.status, "value") else str(project.status),
+            "project_status": project.status.value
+            if hasattr(project.status, "value")
+            else str(project.status),
             "generated_at": now.isoformat(),
             "task_counts": counts,
             "verified_deliverables_count": len(verified_deliverables),
@@ -792,6 +905,7 @@ class BossBrain:
         if not self.employee_repo:
             return []
         from neural.employees.factory import EmployeeFactory
+
         factory = EmployeeFactory(self.employee_repo)
         return await factory.recruit_workforce_for_plan(plan)
 
@@ -805,12 +919,17 @@ class BossBrain:
         if settings.WORKER_API_TOKEN and len(settings.WORKER_API_TOKEN) >= 32:
             worker_credentials.setdefault("worker-service", settings.WORKER_API_TOKEN)
         worker_token_values = list(worker_credentials.values())
-        worker_auth_configured = bool(worker_credentials) and all(
-            worker_id.strip() and len(worker_id) <= 128 and token and len(token) >= 32
-            for worker_id, token in worker_credentials.items()
-        ) and len(set(worker_token_values)) == len(worker_token_values) and not any(
-            token == settings.OWNER_API_TOKEN or token == settings.VERIFIER_API_TOKEN
-            for token in worker_token_values
+        worker_auth_configured = (
+            bool(worker_credentials)
+            and all(
+                worker_id.strip() and len(worker_id) <= 128 and token and len(token) >= 32
+                for worker_id, token in worker_credentials.items()
+            )
+            and len(set(worker_token_values)) == len(worker_token_values)
+            and not any(
+                token == settings.OWNER_API_TOKEN or token == settings.VERIFIER_API_TOKEN
+                for token in worker_token_values
+            )
         )
         verifier_auth_configured = bool(
             settings.VERIFIER_API_TOKEN
@@ -830,14 +949,16 @@ class BossBrain:
         if heartbeat_rows is not None:
             for heartbeat in heartbeat_rows:
                 age_seconds = max(0.0, (now - heartbeat.last_seen_at).total_seconds())
-                service_runtimes.append({
-                    "service_type": heartbeat.service_type,
-                    "service_id": heartbeat.service_id,
-                    "instance_id": heartbeat.instance_id,
-                    "status": "healthy" if age_seconds <= 60 else "stale",
-                    "last_seen_at": heartbeat.last_seen_at,
-                    "age_seconds": round(age_seconds, 2),
-                })
+                service_runtimes.append(
+                    {
+                        "service_type": heartbeat.service_type,
+                        "service_id": heartbeat.service_id,
+                        "instance_id": heartbeat.instance_id,
+                        "status": "healthy" if age_seconds <= 60 else "stale",
+                        "last_seen_at": heartbeat.last_seen_at,
+                        "age_seconds": round(age_seconds, 2),
+                    }
+                )
 
         def runtime_state(service_type: str, expected_ids: set[str]) -> str:
             matches = [item for item in service_runtimes if item["service_type"] == service_type]
@@ -848,20 +969,27 @@ class BossBrain:
             seen_ids = {item["service_id"] for item in matches}
             all_fresh = all(item["status"] == "healthy" for item in matches)
             if not all_fresh:
-                return "stale" if not any(item["status"] == "healthy" for item in matches) else "degraded"
+                return (
+                    "stale"
+                    if not any(item["status"] == "healthy" for item in matches)
+                    else "degraded"
+                )
             if not expected_ids.issubset(seen_ids):
                 return "degraded"
             return "healthy"
 
         worker_runtime = runtime_state("worker", set(worker_credentials))
-        verifier_runtime = runtime_state("verifier", {"verification-service"} if verifier_auth_configured else set())
+        verifier_runtime = runtime_state(
+            "verifier", {"verification-service"} if verifier_auth_configured else set()
+        )
         active_missions = None
         active_tasks = None
         if self.project_repo:
             try:
                 projects = await self.project_repo.list_all()
                 active_missions = sum(
-                    1 for project in projects
+                    1
+                    for project in projects
                     if str(getattr(project.status, "value", project.status)).lower()
                     not in {"completed", "failed", "cancelled"}
                 )
@@ -871,7 +999,8 @@ class BossBrain:
             try:
                 tasks = await self.task_repo.list_all()
                 active_tasks = sum(
-                    1 for task in tasks
+                    1
+                    for task in tasks
                     if str(getattr(task.status, "value", task.status)).lower() == "running"
                 )
             except Exception:
@@ -881,7 +1010,9 @@ class BossBrain:
         # that a live worker is consuming tasks. Keep that distinction visible.
         return {
             "ceo_status": "ready" if provider_configured else "rules_only",
-            "active_mode": "planning_and_delegation" if provider_configured else "rules_based_planning",
+            "active_mode": "planning_and_delegation"
+            if provider_configured
+            else "rules_based_planning",
             "active_missions": active_missions,
             "active_tasks": active_tasks,
             "llm_provider_configured": provider_configured,
@@ -922,15 +1053,17 @@ class BossBrain:
 
         # 0. Sanitize input conversation history
         clean_history: list[dict[str, Any]] = []
-        for h in (conversation_history or []):
+        for h in conversation_history or []:
             if isinstance(h, dict) and "role" in h and "content" in h:
-                clean_history.append({
-                    "role": str(h["role"]),
-                    "content": str(h["content"]),
-                    "timestamp": h.get("timestamp"),
-                    "plan_proposal": h.get("plan_proposal"),
-                    "action": h.get("action"),
-                })
+                clean_history.append(
+                    {
+                        "role": str(h["role"]),
+                        "content": str(h["content"]),
+                        "timestamp": h.get("timestamp"),
+                        "plan_proposal": h.get("plan_proposal"),
+                        "action": h.get("action"),
+                    }
+                )
 
         # 1. Gather live company ground-truth context
         employees = []
@@ -967,20 +1100,21 @@ class BossBrain:
                 logger.debug("Failed listing tasks for chat context: %s", e)
 
         active_tasks = [
-            t for t in tasks
+            t
+            for t in tasks
             if getattr(t.status, "value", str(t.status)).lower() in {"running", "assigned"}
         ]
         blocked_tasks = [
-            t for t in tasks
-            if getattr(t.status, "value", str(t.status)).lower() == "blocked"
+            t for t in tasks if getattr(t.status, "value", str(t.status)).lower() == "blocked"
         ]
         completed_tasks = [
-            t for t in tasks
-            if getattr(t.status, "value", str(t.status)).lower() == "completed"
+            t for t in tasks if getattr(t.status, "value", str(t.status)).lower() == "completed"
         ]
         verified_deliverables = [
-            t for t in completed_tasks
-            if isinstance(t.verification_result, dict) and t.verification_result.get("passed") is True
+            t
+            for t in completed_tasks
+            if isinstance(t.verification_result, dict)
+            and t.verification_result.get("passed") is True
         ]
 
         # Emergency Stop State telemetry
@@ -989,6 +1123,7 @@ class BossBrain:
         halt_by = None
         try:
             from neural.security.kill_switch import get_kill_switch
+
             kill_sw = get_kill_switch()
             if kill_sw.is_halted:
                 is_emergency_halted = True
@@ -1001,6 +1136,7 @@ class BossBrain:
         if not is_emergency_halted and session:
             try:
                 from neural.db.repositories import EmergencyStopRepository
+
                 state_repo = EmergencyStopRepository(session)
                 state = await state_repo.get_state()
                 if state.get("active"):
@@ -1038,37 +1174,61 @@ class BossBrain:
         # 2. Detect planning intent
         msg_lower = clean_msg.lower()
         plan_trigger_keywords = [
-            "plan", "build", "create", "propose", "mission", "feature",
-            "project", "implement", "launch", "develop", "dag", "decompose"
+            "plan",
+            "build",
+            "create",
+            "propose",
+            "mission",
+            "feature",
+            "project",
+            "implement",
+            "launch",
+            "develop",
+            "dag",
+            "decompose",
         ]
-        has_plan_intent = any(kw in msg_lower for kw in plan_trigger_keywords) and len(clean_msg.split()) >= 3
+        has_plan_intent = (
+            any(kw in msg_lower for kw in plan_trigger_keywords) and len(clean_msg.split()) >= 3
+        )
 
         # 3. Formulate response via LLM if available, else deterministic grounded reasoning
         plan_proposal: Optional[dict[str, Any]] = None
         action: Optional[dict[str, Any]] = None
         reply: str = ""
 
-        llm_ready = self.planner._has_configured_provider(self.llm_gateway) if hasattr(self.planner, "_has_configured_provider") else False
+        llm_ready = (
+            self.planner._has_configured_provider(self.llm_gateway)
+            if hasattr(self.planner, "_has_configured_provider")
+            else False
+        )
 
         if llm_ready:
             from neural.llm.gateway import extract_json_from_text
 
-            employees_summary = ", ".join(
-                f"{getattr(e, 'name', e.employee_id)} ({getattr(e, 'title', 'Engineer')}, {getattr(e, 'status', 'IDLE')})"
-                for e in employees[:8]
-            ) or "None recruited yet"
-            active_tasks_summary = ", ".join(
-                f"[{t.task_id}] {t.title} ({t.assigned_to or 'unassigned'})"
-                for t in active_tasks[:6]
-            ) or "No active tasks"
-            blocked_tasks_summary = ", ".join(
-                f"[{t.task_id}] {t.title} (retry={t.retry_count})"
-                for t in blocked_tasks[:4]
-            ) or "No active blockers"
-            deliverables_summary = ", ".join(
-                f"[{t.task_id}] {t.title}"
-                for t in verified_deliverables[:5]
-            ) or "No verified deliverables yet"
+            employees_summary = (
+                ", ".join(
+                    f"{getattr(e, 'name', e.employee_id)} ({getattr(e, 'title', 'Engineer')}, {getattr(e, 'status', 'IDLE')})"
+                    for e in employees[:8]
+                )
+                or "None recruited yet"
+            )
+            active_tasks_summary = (
+                ", ".join(
+                    f"[{t.task_id}] {t.title} ({t.assigned_to or 'unassigned'})"
+                    for t in active_tasks[:6]
+                )
+                or "No active tasks"
+            )
+            blocked_tasks_summary = (
+                ", ".join(
+                    f"[{t.task_id}] {t.title} (retry={t.retry_count})" for t in blocked_tasks[:4]
+                )
+                or "No active blockers"
+            )
+            deliverables_summary = (
+                ", ".join(f"[{t.task_id}] {t.title}" for t in verified_deliverables[:5])
+                or "No verified deliverables yet"
+            )
 
             emergency_summary = (
                 f"🚨 ACTIVE (Operations Halted: {halt_reason or 'Manual kill-switch'})"
@@ -1109,7 +1269,7 @@ class BossBrain:
                 '    "estimated_cost_usd": 15.0,\n'
                 '    "phases": [\n'
                 '      {"name": "Phase 1: Architecture", "tasks": ["Task 1", "Task 2"]}\n'
-                '    ],\n'
+                "    ],\n"
                 '    "required_skills": ["python", "fastapi"],\n'
                 '    "deadline_days": 5\n'
                 "  },\n"
@@ -1144,17 +1304,24 @@ class BossBrain:
                     if isinstance(parsed_json, dict) and "plan_proposal" in parsed_json:
                         plan_proposal = parsed_json["plan_proposal"]
                         action = parsed_json.get("action")
+
                         # Strip ONLY the JSON code block that contains the plan_proposal, preserving other code blocks
                         def _strip_plan_json_block(text: str) -> str:
-                            cb_pattern = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+                            cb_pattern = re.compile(
+                                r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE
+                            )
                             for m in cb_pattern.finditer(text):
                                 if "plan_proposal" in m.group(1):
-                                    text = text[:m.start()] + text[m.end():]
+                                    text = text[: m.start()] + text[m.end() :]
                                     break
                             return text.strip()
 
                         clean_reply = _strip_plan_json_block(raw_text)
-                        reply = clean_reply if clean_reply else "I have prepared the project execution DAG proposal."
+                        reply = (
+                            clean_reply
+                            if clean_reply
+                            else "I have prepared the project execution DAG proposal."
+                        )
                     else:
                         reply = raw_text
                 except Exception:
@@ -1178,15 +1345,28 @@ class BossBrain:
                 for p in raw_phases:
                     if isinstance(p, dict):
                         raw_tasks = p.get("tasks", [])
-                        t_list = [str(t) for t in raw_tasks if t] if isinstance(raw_tasks, list) else []
-                        norm_phases.append({
-                            "name": str(p.get("name") or "Project Phase"),
-                            "tasks": t_list or ["Execute Phase Tasks"],
-                        })
+                        t_list = (
+                            [str(t) for t in raw_tasks if t] if isinstance(raw_tasks, list) else []
+                        )
+                        norm_phases.append(
+                            {
+                                "name": str(p.get("name") or "Project Phase"),
+                                "tasks": t_list or ["Execute Phase Tasks"],
+                            }
+                        )
             if not norm_phases:
                 norm_phases = [
-                    {"name": "Phase 1: Architecture & Design", "tasks": ["System blueprint & contracts", "API interface specifications"]},
-                    {"name": "Phase 2: Implementation & Verification", "tasks": ["Core logic implementation", "Automated test suite & verification receipt"]},
+                    {
+                        "name": "Phase 1: Architecture & Design",
+                        "tasks": ["System blueprint & contracts", "API interface specifications"],
+                    },
+                    {
+                        "name": "Phase 2: Implementation & Verification",
+                        "tasks": [
+                            "Core logic implementation",
+                            "Automated test suite & verification receipt",
+                        ],
+                    },
                 ]
 
             raw_skills = plan_proposal.get("required_skills")
@@ -1218,7 +1398,19 @@ class BossBrain:
 
         # Deterministic / Grounded fallback reasoning when LLM is unavailable or empty
         if not reply:
-            if is_emergency_halted and any(w in msg_lower for w in ["blocker", "blocked", "issue", "status", "health", "halt", "stop", "emergency"]):
+            if is_emergency_halted and any(
+                w in msg_lower
+                for w in [
+                    "blocker",
+                    "blocked",
+                    "issue",
+                    "status",
+                    "health",
+                    "halt",
+                    "stop",
+                    "emergency",
+                ]
+            ):
                 reply = (
                     f"### 🚨 CRITICAL ALERT: Emergency Stop Active\n\n"
                     f"Company operations are currently **HALTED** under a durable emergency stop latch.\n\n"
@@ -1240,21 +1432,38 @@ class BossBrain:
                         phase_tasks.append(t.get("title", "Execute Task"))
                         for s in t.get("skills_required", []):
                             skills_set.add(s)
-                    plan_phases.append({
-                        "name": p.get("title", "Project Phase"),
-                        "tasks": phase_tasks,
-                    })
+                    plan_phases.append(
+                        {
+                            "name": p.get("title", "Project Phase"),
+                            "tasks": phase_tasks,
+                        }
+                    )
 
                 project_title = plan.get("code_name") or f"Mission: {clean_msg[:45].strip()}"
                 plan_proposal = {
                     "title": project_title,
                     "objective": clean_msg,
                     "estimated_cost_usd": 15.0,
-                    "phases": plan_phases or [
-                        {"name": "Phase 1: Architecture & Design", "tasks": ["System blueprint & contracts", "API interface specifications"]},
-                        {"name": "Phase 2: Implementation & Verification", "tasks": ["Core logic implementation", "Automated test suite & verification receipt"]},
+                    "phases": plan_phases
+                    or [
+                        {
+                            "name": "Phase 1: Architecture & Design",
+                            "tasks": [
+                                "System blueprint & contracts",
+                                "API interface specifications",
+                            ],
+                        },
+                        {
+                            "name": "Phase 2: Implementation & Verification",
+                            "tasks": [
+                                "Core logic implementation",
+                                "Automated test suite & verification receipt",
+                            ],
+                        },
                     ],
-                    "required_skills": sorted(list(skills_set)) if skills_set else ["python", "architecture", "testing"],
+                    "required_skills": sorted(list(skills_set))
+                    if skills_set
+                    else ["python", "architecture", "testing"],
                     "deadline_days": 7,
                 }
                 action = {
@@ -1275,7 +1484,9 @@ class BossBrain:
                     f"**Required Capabilities:** {', '.join(plan_proposal['required_skills'])}\n\n"
                     f"Review the proposal card below and click **🚀 Launch Project DAG** to allocate container workstations and commence autonomous execution."
                 )
-            elif any(w in msg_lower for w in ["blocker", "blocked", "issue", "stuck", "error", "fail"]):
+            elif any(
+                w in msg_lower for w in ["blocker", "blocked", "issue", "stuck", "error", "fail"]
+            ):
                 if blocked_tasks:
                     blocker_lines = "\n".join(
                         f"- 🔴 **[{t.task_id}]** `{t.title}` — Assigned to: **{t.assigned_to or 'Unassigned'}** (Retry #{t.retry_count})"
@@ -1293,7 +1504,9 @@ class BossBrain:
                         "All operational pipelines are flowing smoothly. No tasks are currently blocked or stalled. "
                         f"Active tasks: **{len(active_tasks)}**, Verified deliverables: **{len(verified_deliverables)}**."
                     )
-            elif any(w in msg_lower for w in ["employee", "workforce", "team", "who", "staff", "roster"]):
+            elif any(
+                w in msg_lower for w in ["employee", "workforce", "team", "who", "staff", "roster"]
+            ):
                 if employees:
                     emp_lines = "\n".join(
                         f"- **{getattr(e, 'name', e.employee_id)}** (`{getattr(e, 'title', 'Engineer')}` • {getattr(e, 'department', 'Engineering')}): **{getattr(e, 'status', 'IDLE')}**"
@@ -1312,7 +1525,9 @@ class BossBrain:
                         "When you submit a new project objective, the autonomous `EmployeeFactory` will dynamically recruit "
                         "and provision dedicated container workstations matching the required skill profiles."
                     )
-            elif any(w in msg_lower for w in ["budget", "cost", "burn", "spend", "dollar", "quota"]):
+            elif any(
+                w in msg_lower for w in ["budget", "cost", "burn", "spend", "dollar", "quota"]
+            ):
                 cap = budget_info.get("month_cap_usd", 10000.0)
                 spent = budget_info.get("spent_usd", 0.0)
                 avail = budget_info.get("available_quota_usd", cap - spent)
@@ -1326,7 +1541,10 @@ class BossBrain:
                     f"- **Available Remaining Quota:** `${avail:,.2f} USD`\n\n"
                     f"Hard budget limits remain enforced across all multi-tier LLM routing operations."
                 )
-            elif any(w in msg_lower for w in ["deliverable", "deliverables", "completed", "done", "receipt"]):
+            elif any(
+                w in msg_lower
+                for w in ["deliverable", "deliverables", "completed", "done", "receipt"]
+            ):
                 if verified_deliverables:
                     deliv_lines = "\n".join(
                         f"- 🟢 **[{t.task_id}]** `{t.title}` — Completed by: **{t.assigned_to or 'System'}**"
@@ -1368,18 +1586,22 @@ class BossBrain:
                 )
 
         # 4. Maintain conversation history
-        clean_history.append({
-            "role": "user",
-            "content": clean_msg,
-            "timestamp": now_utc.isoformat(),
-        })
-        clean_history.append({
-            "role": "assistant",
-            "content": reply,
-            "timestamp": now_utc.isoformat(),
-            "plan_proposal": plan_proposal,
-            "action": action,
-        })
+        clean_history.append(
+            {
+                "role": "user",
+                "content": clean_msg,
+                "timestamp": now_utc.isoformat(),
+            }
+        )
+        clean_history.append(
+            {
+                "role": "assistant",
+                "content": reply,
+                "timestamp": now_utc.isoformat(),
+                "plan_proposal": plan_proposal,
+                "action": action,
+            }
+        )
         history = clean_history[-30:]
 
         return {
