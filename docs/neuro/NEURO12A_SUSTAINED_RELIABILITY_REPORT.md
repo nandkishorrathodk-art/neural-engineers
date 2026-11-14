@@ -198,3 +198,69 @@ work** and reported honestly rather than masked.
   is a small-sample model-output flake, not a regression in the fixes.
 - No sustained 30–60 minute workflow and no concurrency-under-load batch has run.
   NEURO-12 remains **PARTIAL**.
+
+---
+
+## Update 2026-11-14 (final): hybrid verify-phase scoping fix
+
+A further sustained cohort (10 unique GUI + 10 unique hybrid objectives) was run twice on
+the final code to confirm the hybrid false negatives were eliminated. Evidence:
+`cohort_postfix_scoped.json` (HEAD `449d439`, run 1) and `cohort_postfix_scoped_run2.json`
+(HEAD `2595ce7`, run 2). Both cohorts: HEAD stable throughout, gate **PASS**.
+
+### Defect 8 — hybrid verify phase collected stale test modules (fixed)
+
+The hybrid verify phase ran a bare `python3 -m pytest -q` in the employee workspace.
+Employee workspaces are **reused across objectives**, so the bare invocation also
+collected leftover `test_*.py` modules from earlier objectives. A stale module that
+shadowed the freshly persisted one made a correct hybrid run fail closed with a
+`NameError`/`AttributeError` in an unrelated file (e.g. `pytest.Test` misuse in a leftover
+module, `test_handoff.py` collection error). This is a **false negative**: the task's own
+work was correct, but the verifier rejected it because it re-ran someone else's stale test.
+
+`scope_test_commands_to_plan()` now appends the exact test modules the plan itself
+persists to a bare pytest invocation, so the verify run is hermetic regardless of what
+earlier objectives left in the workspace. Wired into the plan endpoint
+(`api/routes/worker.py`) next to the generated-script validators. Regression test:
+`test_bare_pytest_is_scoped_to_the_persisted_test_module`.
+
+### Results (this round)
+
+| Cohort | Mode | Samples | Counted | Completed | Failed | Timed out | Success rate | Timeout rate | Retry freq | Mean (s) | p95 (s) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| scoped run 1 | gui | 10 | 10 | 10 | 0 | 0 | **100%** | 0% | 0.0 | 31.5 | 44.6 |
+| scoped run 1 | hybrid | 10 | 10 | 10 | 0 | 0 | **100%** | 0% | 0.2 | 53.0 | 75.4 |
+| scoped run 2 | gui | 10 | 10 | 10 | 0 | 0 | **100%** | 0% | 0.0 | 28.7 | 30.7 |
+| scoped run 2 | hybrid | 10 | 10 | 9 | 0 | 1 | **90%** | 10% | 0.3 | 97.0 | 229.1 |
+
+Gate: **PASS** in both runs (min 0.8 success/mode, ≥10 counted samples/mode, HEAD stable).
+Aggregate across both scoped runs: GUI **20/20 (100%)**, hybrid **19/20 (95%)**.
+
+### What the one remaining hybrid non-success is
+
+The single hybrid non-success (run 2, `hybrid-008`) is **not** a verifier false negative
+and **not** a task failure. It is a **timeout**: the objective never reached a terminal
+state within 300 s and is reported in its own `Timed out` column, never counted as a
+success. Its receipt shows **0 attempts** — the worker never claimed it. The task was
+assigned, then requeued to `PENDING` by the stale-assignment recovery loop (0.7 s after
+assignment, before the driver finished provisioning the desktop), and was not re-dispatched
+before the timeout. The claim route *can* reassign a PENDING task, but only to an employee
+whose desktop is **already running**; the driver provisions the desktop *after* assignment,
+so during the window where the task sat PENDING no eligible running desktop existed. This
+is an assignment/recovery race under a non-empty PENDING backlog, not a logic defect in the
+scoping fix. It is left unfixed and reported honestly.
+
+### Honest caveats (this round)
+
+- **Hybrid is 19/20 (95%), not 100%.** The one miss is the timeout above, honestly
+  attributed to an assignment/recovery race, not to the verify-phase scoping fix.
+- **GUI is 20/20 (100%)** across two 10-sample runs, but 10-sample rates are not tight
+  confidence intervals.
+- **The pre-existing PENDING backlog is real.** The live database holds tasks left
+  PENDING by earlier cohorts; with a single desktop slot the worker fleet drains them
+  slowly, which is what produced the run-2 timeout. A sustained-load run against a clean
+  queue was not performed.
+- **No sustained 30–60 minute workflow and no concurrency-under-load batch** has run.
+  NEURO-12 remains **PARTIAL**.
+- The earlier worker-layer GUI frame-capture flake documented above did not recur in
+  either scoped run (GUI 20/20), but it is not proven eliminated.
