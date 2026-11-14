@@ -273,6 +273,34 @@ class WorkerLeaseRequest(BaseModel):
     fencing_token: int = Field(..., ge=1)
 
 
+class WorkerPlanRequest(WorkerLeaseRequest):
+    """Plan request for a hybrid task's named phase.
+
+    A hybrid task runs two terminal phases (prepare then verify) around one GUI
+    phase. They need different instructions: the prepare phase creates the
+    artifact, the verify phase must not overwrite it. The phase name lets the
+    planner generate a plan that matches the phase rather than reusing one.
+    """
+
+    phase: Optional[str] = Field(default=None, max_length=32)
+    exclude_text: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "Literal text owned by a later phase (e.g. the line a hybrid task's "
+            "graphical phase will type). The prepare phase must not write it."
+        ),
+    )
+    exclude_paths: Optional[list[str]] = Field(
+        default=None,
+        max_length=12,
+        description=(
+            "Workspace files an earlier phase already produced. The verify phase "
+            "must read them, never rewrite them, so its plan may not persist them."
+        ),
+    )
+
+
 class WorkerClaimRequest(BaseModel):
     execution_modes: list[ExecutionMode] = Field(
         default_factory=lambda: list(ExecutionMode), min_length=1, max_length=10
@@ -322,6 +350,19 @@ class WorkerGuiStep(BaseModel):
     coordinates: Optional[tuple[int, int]] = Field(None, description="Explicit pixel coordinates")
     confidence: float = Field(default=0.95, ge=0.0, le=1.0)
     expected_postcondition: Optional[str] = None
+    type_into_active_focus: bool = Field(
+        default=False,
+        description=(
+            "Type into the window that already holds OS keyboard focus (e.g. a file "
+            "dialog's location bar) instead of clicking the last grounded coordinate first."
+        ),
+    )
+    settle_ms: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=10_000,
+        description="Duration of a WAIT_SETTLE step in milliseconds; defaults to 50.",
+    )
 
 
 class WorkerGuiPlanRequest(WorkerLeaseRequest):

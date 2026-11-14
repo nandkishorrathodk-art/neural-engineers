@@ -26,10 +26,16 @@ _QUOTED_TERM = re.compile(r"['\"]([^'\"]{2,64})['\"]")
 
 
 def onscreen_expected_terms(item: dict[str, Any]) -> list[str]:
-    """Extract on-screen deliverable markers the task contract requires to be visible."""
-    text = " ".join(
-        str(item.get(key) or "") for key in ("title", "objective", "acceptance_criteria")
-    )
+    """Extract on-screen deliverable markers the task contract requires to be visible.
+
+    Only the acceptance criteria is authoritative for what verification must observe:
+    it is the signed pass condition. The title and objective are natural-language
+    *instructions* and, for hybrid tasks, describe terminal-side work too ("print its
+    SHA-256 hash"). Scraping markers from that prose would demand a hyphenated token
+    like ``SHA-256`` appear on the GUI screen, rejecting a correct hybrid run for a
+    requirement the contract never made.
+    """
+    text = str(item.get("acceptance_criteria") or "")
     terms: list[str] = []
     for marker in _UPPER_MARKER.findall(text):
         if marker not in terms:

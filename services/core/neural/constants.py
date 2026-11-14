@@ -125,6 +125,17 @@ def mode_requires_gui(mode: object) -> bool:
     return ExecutionTarget.GUI in required_execution_targets(mode)
 
 
+def mode_requires_terminal(mode: object) -> bool:
+    """True when a task in ``mode`` requires a terminal execution environment.
+
+    Hybrid tasks run a terminal phase as well as a GUI phase, so terminal
+    endpoints (worker plan/exec, verifier exec/manifest) must accept them. Gating
+    those endpoints on ``ExecutionMode.is_terminal`` wrongly rejected hybrid and
+    stranded every hybrid task before its first command.
+    """
+    return ExecutionTarget.TERMINAL in required_execution_targets(mode)
+
+
 _TERMINAL_MODES: frozenset[ExecutionMode] = frozenset(
     {ExecutionMode.TERMINAL, ExecutionMode.TERMINAL_ONLY}
 )

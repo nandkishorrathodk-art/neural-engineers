@@ -169,48 +169,57 @@ class GUIExecutionLoop:
 
             elif act_type == "KEY_TYPE":
                 text = request.text_content or ""
-                # If target coords provided, move and click to focus element first
-                if target_coords and focused_element is None:
-                    self.mouse_controller.click(target_coords[0], target_coords[1])
-                    self.capture_engine.apply_visual_action("MOUSE_CLICK", target_coords)
-                    elements = self.detector.detect(frame_before)
-                    for el in elements:
-                        if el.contains_point(target_coords[0], target_coords[1]):
-                            focused_element = el
-                            focused_element.is_focused = True
-                            break
-                    if focused_element is None:
-                        # Synthetic focus element for coordinate target
-                        focused_element = VisualElement(
-                            element_id="input_target",
-                            bounding_box=(
-                                target_coords[0] - 50,
-                                target_coords[1] - 15,
-                                target_coords[0] + 50,
-                                target_coords[1] + 15,
-                            ),
-                            element_type="text_input",
-                            visual_text="",
-                            visual_signature="focus_ring",
-                            confidence=0.95,
-                            is_interactive=True,
-                            is_focused=True,
-                        )
-                elif focused_element is None:
-                    # Discover any already focused element on screen
-                    elements = self.detector.detect(frame_before)
-                    for el in elements:
-                        if el.is_focused and el.element_type == "text_input":
-                            focused_element = el
-                            break
+                if request.active_focus:
+                    # Deliberate exception to the focus gate: the planner asserted
+                    # the target window (e.g. a dialog location bar) already holds
+                    # OS keyboard focus, so keystrokes go to the active window.
+                    self.keyboard_controller.type_text(text=text, force_unverified=True)
+                    self.capture_engine.apply_visual_action("KEY_TYPE", None, text=text)
+                else:
+                    # If target coords provided, move and click to focus element first
+                    if target_coords and focused_element is None:
+                        self.mouse_controller.click(target_coords[0], target_coords[1])
+                        self.capture_engine.apply_visual_action("MOUSE_CLICK", target_coords)
+                        elements = self.detector.detect(frame_before)
+                        for el in elements:
+                            if el.contains_point(target_coords[0], target_coords[1]):
+                                focused_element = el
+                                focused_element.is_focused = True
+                                break
+                        if focused_element is None:
+                            # Synthetic focus element for coordinate target
+                            focused_element = VisualElement(
+                                element_id="input_target",
+                                bounding_box=(
+                                    target_coords[0] - 50,
+                                    target_coords[1] - 15,
+                                    target_coords[0] + 50,
+                                    target_coords[1] + 15,
+                                ),
+                                element_type="text_input",
+                                visual_text="",
+                                visual_signature="focus_ring",
+                                confidence=0.95,
+                                is_interactive=True,
+                                is_focused=True,
+                            )
+                    elif focused_element is None:
+                        # Discover any already focused element on screen
+                        elements = self.detector.detect(frame_before)
+                        for el in elements:
+                            if el.is_focused and el.element_type == "text_input":
+                                focused_element = el
+                                break
 
-                self.keyboard_controller.type_text(
-                    text=text,
-                    target_element=focused_element,
-                    frame=frame_before,
-                )
-                type_pos = target_coords or (focused_element.center() if focused_element else None)
-                self.capture_engine.apply_visual_action("KEY_TYPE", type_pos, text=text)
+                    self.keyboard_controller.type_text(
+                        text=text,
+                        target_element=focused_element,
+                        frame=frame_before,
+                    )
+                    type_pos = target_coords or (
+                        focused_element.center() if focused_element else None
+                    )
+                    self.capture_engine.apply_visual_action("KEY_TYPE", type_pos, text=text)
 
             elif act_type == "KEY_HOTKEY" or act_type == "KEY_PRESS":
                 hotkey = request.key_code or "Return"
@@ -218,8 +227,9 @@ class GUIExecutionLoop:
                 self.capture_engine.apply_visual_action("KEY_HOTKEY", None, text=hotkey)
 
             elif act_type == "WAIT_SETTLE":
-                # Explicit settle wait
-                time.sleep(0.05)
+                # Explicit settle wait: long enough for a window transition (e.g. a
+                # file dialog handing focus back to the editor) before the next step.
+                time.sleep((request.settle_ms or 50) / 1000.0)
 
         except (
             EmergencyStopTriggered,

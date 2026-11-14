@@ -53,6 +53,16 @@ class GuiStepPlan:
     coordinates: Optional[tuple[int, int]] = None
     confidence: float = 0.95
     expected_postcondition: Optional[str] = None
+    # When True, ``KEY_TYPE`` sends keystrokes to whatever window currently holds
+    # keyboard focus instead of clicking the last grounded coordinate first. A
+    # GTK dialog location bar (opened with Ctrl+L) owns focus already; the
+    # default click-before-type would click back onto the document and drop that
+    # focus, silently typing nothing into the dialog.
+    type_into_active_focus: bool = False
+    # Duration for a WAIT_SETTLE step, in milliseconds. A fixed 50ms is too short
+    # for a file dialog to hand focus back to the editor after Return; the next
+    # keystroke then lands in the dialog instead of the document.
+    settle_ms: Optional[int] = None
 
 
 @dataclass
@@ -126,6 +136,7 @@ class GuiWorkerEngine:
         driver = ContainerDesktopDriver(self.container_manager, docker_id, display=self.display)
         if self.require_real_desktop:
             driver.assert_available()
+            driver.reset_editor_state()
 
         frame_before = driver.capture_frame()
         hash_before = self._hash_frame(frame_before)
@@ -256,11 +267,14 @@ class GuiWorkerEngine:
         if (
             coordinates is None
             and step.action_type == "KEY_TYPE"
+            and not step.type_into_active_focus
             and fallback_coordinates is not None
         ):
             # Text entry must follow a verified click. Reuse the most recent click
             # coordinate so the keyboard focus gate has a concrete target instead of
-            # failing closed on a real desktop that has no inheritable focus.
+            # failing closed on a real desktop that has no inheritable focus. When
+            # the step targets active focus (a dialog already owns it), reuse is
+            # wrong: the click would steal focus back from the dialog.
             coordinates = fallback_coordinates
         payload: dict[str, Any] = {
             "action_id": f"gui_{uuid.uuid4().hex[:10]}",
@@ -268,6 +282,10 @@ class GuiWorkerEngine:
             "action_type": step.action_type,
             "confidence": step.confidence,
         }
+        if step.type_into_active_focus:
+            payload["active_focus"] = True
+        if step.settle_ms is not None:
+            payload["settle_ms"] = step.settle_ms
         if coordinates is not None:
             payload["coordinates"] = coordinates
         if step.text is not None:

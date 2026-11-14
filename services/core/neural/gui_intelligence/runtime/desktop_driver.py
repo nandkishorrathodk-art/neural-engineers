@@ -88,6 +88,22 @@ class ContainerDesktopDriver:
         except DesktopRuntimeUnavailable:
             return False
 
+    def reset_editor_state(self) -> None:
+        """Clear stale text-editor crash-recovery state before a GUI task runs.
+
+        Mousepad writes an autosave file whenever its session ends uncleanly, which
+        is the norm for an ephemeral workstation container. On the next launch it
+        then shows a modal "previous session did not end normally / restore data?"
+        dialog that holds keyboard focus, so the plan's Ctrl+O never reaches the
+        editor and the GUI edit silently no-ops. Removing the stale autosave and any
+        leftover instance makes the editor launch deterministic. This is desktop
+        environment hygiene, not task execution: it performs none of the task's work.
+        """
+        self._shell(
+            "rm -rf /home/employee/.local/share/Mousepad /home/employee/.config/mousepad; "
+            "pkill -9 -x mousepad; true"
+        )
+
     # -- capture -----------------------------------------------------------------
 
     def capture_png_bytes(self) -> bytes:

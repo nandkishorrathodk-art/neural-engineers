@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from neural.logger import get_logger
+from neural.verification.test_commands import persisted_paths
 
 logger = get_logger("ancos.workers.hybrid")
 
@@ -41,13 +42,28 @@ class HybridExecutionCoordinator:
         return await self.worker._post(path, payload)
 
     async def _run_terminal_phase(
-        self, task: dict[str, Any], fence: int, phase_name: str
+        self,
+        task: dict[str, Any],
+        fence: int,
+        phase_name: str,
+        exclude_text: str | None = None,
+        exclude_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         task_id = task["task_id"]
+        plan_payload: dict[str, Any] = {"fencing_token": fence, "phase": phase_name}
+        if exclude_text:
+            plan_payload["exclude_text"] = exclude_text
+        if exclude_paths:
+            plan_payload["exclude_paths"] = exclude_paths
         plan_response = await self._post(
             f"/internal/worker/tasks/{task_id}/plan",
-            {"fencing_token": fence},
+            plan_payload,
         )
+        planned_files = [
+            str(item.get("path"))
+            for item in plan_response.get("plan", {}).get("files", [])
+            if isinstance(item, dict) and item.get("path")
+        ]
         commands = plan_response.get("plan", {}).get("commands", [])
         command_receipts: list[dict[str, Any]] = []
         for command in commands:
@@ -57,31 +73,39 @@ class HybridExecutionCoordinator:
             )
             command_receipts.append({**result, "command": command})
             if result.get("exit_code") != 0:
+                detail = str(result.get("stderr") or result.get("stdout") or "")[-1000:]
                 raise HybridExecutionError(
-                    f"[{phase_name}] terminal command exited with code {result.get('exit_code')}: "
-                    f"{str(result.get('stderr', ''))[-1000:]}",
+                    f"[{phase_name}] terminal command {command!r} exited with code "
+                    f"{result.get('exit_code')}: {detail}",
                     exit_code=int(result.get("exit_code")),
                 )
         return {
             "kind": "terminal",
             "phase": phase_name,
             "commands": command_receipts,
+            "files": planned_files,
             "model": plan_response.get("model"),
         }
 
-    async def _run_gui_phase(self, task: dict[str, Any], fence: int) -> dict[str, Any]:
+    async def _plan_gui_phase(self, task: dict[str, Any], fence: int) -> dict[str, Any]:
         task_id = task["task_id"]
-        plan_response = await self._post(
+        return await self._post(
             f"/internal/worker/tasks/{task_id}/gui/plan",
             {"fencing_token": fence},
         )
+
+    async def _run_gui_phase(
+        self, task: dict[str, Any], fence: int, plan_response: dict[str, Any]
+    ) -> dict[str, Any]:
+        task_id = task["task_id"]
         steps = plan_response.get("steps") or []
+        expected_text = plan_response.get("expected_text") or task.get("expected_text")
         result = await self._post(
             f"/internal/worker/tasks/{task_id}/gui/execute",
             {
                 "fencing_token": fence,
                 "steps": steps,
-                "expected_text": task.get("expected_text"),
+                "expected_text": expected_text,
                 "display": getattr(self.worker, "display", None),
             },
         )
@@ -96,9 +120,26 @@ class HybridExecutionCoordinator:
         fence = int(task["fencing_token"])
         phases: list[dict[str, Any]] = []
         try:
-            phases.append(await self._run_terminal_phase(task, fence, "prepare"))
-            phases.append(await self._run_gui_phase(task, fence))
-            phases.append(await self._run_terminal_phase(task, fence, "verify"))
+            # Plan the GUI phase first so the prepare phase can be told which line
+            # the desktop will own and therefore must not write.
+            gui_plan = await self._plan_gui_phase(task, fence)
+            prepare = await self._run_terminal_phase(
+                task, fence, "prepare", exclude_text=gui_plan.get("expected_text")
+            )
+            phases.append(prepare)
+            gui_phase = await self._run_gui_phase(task, fence, gui_plan)
+            phases.append(gui_phase)
+            # The deliverable now exists and carries the GUI edit; the verify phase
+            # may read it but must not rewrite it. Derive the protected paths from the
+            # commands the prepare phase actually ran, since the plan response does not
+            # echo the materialized file list.
+            protected_paths = sorted(
+                persisted_paths([receipt.get("command") for receipt in prepare.get("commands", [])])
+            )
+            verify = await self._run_terminal_phase(
+                task, fence, "verify", exclude_paths=protected_paths or None
+            )
+            phases.append(verify)
         except (HybridExecutionError, httpx.HTTPError) as exc:
             logger.error("Hybrid task failed", task_id=task.get("task_id"), error=str(exc))
             return {
@@ -109,12 +150,19 @@ class HybridExecutionCoordinator:
                 "verification_status": "awaiting_independent_verifier",
                 "passed": False,
             }
+        # The independent verifier expects a GUI receipt and the replayable terminal
+        # verification commands at the top level (the same shape a GUI or terminal
+        # worker submits), plus the ordered phase timeline for the hybrid audit trail.
+        verify_commands = [receipt["command"] for receipt in verify.get("commands", [])]
         return {
             "executor": "gui-worker",
             "execution_mode": "hybrid",
             "phases": phases,
             "phase_count": len(phases),
             "capabilities_used": ["terminal", "gui"],
+            "gui": gui_phase["result"],
+            "planned_commands": verify_commands,
+            "commands": verify.get("commands", []),
             "verification_status": "awaiting_independent_verifier",
             "passed": True,
         }

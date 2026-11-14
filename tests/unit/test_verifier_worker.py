@@ -1,3 +1,4 @@
+import base64
 import json
 
 import httpx
@@ -5,7 +6,11 @@ import pytest
 from neural.api.schemas.requests import VerifierCommandRequest
 from neural.containers import broker_api
 from neural.containers.broker_api import VerificationExecRequest, VerificationManifestRequest
-from neural.verification.test_commands import validate_test_plan, validate_workspace_artifact_plan
+from neural.verification.test_commands import (
+    validate_test_plan,
+    validate_verify_phase_plan,
+    validate_workspace_artifact_plan,
+)
 from neural.verification.workspace_manifest import build_workspace_delta, valid_workspace_manifest
 from neural.workers.verifier import VerificationWorker, replayable_test_commands
 
@@ -150,6 +155,57 @@ def test_non_file_test_task_does_not_require_a_workspace_write():
         "tests pass",
         [["python3", "-m", "unittest", "-v"]],
     )
+
+
+def test_verify_phase_may_not_rewrite_the_artifact():
+    """The GUI phase produced handoff.txt; the verify phase must only read it."""
+    rewrite = [[
+        "python3",
+        "-c",
+        "open('handoff.txt', 'w').write('ANCOS_HYBRID_TEST\\n')",
+    ]]
+    with pytest.raises(ValueError, match="must not rewrite an artifact"):
+        validate_verify_phase_plan(["handoff.txt"], rewrite)
+
+    read_only = [[
+        "python3",
+        "-c",
+        "from pathlib import Path; Path('test_handoff.py').write_text('def test_x(): pass')",
+    ], ["python3", "-m", "pytest", "-q"]]
+    validate_verify_phase_plan(["handoff.txt"], read_only)
+
+
+def test_verify_phase_rejects_pytest_without_a_discoverable_module():
+    """A pytest run with no `test_*.py` module collects nothing and exits non-zero."""
+    no_module = [[
+        "python3",
+        "-c",
+        "from pathlib import Path; Path('handoff_checker.py').write_text('print(1)')",
+    ], ["python3", "-m", "pytest", "-q"]]
+    with pytest.raises(ValueError, match="no discoverable"):
+        validate_verify_phase_plan(["handoff.txt"], no_module)
+
+    unittest_style = [[
+        "python3",
+        "-c",
+        "from pathlib import Path; Path('checker.py').write_text('import unittest')",
+    ], ["python3", "-m", "unittest", "-v"]]
+    validate_verify_phase_plan(["handoff.txt"], unittest_style)
+
+
+def test_verify_phase_rejects_a_fabricated_digest_constant():
+    """A checker must compute the hash, not assert an invented constant."""
+    invented = "a1" * 32
+    fabricated = base64.b64encode(
+        f'def test_x():\n    assert True\nEXPECTED = "{invented}"\n'.encode()
+    ).decode()
+    commands = [[
+        "python3",
+        "-c",
+        f"import base64; open('test_handoff.py','wb').write(base64.b64decode('{fabricated}'))",
+    ], ["python3", "-m", "pytest", "-q"]]
+    with pytest.raises(ValueError, match="hardcodes a 64-character hex digest"):
+        validate_verify_phase_plan(["handoff.txt"], commands)
 
 
 @pytest.mark.asyncio

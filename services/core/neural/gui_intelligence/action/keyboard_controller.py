@@ -105,7 +105,7 @@ class KeyboardController:
     def send_hotkey(self, hotkey: str) -> float:
         """Transmits a hotkey sequence (e.g. 'ctrl+c', 'Return', 'alt+tab')."""
         start = time.perf_counter()
-        normalized_hotkey = hotkey.strip().lower()
+        normalized_hotkey = canonicalize_hotkey(hotkey)
         if self.dispatch_fn:
             self.dispatch_fn("KEY_HOTKEY", {"hotkey": normalized_hotkey})
         elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -117,6 +117,57 @@ class KeyboardController:
             }
         )
         return elapsed_ms
+
+
+_MODIFIER_TOKENS = {"ctrl", "control", "alt", "shift", "super", "meta", "hyper", "altgr"}
+# X keysym names are case-sensitive ("Return", "End", "Page_Up"). Lowercasing a
+# hotkey makes xdotool silently drop the unknown name ("No such key name
+# 'return'"), so special keys must be canonicalized, not lowercased.
+_CANONICAL_KEYSYMS = {
+    "return": "Return",
+    "enter": "Return",
+    "escape": "Escape",
+    "esc": "Escape",
+    "tab": "Tab",
+    "backspace": "BackSpace",
+    "delete": "Delete",
+    "del": "Delete",
+    "insert": "Insert",
+    "home": "Home",
+    "end": "End",
+    "pageup": "Page_Up",
+    "pagedown": "Page_Down",
+    "prior": "Prior",
+    "next": "Next",
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "space": "space",
+    "spacebar": "space",
+    "printscreen": "Print",
+    "menu": "Menu",
+}
+
+
+def canonicalize_hotkey(hotkey: str) -> str:
+    """Normalize a hotkey to xdotool's expected casing.
+
+    Modifier tokens are lowercased; named keysyms are mapped to their canonical
+    X name. A single printable character (``ctrl+s``) passes through unchanged.
+    """
+    parts = [part.strip() for part in hotkey.strip().split("+") if part.strip()]
+    if not parts:
+        return hotkey.strip().lower()
+    normalized: list[str] = []
+    for part in parts:
+        lowered = part.lower()
+        if lowered in _MODIFIER_TOKENS:
+            normalized.append(lowered)
+            continue
+        keysym = _CANONICAL_KEYSYMS.get(lowered.replace("_", ""))
+        normalized.append(keysym if keysym else part)
+    return "+".join(normalized)
 
 
 def np_has_focus_cue(patch) -> bool:

@@ -359,3 +359,21 @@ def test_onscreen_expected_terms_empty_for_generic_contract():
     from neural.workers.verifier import onscreen_expected_terms
 
     assert onscreen_expected_terms({"acceptance_criteria": "Task completed"}) == []
+
+
+def test_onscreen_expected_terms_ignores_markers_only_in_objective_prose():
+    """A hybrid objective describes terminal-side work too ("print its SHA-256
+    hash"). Such a hyphenated token must never become a required *on-screen*
+    deliverable, or a correct hybrid run is rejected for text the contract never
+    asked the GUI to display. Only the acceptance criteria is authoritative."""
+    from neural.workers.verifier import onscreen_expected_terms
+
+    terms = onscreen_expected_terms(
+        {
+            "title": "Create handoff.txt with hybrid execution",
+            "objective": "Stage 3 (terminal): read handoff.txt and print its SHA-256 hash.",
+            "acceptance_criteria": "The editor shows the marker GUI-OK and the file is saved.",
+        }
+    )
+    assert "SHA-256" not in terms
+    assert "GUI-OK" in terms

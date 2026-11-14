@@ -58,15 +58,32 @@ _APP_LAUNCH_VERBS = ("open", "launch", "start", "run", "load")
 # preferred, but the unquoted payload between the verb and its "into/in/to"
 # target is captured when no quotes are present.
 _TYPED_SEGMENT = re.compile(
-    r"\b(?:type|enter|fill|write|input)\b\s+(?:the\s+|a\s+|an\s+)?(?P<value>.+?)\s+(?:into|in|to)\b",
+    r"\b(?:type|enter|fill|write|input|append|add|insert)\b\s+(?:the\s+|a\s+|an\s+)?"
+    r"(?P<value>.+?)\s+(?:into|in|to)\b",
     re.IGNORECASE,
 )
 _TYPED_FILLER_LEAD = re.compile(
     r"^(?:(?:exact|literal|precise|specified|following)\s+)?"
-    r"(?:text|marker|string|value|word|following|this|these|message|content|phrase)\s+",
+    r"(?:line|text|marker|string|value|word|following|this|these|message|content|phrase)\s+",
     re.IGNORECASE,
 )
-_TYPED_VERB = re.compile(r"\b(?:type|enter|fill|write|input)\b", re.IGNORECASE)
+_TYPED_VERB = re.compile(r"\b(?:type|enter|fill|write|input|append|add|insert)\b", re.IGNORECASE)
+
+# A document file named in an edit objective ("open handoff.txt ... and save").
+_DOCUMENT_FILE = re.compile(
+    r"\b([A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:txt|md|markdown|rst|py|json|csv|log|cfg|ini|conf|sh))\b"
+)
+# Verbs that mean "modify an existing document", as opposed to launching an app.
+_DOCUMENT_EDIT_VERBS = ("append", "add", "edit", "insert", "modify", "update", "write")
+
+# The employee workspace is the only writable directory inside the desktop
+# container, so a bare document name resolves here when a path is typed into a
+# file dialog.
+_EMPLOYEE_WORKSPACE = "/home/employee/workspace"
+# A concrete payload token such as GUI_EDIT=HYBRID_GUI_OK or DONE.
+_EDIT_PAYLOAD = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./-]+\b")
+# A save request that closes out a document edit ("then save the document").
+_SAVE_VERB = re.compile(r"\bsave\b", re.IGNORECASE)
 
 # A negation within this window before an application alias means the objective
 # names that application as an exclusion ("without a terminal"), not a target.
@@ -181,6 +198,93 @@ def _typed_value(text: str) -> str | None:
     return None
 
 
+def _select_edit_payload(objective: str, blob: str) -> "re.Match[str] | None":
+    """Choose which ``KEY=value`` token the GUI edit should type.
+
+    A hybrid objective names one payload for its terminal phase (file setup) and
+    a different one for its graphical phase. The graphical phase is the one this
+    choreography types, so a token introduced near a GUI hint ("GUI editor",
+    "graphical desktop") wins; otherwise fall back to the first token.
+    """
+    tokens = list(_EDIT_PAYLOAD.finditer(blob))
+    if not tokens:
+        return None
+    gui_hints = ("gui", "graphical", "desktop", "editor")
+    for token in tokens:
+        window = blob[max(0, token.start() - 80) : token.start()].lower()
+        if any(hint in window for hint in gui_hints):
+            return token
+    return _EDIT_PAYLOAD.search(objective) or tokens[0]
+
+
+def derive_document_edit_steps(
+    title: str, objective: str, scope: str = ""
+) -> list[dict[str, Any]] | None:
+    """Plan a GUI edit of an existing workspace document, or return ``None``.
+
+    Objectives like "open handoff.txt in the text editor and add the line
+    GUI_EDIT=HYBRID_GUI_OK, then save" need a real open→edit→save choreography on
+    a desktop that exposes only pixels. The deterministic route is: launch the
+    editor, use its Open dialog with the GTK location bar (Ctrl+O then Ctrl+L,
+    typing the absolute path straight into the focused bar), move to the end of
+    the document, append the payload, and save with Ctrl+S.
+    """
+    blob = " ".join(part for part in (title, objective, scope) if part).strip()
+    lowered = blob.lower()
+    file_match = _DOCUMENT_FILE.search(blob)
+    if file_match is None:
+        return None
+    # Only an edit verb turns a named file into an edit choreography; a bare
+    # "open handoff.txt" stays a click task.
+    if not any(re.search(rf"\b{verb}\b", lowered) for verb in _DOCUMENT_EDIT_VERBS):
+        return None
+    # The open/close must go through the graphical desktop. A hybrid task also
+    # names a terminal phase, so a bare "terminal" mention must not disqualify
+    # it; require a positive GUI signal instead of rejecting on the word alone.
+    if not any(hint in lowered for hint in ("gui", "graphical", "desktop", "editor")):
+        return None
+    payload = _select_edit_payload(objective, blob)
+    if payload is None:
+        return None
+    path = f"{_EMPLOYEE_WORKSPACE}/{file_match.group(1)}"
+    steps: list[dict[str, Any]] = [
+        {"action_type": "MOUSE_CLICK", "target": _MENU_LABEL, "confidence": 0.95},
+        {"action_type": "MOUSE_CLICK", "target": "Accessories", "confidence": 0.95},
+        {"action_type": "MOUSE_CLICK", "target": "Mousepad", "confidence": 0.95},
+        # The editor window is created asynchronously. Without a settle the next
+        # keystroke (Ctrl+O) is delivered before the window exists and is silently
+        # dropped, so the Open dialog never appears and the edit never happens.
+        {"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 2500},
+        {"action_type": "KEY_HOTKEY", "key_code": "ctrl+o", "confidence": 0.95},
+        {"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 1200},
+        {"action_type": "KEY_HOTKEY", "key_code": "ctrl+l", "confidence": 0.95},
+        {
+            "action_type": "KEY_TYPE",
+            "text": path,
+            "confidence": 0.95,
+            "type_into_active_focus": True,
+        },
+        {"action_type": "KEY_HOTKEY", "key_code": "Return", "confidence": 0.95},
+        # The dialog must finish closing and the editor must take focus back
+        # before the next keystroke, otherwise Ctrl+End lands in the dialog.
+        {"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 1500},
+        {"action_type": "KEY_HOTKEY", "key_code": "ctrl+End", "confidence": 0.95},
+        # Type the payload directly after Ctrl+End. The prepare phase guarantees
+        # the artifact ends with exactly one newline, so Ctrl+End lands on a fresh
+        # empty final line and typing fills it as the next line. Pressing Return
+        # first would insert a *blank* line and yield an extra empty element.
+        {
+            "action_type": "KEY_TYPE",
+            "text": payload.group(0),
+            "confidence": 0.95,
+            "type_into_active_focus": True,
+        },
+    ]
+    if _SAVE_VERB.search(blob):
+        steps.append({"action_type": "KEY_HOTKEY", "key_code": "ctrl+s", "confidence": 0.95})
+    return steps
+
+
 def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[str, Any]]:
     """Return a list of GUI step dicts (see ``WorkerGuiStep``) for a task."""
     blob = " ".join(part for part in (title, objective, scope) if part).strip()
@@ -189,6 +293,12 @@ def derive_gui_steps(title: str, objective: str, scope: str = "") -> list[dict[s
     # a title like "Open the editor" is not enough to distinguish launching a
     # desktop application from clicking a label that is already on screen.
     instruction_lowered = " ".join(part for part in (objective, scope) if part).strip().lower()
+
+    # A named-document edit ("open handoff.txt ... and save") is a full open→edit
+    # →save choreography, not a single click; plan it before generic click routing.
+    document_steps = derive_document_edit_steps(title, objective, scope)
+    if document_steps is not None:
+        return document_steps
 
     steps: list[dict[str, Any]] = []
 

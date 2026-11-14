@@ -51,6 +51,11 @@ class GUIActionRequest(BaseModel):
     action_chunk_index: int = 0
     total_chunk_size: int = 1
     target_element_id: Optional[str] = None
+    # Type into the window that already holds OS keyboard focus (e.g. a GTK file
+    # dialog's location bar) without clicking a grounded coordinate first.
+    active_focus: bool = False
+    # Optional WAIT_SETTLE duration in milliseconds; defaults to the loop's fixed wait.
+    settle_ms: Optional[int] = None
 
 
 class GUIActionReceipt(BaseModel):

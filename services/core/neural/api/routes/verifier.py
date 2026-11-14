@@ -20,7 +20,11 @@ from neural.api.schemas.requests import (
     VerifierManifestRequest,
     VerifierScreenshotRequest,
 )
-from neural.constants import EmployeeStatus, ExecutionMode, mode_requires_gui
+from neural.constants import (
+    EmployeeStatus,
+    mode_requires_gui,
+    mode_requires_terminal,
+)
 from neural.containers.manager import ContainerManager
 from neural.db.repositories import (
     ContainerRepository,
@@ -78,9 +82,9 @@ async def execute_verifier_test(
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if not ExecutionMode.is_terminal(task.execution_mode):
+    if not mode_requires_terminal(task.execution_mode):
         raise HTTPException(
-            status_code=409, detail="Automated verifier execution only supports terminal tasks."
+            status_code=409, detail="Automated verifier execution only supports terminal-bearing tasks."
         )
     if not await task_repo.verification_attempt_is_current(
         task_id, attempt_id, request.fencing_token
@@ -125,9 +129,9 @@ async def capture_verifier_manifest(
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if not ExecutionMode.is_terminal(task.execution_mode):
+    if not mode_requires_terminal(task.execution_mode):
         raise HTTPException(
-            status_code=409, detail="Automated verifier manifests only support terminal tasks."
+            status_code=409, detail="Automated verifier manifests only support terminal-bearing tasks."
         )
     if not await task_repo.verification_attempt_is_current(
         task_id, attempt_id, request.fencing_token

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import base64
+import binascii
 import re
 from typing import Any
 
@@ -84,6 +86,88 @@ def validate_workspace_artifact_plan(
         raise ValueError(
             "Task requests a workspace file, but the plan does not persist a requested file before tests. "
             "Write the deliverable to disk, then run a separate replayable test command."
+        )
+
+
+def _decoded_payloads(planned: list[Any]) -> list[str]:
+    """Return the plaintext of any base64-encoded blobs in ``python3 -c`` argv.
+
+    ``TerminalPlan.materialize`` base64-encodes persisted file contents, so a
+    literal inside a written file is invisible in the raw command string. Decode
+    those blobs to inspect what the plan would actually persist.
+    """
+    decoded: list[str] = []
+    for command in planned[:12]:
+        if not isinstance(command, list) or not command or command[0] not in {"python", "python3"}:
+            continue
+        if "-c" not in command:
+            continue
+        code = command[command.index("-c") + 1]
+        for match in re.finditer(r"b64decode\((['\"])([A-Za-z0-9+/=]+)\1\)", code):
+            try:
+                decoded.append(base64.b64decode(match.group(2)).decode("utf-8", "replace"))
+            except (ValueError, binascii.Error):
+                continue
+    return decoded
+
+
+def persisted_paths(planned: Any) -> set[str]:
+    """Workspace paths an argv plan writes, for cross-phase protection."""
+    return _python_persisted_paths(planned if isinstance(planned, list) else [])
+
+
+def validate_verify_phase_plan(protected_paths: Any, planned: Any) -> None:
+    """Fail closed when a hybrid verify phase would corrupt or not verify the artifact.
+
+    The graphical phase already produced the deliverable; the verify phase must
+    read it. A plan that rewrites a protected path erases that work, a pytest
+    command with no discoverable ``test_*.py`` module collects nothing and exits
+    non-zero, and a hardcoded digest constant asserts a value the model invented
+    rather than the artifact's real hash. All three are rejected before execution
+    so the coordinator replans.
+    """
+    planned_commands = planned if isinstance(planned, list) else []
+    protected = {
+        str(path).lower().replace("\\", "/").split("/")[-1]
+        for path in (protected_paths or [])
+        if str(path).strip()
+    }
+    if protected:
+        rewritten = {
+            path.lower().replace("\\", "/").split("/")[-1]
+            for path in _python_persisted_paths(planned_commands)
+        } & protected
+        if rewritten:
+            raise ValueError(
+                "The verify phase must not rewrite an artifact an earlier phase produced: "
+                f"{sorted(rewritten)}. Only read the existing file."
+            )
+
+    for payload in _decoded_payloads(planned_commands):
+        if re.search(r"(?i)\b[0-9a-f]{64}\b", payload):
+            raise ValueError(
+                "The verify phase hardcodes a 64-character hex digest. Compute the hash with "
+                "hashlib and print it; never assert it equals a constant you invented."
+            )
+
+    tests = replayable_test_commands({"planned_commands": planned_commands})
+    if not tests:
+        return
+    persisted = _python_persisted_paths(planned_commands)
+    has_pytest_module = any(
+        re.search(r"(?i)(^|/)test_.+\.py$", path.replace("\\", "/"))
+        or re.search(r"(?i)(^|/).+_test\.py$", path.replace("\\", "/"))
+        for path in persisted
+    )
+    uses_unittest = any(
+        command[:3] in (["python", "-m", "unittest"], ["python3", "-m", "unittest"])
+        for command in tests
+    )
+    if not has_pytest_module and not uses_unittest:
+        raise ValueError(
+            "The verify phase runs pytest but persists no discoverable `test_*.py` module, "
+            "so pytest would collect zero tests and exit non-zero. Persist a pytest module "
+            "defining at least one `def test_...()`."
         )
 
 

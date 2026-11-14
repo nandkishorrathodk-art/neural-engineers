@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from neural.gui_intelligence.action.keyboard_controller import canonicalize_hotkey
 from neural.gui_intelligence.perception.ocr_runtime import TesseractOCREngine
 from neural.gui_intelligence.runtime.desktop_driver import ContainerDesktopDriver
 from neural.gui_intelligence.runtime.planner import derive_gui_steps, expected_onscreen_text
@@ -57,6 +58,22 @@ def test_driver_assert_available_probes_display_and_binaries():
     with pytest.raises(DesktopRuntimeUnavailable):
         driver.assert_available()
     assert driver.available is False
+
+
+def test_driver_reset_editor_state_clears_mousepad_crash_recovery_state():
+    """A prior unclean desktop shutdown leaves Mousepad autosave state that makes the
+    next launch show a modal "restore data?" dialog. That dialog holds keyboard focus,
+    so the plan's Ctrl+O never reaches the editor and the GUI edit silently no-ops.
+    The driver must clear the stale state before the choreography starts."""
+    manager = _RecordingManager()
+    driver = ContainerDesktopDriver(manager, "ancos-desktop-anc-emp-test", display=":1")
+
+    driver.reset_editor_state()
+
+    shell = manager.commands[-1][-1]
+    assert "/home/employee/.local/share/Mousepad" in shell
+    assert "/home/employee/.config/mousepad" in shell
+    assert "pkill" in shell
 
 
 def test_planner_clicks_field_before_typing():
@@ -264,3 +281,151 @@ def test_engine_refuses_blind_click_when_grounding_returns_negative():
             frame=None,
             grounder=_BlindGrounder(),
         )
+
+
+def test_canonicalize_hotkey_restores_x_keysym_case():
+    """xdotool silently drops unknown keysym names: lowercasing 'Return'/'End'
+    produces "No such key name 'return'" and the keypress is lost, which broke
+    real-desktop file-dialog and text-entry flows."""
+    assert canonicalize_hotkey("return") == "Return"
+    assert canonicalize_hotkey("Return") == "Return"
+    assert canonicalize_hotkey("ctrl+end") == "ctrl+End"
+    assert canonicalize_hotkey("Ctrl+Shift+Tab") == "ctrl+shift+Tab"
+    assert canonicalize_hotkey("ctrl+o") == "ctrl+o"
+    assert canonicalize_hotkey("Escape") == "Escape"
+    assert canonicalize_hotkey("page_down") == "Page_Down"
+
+
+def test_keyboard_controller_sends_canonical_hotkey_to_dispatch():
+    from neural.gui_intelligence.action.keyboard_controller import KeyboardController
+
+    seen: list[tuple[str, dict]] = []
+    controller = KeyboardController(dispatch_fn=lambda event, payload: seen.append((event, payload)))
+    controller.send_hotkey("return")
+    controller.send_hotkey("ctrl+end")
+    assert seen[0] == ("KEY_HOTKEY", {"hotkey": "Return"})
+    assert seen[1] == ("KEY_HOTKEY", {"hotkey": "ctrl+End"})
+
+
+def test_planner_plans_document_edit_choreography():
+    """An edit objective for a named document must plan open→edit→save, not a
+    single click, and must type the absolute workspace path into the file dialog."""
+    steps = derive_gui_steps(
+        "Edit the handoff document on the desktop",
+        "Stage 2 (graphical desktop only): open handoff.txt in the text editor via the "
+        "graphical desktop and add the line GUI_EDIT=HYBRID_GUI_OK, then save the document "
+        "using the GUI.",
+    )
+    assert [s["target"] for s in steps[:3]] == ["Applications", "Accessories", "Mousepad"]
+    assert {"action_type": "KEY_HOTKEY", "key_code": "ctrl+o", "confidence": 0.95} in steps
+    assert {"action_type": "KEY_HOTKEY", "key_code": "ctrl+l", "confidence": 0.95} in steps
+    assert {
+        "action_type": "KEY_TYPE",
+        "text": "/home/employee/workspace/handoff.txt",
+        "confidence": 0.95,
+        "type_into_active_focus": True,
+    } in steps
+    assert {"action_type": "KEY_HOTKEY", "key_code": "ctrl+s", "confidence": 0.95} in steps
+    assert {
+        "action_type": "KEY_TYPE",
+        "text": "GUI_EDIT=HYBRID_GUI_OK",
+        "confidence": 0.95,
+        "type_into_active_focus": True,
+    } in steps
+    assert expected_onscreen_text(steps) == "GUI_EDIT=HYBRID_GUI_OK"
+
+
+def test_planner_bare_open_stays_a_click_task():
+    """A named file without an edit verb must not become an edit choreography."""
+    steps = derive_gui_steps("Open handoff.txt", "Open handoff.txt in the file manager")
+    assert steps == [
+        {"action_type": "MOUSE_CLICK", "target": "Applications", "confidence": 0.95},
+        {"action_type": "MOUSE_CLICK", "target": "File Manager", "confidence": 0.95},
+    ]
+
+
+def test_engine_does_not_reuse_click_coordinate_for_active_focus_typing():
+    """Typing into a dialog's active focus must not be preceded by a click at the
+    last cursor position; that click steals focus back from the dialog."""
+    from neural.gui_intelligence.worker import GuiStepPlan, GuiWorkerEngine
+
+    engine = GuiWorkerEngine(container_manager=object(), require_real_desktop=False)
+    request = engine._to_request(
+        "ANC-EMP-TEST",
+        GuiStepPlan(action_type="KEY_TYPE", text="/tmp/x", type_into_active_focus=True),
+        frame=None,
+        grounder=None,
+        fallback_coordinates=(320, 240),
+    )
+    assert request.coordinates is None
+    assert request.active_focus is True
+    assert request.text_content == "/tmp/x"
+
+
+def test_planner_keeps_hybrid_document_edit_as_gui_choreography():
+    """A hybrid task names a terminal phase too; that mention must not disable the
+    GUI edit choreography, and the payload typed must be the GUI-phase one."""
+    steps = derive_gui_steps(
+        "Create handoff.txt with terminal lines",
+        "Create workspace file handoff.txt with exact content",
+        "terminal: create handoff.txt with ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1; "
+        "then open in GUI editor, add GUI_EDIT=HYBRID_GUI_OK, save; "
+        "then terminal: read and print SHA-256 hash",
+    )
+    typed = [step["text"] for step in steps if step["action_type"] == "KEY_TYPE"]
+    assert "/home/employee/workspace/handoff.txt" in typed
+    assert "GUI_EDIT=HYBRID_GUI_OK" in typed
+    assert "TERMINAL_PREPARED=1" not in typed
+    assert expected_onscreen_text(steps) == "GUI_EDIT=HYBRID_GUI_OK"
+
+
+def test_planner_rejects_document_edit_without_gui_signal():
+    """A pure-terminal document write must not become a GUI choreography."""
+    steps = derive_gui_steps(
+        "Append a line to notes.txt",
+        "Append the line DONE to notes.txt using the shell",
+        "terminal only",
+    )
+    assert all(step["action_type"] != "KEY_TYPE" for step in steps)
+
+
+def test_planner_settle_steps_are_configurable():
+    """The editor handoff must allow a real settle window, not a fixed 50 ms."""
+    steps = derive_gui_steps(
+        "Edit handoff.txt via GUI",
+        "Open handoff.txt in the graphical text editor and add the line GUI_EDIT=HYBRID_GUI_OK, then save",
+    )
+    settles = [step for step in steps if step["action_type"] == "WAIT_SETTLE"]
+    assert settles and all(step.get("settle_ms", 0) >= 300 for step in settles)
+
+
+def test_planner_settles_after_launch_before_the_first_keystroke():
+    """Ctrl+O is delivered before the freshly launched editor window exists and is
+    silently dropped; a settle must separate the Mousepad click from Ctrl+O."""
+    steps = derive_gui_steps(
+        "Edit handoff.txt via GUI",
+        "Open handoff.txt in the graphical text editor and add the line GUI_EDIT=HYBRID_GUI_OK, then save",
+    )
+    launch_index = next(i for i, s in enumerate(steps) if s.get("target") == "Mousepad")
+    ctrl_o_index = next(i for i, s in enumerate(steps) if s.get("key_code") == "ctrl+o")
+    between = steps[launch_index + 1 : ctrl_o_index]
+    assert any(s["action_type"] == "WAIT_SETTLE" and s.get("settle_ms", 0) >= 1500 for s in between), (
+        "the editor window needs a settle before Ctrl+O is sent"
+    )
+
+
+def test_planner_does_not_press_return_before_the_appended_payload():
+    """Ctrl+End already lands on the empty final line; a Return before the payload
+    inserts a *blank* line, yielding an extra empty element in the artifact."""
+    steps = derive_gui_steps(
+        "Edit handoff.txt via GUI",
+        "Open handoff.txt in the graphical text editor and add the line GUI_EDIT=HYBRID_GUI_OK, then save",
+    )
+    ctrl_end_index = next(i for i, s in enumerate(steps) if s.get("key_code") == "ctrl+End")
+    payload_index = next(
+        i
+        for i, s in enumerate(steps)
+        if s["action_type"] == "KEY_TYPE" and s.get("text") == "GUI_EDIT=HYBRID_GUI_OK"
+    )
+    between = steps[ctrl_end_index + 1 : payload_index]
+    assert not any(s.get("key_code") in {"Return", "KP_Enter"} for s in between)

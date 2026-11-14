@@ -1,4 +1,7 @@
 import asyncio
+import base64
+import binascii
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,10 +24,17 @@ from neural.api.schemas.requests import (
     WorkerGuiPlanRequest,
     WorkerGuiStepRequest,
     WorkerLeaseRequest,
+    WorkerPlanRequest,
     WorkerSubmitRequest,
 )
 from neural.config import get_settings
-from neural.constants import EmployeeStatus, ExecutionMode, mode_requires_gui, worker_declared_modes
+from neural.constants import (
+    EmployeeStatus,
+    ExecutionMode,
+    mode_requires_gui,
+    mode_requires_terminal,
+    worker_declared_modes,
+)
 from neural.containers.manager import ContainerManager
 from neural.db.engine import get_db_session
 from neural.db.models import Project
@@ -53,7 +63,12 @@ from neural.llm.budget import load_budget_scope_caps
 from neural.llm.gateway import LLMGateway
 from neural.logger import get_logger
 from neural.security.kill_switch import get_kill_switch
-from neural.verification.test_commands import validate_test_plan, validate_workspace_artifact_plan
+from neural.verification.test_commands import (
+    replayable_test_commands,
+    validate_test_plan,
+    validate_verify_phase_plan,
+    validate_workspace_artifact_plan,
+)
 from neural.verification.workspace_manifest import valid_workspace_manifest
 from neural.workers.terminal import TerminalCommandPlan, TerminalPlan
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,6 +79,73 @@ router = APIRouter(
     dependencies=[Depends(require_worker_token), Depends(require_execution_not_halted)],
 )
 logger = get_logger("ancos.api.worker")
+
+
+def _without_excluded_line(content: str, excluded: str) -> str:
+    """Drop ``excluded`` lines from ``content`` so a later phase owns them alone."""
+    kept = [line for line in content.splitlines() if line.strip() != excluded]
+    if len(kept) == len(content.splitlines()):
+        return content
+    return "\n".join(kept) + ("\n" if content.endswith("\n") else "")
+
+
+def _ensure_single_trailing_newline(content: str) -> str:
+    """End ``content`` with exactly one newline.
+
+    A hybrid task's graphical phase appends its line by moving to the end of the
+    document and typing. If the prepared artifact has no trailing newline the
+    typed line concatenates onto the last line; if it has several, the append
+    lands after a blank line. Exactly one trailing newline makes the append a
+    clean new line in both cases.
+    """
+    if not content:
+        return content
+    return content.rstrip("\n") + "\n"
+
+
+_SINGLE_CHUNK_WRITE = re.compile(
+    r"^import base64; open\((?P<path>.*), (?P<mode>'wb')\)\.write\(base64\.b64decode\((?P<chunk>'[A-Za-z0-9+/=]*')\)\)$"
+)
+
+
+def _normalize_prepare_write_commands(
+    commands: list[list[str]], excluded: str
+) -> list[list[str]]:
+    """Apply the prepare-phase artifact invariant to raw base64 write commands.
+
+    The planner asks for the artifact under ``files``, but the model sometimes
+    emits the write as a ``python3 -c`` command instead. Those commands bypass the
+    ``files`` normalization, so normalize them here as well: strip the later
+    phase's line and end the file with exactly one newline. Only single-chunk
+    writes are rewritten; a chunked (append-mode) write is left untouched so a
+    partial rewrite can never corrupt a large file.
+    """
+    if any(mode in command for command in commands for mode in ("'ab'", '"ab"')):
+        return commands
+    normalized: list[list[str]] = []
+    for command in commands:
+        if (
+            len(command) == 3
+            and command[0] in {"python", "python3"}
+            and command[1] == "-c"
+        ):
+            match = _SINGLE_CHUNK_WRITE.match(command[2])
+            if match:
+                try:
+                    content = base64.b64decode(match.group("chunk")[1:-1]).decode("utf-8")
+                except (ValueError, binascii.Error, UnicodeDecodeError):
+                    normalized.append(command)
+                    continue
+                fixed = _ensure_single_trailing_newline(_without_excluded_line(content, excluded))
+                encoded = base64.b64encode(fixed.encode("utf-8")).decode("ascii")
+                script = (
+                    f"import base64; open({match.group('path')}, 'wb')"
+                    f".write(base64.b64decode({encoded!r}))"
+                )
+                normalized.append([command[0], "-c", script])
+                continue
+        normalized.append(command)
+    return normalized
 
 
 @router.post("/runtime/heartbeat")
@@ -227,7 +309,7 @@ async def heartbeat_task_attempt(
 @router.post("/tasks/{task_id}/plan")
 async def plan_terminal_task(
     task_id: str,
-    request: WorkerLeaseRequest,
+    request: WorkerPlanRequest,
     worker_id: str = Depends(require_worker_token),
     task_repo: TaskRepository = Depends(get_task_repo),
     gateway: LLMGateway = Depends(get_llm_gateway),
@@ -238,9 +320,9 @@ async def plan_terminal_task(
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if not ExecutionMode.is_terminal(task.execution_mode):
+    if not mode_requires_terminal(task.execution_mode):
         raise HTTPException(
-            status_code=409, detail="This endpoint accepts terminal-mode tasks only."
+            status_code=409, detail="This endpoint accepts terminal-bearing tasks only."
         )
     if not await task_repo.worker_lease_is_current(task_id, worker_id, request.fencing_token):
         raise HTTPException(
@@ -267,8 +349,60 @@ async def plan_terminal_task(
         project_id=project.id,
         task_id=task.task_id,
     )
+    phase = (request.phase or "").strip().lower()
+    excluded = (request.exclude_text or "").strip()
+    protected_paths = list(request.exclude_paths or [])
+    phase_guidance = ""
+    if phase == "prepare":
+        phase_guidance = (
+            "This run is the PREPARE phase of a hybrid task that continues on a graphical desktop "
+            "and later returns to the terminal. Create and persist ONLY the initial artifact(s) this "
+            "phase is responsible for, with exactly the contents specified, then stop. Do NOT attempt "
+            "the later graphical step and do NOT try to verify the final form; later phases own that. "
+            "Do NOT run any test command (pytest, unittest, npm test) in this phase — the final "
+            "verify phase runs the tests after the graphical edit. Your `commands` may be empty; "
+            "put the artifact contents in `files` and stop.\n"
+        )
+        if excluded:
+            phase_guidance += (
+                f"The literal line {excluded!r} belongs to the later graphical phase. It MUST NOT "
+                "appear anywhere in the files you create or the commands you run.\n"
+            )
+        phase_guidance += "\n"
+    elif phase == "verify":
+        phase_guidance = (
+            "This run is the FINAL VERIFY phase of a hybrid task. The deliverable already exists in "
+            "the workspace and was finalized by an earlier graphical desktop phase. Only READ the "
+            "existing artifact, assert that it contains every expected line exactly once and that the "
+            "original lines are intact, and print its SHA-256 hash. "
+        )
+        if protected_paths:
+            phase_guidance += (
+                f"The artifact(s) {', '.join(repr(path) for path in protected_paths)} already exist "
+                "and were finalized by the earlier graphical phase. Read them; never create, rewrite, "
+                "or overwrite them.\n"
+            )
+        phase_guidance += (
+            "Persist your checker as a pytest module named `test_<name>.py` that defines at least one "
+            "`def test_...()` function (never a `__main__`-only script), and run it with "
+            '`["python3","-m","pytest","-q"]` so pytest discovers and executes the test. A pytest run '
+            "that collects no tests exits non-zero, so the file name and test functions must match "
+            "pytest's discovery rules. Assert ONLY the properties stated in the acceptance criteria "
+            "(the exact lines and their uniqueness); never hardcode an invented hash or checksum value. "
+            "Compute the SHA-256 with `hashlib` and print it, but do not assert it equals a constant "
+            "you made up.\n\n"
+        )
+    test_instruction = (
+        "If acceptance requires tests to pass, `commands` must include a separate replayable test "
+        "runner that reads the persisted files, and it must use the module form such as "
+        '`["python3","-m","unittest","-v"]` or `["python3","-m","pytest","-q"]`; '
+        'never run a test file directly as `["python3","file.py"]`. '
+        if phase != "prepare"
+        else "Do NOT include a pytest/unittest/npm test runner in this phase. "
+    )
     base_prompt = (
-        "Produce a short, bounded plan to complete this task inside the employee workspace. "
+        phase_guidance
+        + "Produce a short, bounded plan to complete this task inside the employee workspace. "
         "Commands run directly without a shell in a disposable, non-root employee container. "
         "Do not access secrets, the host, Docker, or external services. Do not use destructive "
         "commands. Use only python, python3, pytest, npm, or npx.\n\n"
@@ -280,10 +414,8 @@ async def plan_terminal_task(
         "array of argv arrays; every command must be a nested array of separate argument strings, "
         "never a shell command string. Do not put function/class definitions or test assertions "
         "directly in a command, and do not inline test definitions in the test-running command. "
-        "If acceptance requires tests to pass, `commands` must include a separate replayable test "
-        "runner that reads the persisted files, and it must use the module form such as "
-        '`["python3","-m","unittest","-v"]` or `["python3","-m","pytest","-q"]`; '
-        'never run a test file directly as `["python3","file.py"]`. Commands must not claim '
+        + test_instruction
+        + "Commands must not claim "
         "success unless their exit codes are zero.\n\n"
         f"Title: {task.title}\nObjective: {task.objective}\nScope: {task.scope}\n"
         f"Acceptance criteria: {task.acceptance_criteria}"
@@ -301,12 +433,19 @@ async def plan_terminal_task(
         for planning_attempt in range(2):
             correction = ""
             if validation_error is not None:
-                correction = (
-                    "\n\nYour previous plan was rejected before execution: "
-                    f"{validation_error} Return a corrected plan that lists every requested workspace file "
-                    "under `files` with its exact path and full contents, then runs a separate replayable "
-                    'test command such as `["python3","-m","unittest","-v"]`.'
-                )
+                if phase == "prepare":
+                    correction = (
+                        "\n\nYour previous plan was rejected before execution: "
+                        f"{validation_error} Return a corrected plan that persists ONLY the initial "
+                        "artifact under `files` and runs no test command at all."
+                    )
+                else:
+                    correction = (
+                        "\n\nYour previous plan was rejected before execution: "
+                        f"{validation_error} Return a corrected plan that lists every requested "
+                        "workspace file under `files` with its exact path and full contents, then runs "
+                        'a separate replayable test command such as `["python3","-m","unittest","-v"]`.'
+                    )
             provider_plan, response = await gateway.generate_structured(
                 prompt=base_prompt + correction,
                 response_model=TerminalPlan,
@@ -320,6 +459,21 @@ async def plan_terminal_task(
                 db_session=session,
                 budget_scope_caps=budget_scope_caps,
             )
+            if phase == "prepare" and excluded:
+                # The later graphical phase types this exact line into the desktop
+                # editor, so the prepare phase must not also persist it. The model
+                # sometimes ignores the prompt instruction; strip it deterministically
+                # so the GUI edit is never duplicated.
+                provider_plan.files = [
+                    workspace_file.model_copy(
+                        update={
+                            "content": _ensure_single_trailing_newline(
+                                _without_excluded_line(workspace_file.content, excluded)
+                            )
+                        }
+                    )
+                    for workspace_file in provider_plan.files
+                ]
             try:
                 plan = provider_plan.materialize()
             except ValueError as exc:
@@ -331,12 +485,33 @@ async def plan_terminal_task(
                     reason=str(exc),
                 )
                 continue
+            if phase == "prepare":
+                # The model sometimes persists the artifact as a raw base64 write
+                # command instead of a `files` entry, bypassing the `files`
+                # normalization above; normalize those commands too so the
+                # single-trailing-newline invariant always holds.
+                if excluded:
+                    normalized_commands = _normalize_prepare_write_commands(
+                        plan.commands, excluded
+                    )
+                    if normalized_commands != plan.commands:
+                        plan = TerminalCommandPlan(commands=normalized_commands)
+                # The graphical phase owns verification; a prepare-phase plan that
+                # appends its own test runner fails closed on missing files and
+                # would verify the artifact before the GUI edit. Drop those runners.
+                test_runners = set(map(tuple, replayable_test_commands({"planned_commands": plan.commands})))
+                if test_runners:
+                    plan = TerminalCommandPlan(
+                        commands=[c for c in plan.commands if tuple(c) not in test_runners]
+                    )
             try:
                 validate_test_plan(task.acceptance_criteria, plan.commands)
                 task_context = "\n".join((task.title or "", task.objective or "", task.scope or ""))
                 validate_workspace_artifact_plan(
                     task_context, task.acceptance_criteria, plan.commands
                 )
+                if phase == "verify":
+                    validate_verify_phase_plan(protected_paths, plan.commands)
                 validation_error = None
                 break
             except ValueError as exc:
@@ -358,6 +533,13 @@ async def plan_terminal_task(
             status_code=502, detail="All configured planning providers failed."
         ) from exc
 
+    logger.info(
+        "Terminal phase plan produced",
+        task_id=task.task_id,
+        phase=phase or "single",
+        files=[workspace_file.path for workspace_file in provider_plan.files],
+        commands=plan.commands,
+    )
     return {
         "plan": plan.model_dump(),
         "model": {
@@ -392,10 +574,10 @@ async def execute_terminal_command(
     task = await task_repo.get_by_task_id(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if not ExecutionMode.is_terminal(task.execution_mode):
+    if not mode_requires_terminal(task.execution_mode):
         raise HTTPException(
             status_code=409,
-            detail="This worker execution endpoint accepts terminal-mode tasks only.",
+            detail="This worker execution endpoint accepts terminal-bearing tasks only.",
         )
     try:
         CapabilityPolicyEnforcer.validate_action(
