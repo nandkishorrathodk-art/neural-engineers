@@ -31,6 +31,7 @@ from neural.db.repositories import (
     TaskRepository,
 )
 from neural.employees.promotion import EmployeePromotionManager
+from neural.logger import get_logger
 from neural.resource_scheduler.workstation_lease import (
     claim_workstation_lease,
     release_workstation_lease,
@@ -38,6 +39,8 @@ from neural.resource_scheduler.workstation_lease import (
 )
 from neural.workstations.assignment import WorkstationAssignmentService
 from neural.workstations.layout import CANONICAL_WORKSTATIONS
+
+logger = get_logger("ancos.api.employees")
 
 router = APIRouter(prefix="/employees", tags=["Employees"])
 
@@ -247,6 +250,7 @@ async def provision_employee_workstation(
     approval_repo: ApprovalRepository = Depends(get_approval_repo),
     container_mgr: ContainerManager = Depends(get_container_manager),
     resource_lease_repo: ResourceLeaseRepository = Depends(get_resource_lease_repo),
+    task_repo: TaskRepository = Depends(get_task_repo),
     actor: str = Depends(require_owner_identity),
 ):
     employee = await employee_repo.get_by_employee_id(employee_id)
@@ -318,6 +322,20 @@ async def provision_employee_workstation(
             "approval_id": approval.id,
         },
     )
+
+    # A GUI/hybrid task is assigned before its desktop exists. Now that this
+    # workstation is ready, immediately re-dispatch any PENDING task that was
+    # waiting on it (including one stale recovery released mid-provisioning),
+    # instead of waiting for the next worker poll. Only already-running desktops
+    # are eligible inside the dispatcher, so this never provisions anything.
+    try:
+        await task_repo.redispatch_pending_tasks(["gui", "hybrid"])
+    except Exception as exc:  # a dispatch failure must not fail a good provision
+        logger.warning(
+            "Post-provision task redispatch failed; workers will retry on next poll",
+            employee_id=canonical_employee_id,
+            error=str(exc),
+        )
 
     return WorkstationResponse(
         docker_id=spec["docker_id"],

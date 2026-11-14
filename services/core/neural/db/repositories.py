@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -105,6 +106,33 @@ def _employee_has_execution_capabilities(employee: Employee, mode: object) -> bo
 def _employee_needs_desktop(mode: object) -> bool:
     """True when a task in ``mode`` requires a live graphical desktop."""
     return mode_requires_gui(mode)
+
+
+def desktop_provisioning_grace_seconds() -> int:
+    """Seconds after assignment during which a missing desktop means "provisioning".
+
+    A GUI/hybrid task is assigned before its workstation is provisioned (and the
+    provisioning itself is gated behind a human approval). During that window the
+    desktop is legitimately absent; stale recovery must not read it as a dead
+    assignment. Bounded so a task whose provisioning never starts is still
+    recovered instead of being pinned forever.
+    """
+    raw = os.environ.get("ANCOS_DESKTOP_PROVISIONING_GRACE_SECONDS", "120")
+    try:
+        grace = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "ANCOS_DESKTOP_PROVISIONING_GRACE_SECONDS must be an integer from 0 to 3600."
+        ) from exc
+    if not 0 <= grace <= 3600:
+        raise ValueError(
+            "ANCOS_DESKTOP_PROVISIONING_GRACE_SECONDS must be an integer from 0 to 3600."
+        )
+    return grace
+
+
+def _workstation_docker_id(employee: Employee) -> str:
+    return f"ancos-desktop-{employee.employee_id.lower()}"
 
 
 def get_session_lock(session: AsyncSession) -> asyncio.Lock:
@@ -722,8 +750,27 @@ class TaskRepository:
         # Owner objective submission assigns the first task. Once it receives an
         # independent passing receipt, later DAG tasks must be dispatched to a
         # currently available employee instead of remaining pending forever.
-        # Only employees with an already-running desktop are eligible here: this
-        # path never provisions a workstation or crosses the approval boundary.
+        if await self._dispatch_pending_tasks(execution_modes):
+            return await self.claim_next_task(
+                worker_id,
+                lease_seconds=lease_seconds,
+                execution_modes=execution_modes,
+            )
+        return None
+
+    async def _dispatch_pending_tasks(
+        self, execution_modes: Optional[Sequence[Any]] = None
+    ) -> list[str]:
+        """Assign PENDING, unowned tasks to eligible employees.
+
+        Only employees whose execution desktop is *already running* are eligible:
+        this path never provisions a workstation and never crosses the approval
+        boundary. It is the shared engine behind the worker claim route, the
+        stale-recovery loop, and the workstation-readiness trigger, so a PENDING
+        task cannot remain stranded once a qualified running desktop exists.
+        Returns the task_ids that were assigned.
+        """
+        now = utc_now()
         ready_query = select(Task).where(
             Task.status == TaskStatus.PENDING,
             Task.assigned_to.is_(None),
@@ -754,71 +801,123 @@ class TaskRepository:
             .scalars()
             .all()
         )
-        if ready_tasks:
-            eligible_employees = (
-                (
-                    await self.session.execute(
-                        select(Employee)
-                        .join(Container, Employee.container_id == Container.id)
-                        .options(selectinload(Employee.skills), selectinload(Employee.container))
-                        .where(
-                            Employee.status == EmployeeStatus.IDLE,
-                            Container.status == ContainerStatus.RUNNING,
-                        )
-                        .order_by(Employee.hired_at.asc())
-                        .execution_options(populate_existing=True)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            from neural.boss.delegator import TaskDelegator
+        if not ready_tasks:
+            return []
 
-            delegator = TaskDelegator()
-            for ready_task in ready_tasks:
-                dependency_evidence = (
-                    await self.session.execute(
-                        select(Task.status, Task.verification_result)
-                        .join(TaskDependency, TaskDependency.depends_on_task_id == Task.id)
-                        .where(TaskDependency.task_id == ready_task.id)
-                    )
-                ).all()
-                if any(
-                    status != TaskStatus.COMPLETED
-                    or not isinstance(receipt, dict)
-                    or receipt.get("passed") is not True
-                    for status, receipt in dependency_evidence
-                ):
-                    continue
-                assignee = delegator.select_best_assignee(ready_task, eligible_employees)
-                if not assignee:
-                    continue
-                if not _employee_has_execution_capabilities(assignee, ready_task.execution_mode):
-                    continue
-                if not required_skills_satisfied(assignee, ready_task.required_capabilities):
-                    continue
-                assigned = await self.session.execute(
-                    update(Task)
+        eligible_employees = (
+            (
+                await self.session.execute(
+                    select(Employee)
+                    .join(Container, Employee.container_id == Container.id)
+                    .options(selectinload(Employee.skills), selectinload(Employee.container))
                     .where(
-                        Task.id == ready_task.id,
-                        Task.status == TaskStatus.PENDING,
-                        Task.assigned_to.is_(None),
+                        Employee.status == EmployeeStatus.IDLE,
+                        Container.status == ContainerStatus.RUNNING,
                     )
-                    .values(
-                        assigned_to=assignee.id,
-                        status=TaskStatus.ASSIGNED,
-                        fencing_token=Task.fencing_token + 1,
-                    )
+                    .order_by(Employee.hired_at.asc())
+                    .execution_options(populate_existing=True)
                 )
-                if assigned.rowcount == 1:
-                    await self.session.commit()
-                    return await self.claim_next_task(
-                        worker_id,
-                        lease_seconds=lease_seconds,
-                        execution_modes=execution_modes,
-                    )
+            )
+            .scalars()
+            .all()
+        )
+        from neural.boss.delegator import TaskDelegator
+
+        delegator = TaskDelegator()
+        assigned_ids: list[str] = []
+        for ready_task in ready_tasks:
+            dependency_evidence = (
+                await self.session.execute(
+                    select(Task.status, Task.verification_result)
+                    .join(TaskDependency, TaskDependency.depends_on_task_id == Task.id)
+                    .where(TaskDependency.task_id == ready_task.id)
+                )
+            ).all()
+            if any(
+                status != TaskStatus.COMPLETED
+                or not isinstance(receipt, dict)
+                or receipt.get("passed") is not True
+                for status, receipt in dependency_evidence
+            ):
+                continue
+            assignee = delegator.select_best_assignee(ready_task, eligible_employees)
+            if not assignee:
+                continue
+            if not _employee_has_execution_capabilities(assignee, ready_task.execution_mode):
+                continue
+            if not required_skills_satisfied(assignee, ready_task.required_capabilities):
+                continue
+            assigned = await self.session.execute(
+                update(Task)
+                .where(
+                    Task.id == ready_task.id,
+                    Task.status == TaskStatus.PENDING,
+                    Task.assigned_to.is_(None),
+                )
+                .values(
+                    assigned_to=assignee.id,
+                    status=TaskStatus.ASSIGNED,
+                    assigned_at=now,
+                    fencing_token=Task.fencing_token + 1,
+                )
+            )
+            if assigned.rowcount == 1:
+                await self.session.commit()
+                assigned_ids.append(ready_task.task_id)
+            else:
                 await self.session.rollback()
-        return None
+        return assigned_ids
+
+    async def redispatch_pending_tasks(
+        self, execution_modes: Optional[Sequence[Any]] = None
+    ) -> list[str]:
+        """Re-assign PENDING tasks once a qualified running desktop exists.
+
+        Called by the stale-recovery loop and by the workstation-readiness
+        trigger. Assigning here turns a stranded PENDING task back into an
+        ASSIGNED one the worker fleet will claim, without provisioning anything
+        or bypassing the workstation approval gate.
+        """
+        return await self._dispatch_pending_tasks(execution_modes)
+
+    async def _desktop_provisioning_in_flight(
+        self, task: Task, employee: Employee, now: datetime
+    ) -> bool:
+        """True when a missing desktop is explained by provisioning, not death.
+
+        The guard only matters when the assignee's container is *not* running; a
+        live desktop is handled before this is consulted. Two bounded signals:
+
+        * the task was assigned within the provisioning grace window, or
+        * a desktop-slot ``ResourceLease`` for this employee was granted within
+          that same window (the provisioning route claims the slot *before* it
+          asks the broker to create the container).
+
+        Both are time-bounded so a genuinely dead assignment -- or a lease leaked
+        by a crash -- is still recovered once the window elapses.
+        """
+        grace = desktop_provisioning_grace_seconds()
+        if grace <= 0:
+            return False
+        if task.assigned_at is not None:
+            age = (now - task.assigned_at).total_seconds()
+            if 0 <= age <= grace:
+                return True
+
+        docker_id = _workstation_docker_id(employee)
+        recent_lease = await self.session.scalar(
+            select(ResourceLease.id)
+            .where(
+                ResourceLease.status.in_(("active", "expired")),
+                ResourceLease.granted_at >= now - timedelta(seconds=grace),
+                or_(
+                    ResourceLease.employee_id == employee.employee_id,
+                    ResourceLease.session_id == docker_id,
+                ),
+            )
+            .limit(1)
+        )
+        return recent_lease is not None
 
     async def recover_stale_assignments(
         self, now: Optional[datetime] = None
@@ -896,6 +995,21 @@ class TaskRepository:
             has_skills = required_skills_satisfied(employee, task.required_capabilities)
             if has_running_exec_env and has_capability and has_skills:
                 continue
+            # Provisioning time is not execution time. A task is assigned before
+            # its execution container is provisioned (and provisioning itself is
+            # gated behind a human approval). During that window the container is
+            # legitimately absent; requeueing it here strands it, because the task
+            # leaves ASSIGNED before the environment is ready and nothing
+            # re-dispatches it once the environment comes up. Treat a recent
+            # assignment or a recent desktop-slot lease as "provisioning in
+            # flight" and leave the assignment alone. Capability and skill
+            # mismatches are permanent, so they are never excused by this window.
+            if (
+                has_capability
+                and has_skills
+                and await self._desktop_provisioning_in_flight(task, employee, now)
+            ):
+                continue
             if not has_capability:
                 reason = "assignee lacks required execution capability"
             elif not has_skills:
@@ -913,6 +1027,7 @@ class TaskRepository:
                 .values(
                     assigned_to=None,
                     status=TaskStatus.PENDING,
+                    assigned_at=None,
                     fencing_token=Task.fencing_token + 1,
                 )
             )
@@ -2310,6 +2425,7 @@ class TaskRepository:
                 .values(
                     assigned_to=emp_id,
                     status=TaskStatus.ASSIGNED,
+                    assigned_at=utc_now(),
                     fencing_token=Task.fencing_token + 1,
                 )
             )

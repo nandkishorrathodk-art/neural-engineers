@@ -282,6 +282,7 @@ class Task(Base):
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
     deadline: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     scheduled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
