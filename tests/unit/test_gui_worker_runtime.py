@@ -463,3 +463,25 @@ def test_planner_saves_the_document_edit_even_when_the_save_verb_is_paraphrased(
         "handoff.txt contains the line GUI_EDIT=HYBRID_GUI_OK",
     )
     assert {"action_type": "KEY_HOTKEY", "key_code": "ctrl+s", "confidence": 0.95} in steps
+
+
+def test_planner_prefers_gui_named_payload_over_terminal_named_one():
+    """A hybrid title ("... hybrid terminal+GUI workflow") puts a GUI hint within
+    the proximity window of the terminal-side payload too, so a proximity-first
+    selector typed TERMINAL_PREPARED=1 on the desktop and the GUI edit never
+    happened. The key name (GUI_EDIT=...) must outrank proximity."""
+    steps = derive_gui_steps(
+        "Create and edit handoff.txt via hybrid terminal+GUI workflow",
+        "Stage 1: Create handoff.txt with ANCOS_HYBRID_TEST and TERMINAL_PREPARED=1 "
+        "using terminal. Stage 2: Open handoff.txt in GUI text editor and add "
+        "GUI_EDIT=HYBRID_GUI_OK, save. Stage 3: Read handoff.txt in terminal and "
+        "print SHA-256 hash.",
+        "Create handoff.txt, edit via GUI, verify hash via terminal",
+        "handoff.txt contains exactly three lines: ANCOS_HYBRID_TEST, "
+        "TERMINAL_PREPARED=1, GUI_EDIT=HYBRID_GUI_OK. Terminal prints correct "
+        "SHA-256 hash of the file content.",
+    )
+    typed = [step["text"] for step in steps if step["action_type"] == "KEY_TYPE"]
+    assert "GUI_EDIT=HYBRID_GUI_OK" in typed
+    assert "TERMINAL_PREPARED=1" not in typed
+    assert expected_onscreen_text(steps) == "GUI_EDIT=HYBRID_GUI_OK"

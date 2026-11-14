@@ -203,9 +203,14 @@ def _select_edit_payload(
 
     A hybrid objective names one payload for its terminal phase (file setup) and
     a different one for its graphical phase. The graphical phase is the one this
-    choreography types, so the selection prefers, in order: a token introduced
-    near a GUI hint ("GUI editor", "graphical desktop"); a token whose key names
-    the GUI itself (``GUI_EDIT=...``); and finally the first token.
+    choreography types, so the selection prefers, in order: a token whose key
+    names the GUI itself (``GUI_EDIT=...``); a token introduced near a GUI hint
+    ("GUI editor", "graphical desktop") whose key does not name a terminal phase;
+    the first token that is not terminal-named; and finally the first token.
+
+    Key names outrank proximity because a hybrid title ("hybrid terminal+GUI
+    workflow") puts a GUI hint within the proximity window of the terminal payload
+    too, so proximity alone would type the terminal-side line on the desktop.
 
     The signed acceptance criteria is searched as well as the objective, because
     the Boss planner paraphrases free-form objectives and can drop the literal
@@ -217,15 +222,24 @@ def _select_edit_payload(
     if not tokens:
         return None
     gui_hints = ("gui", "graphical", "desktop", "editor")
+    terminal_hints = ("terminal", "prepare", "verify", "hash")
+
+    def key_of(token: "re.Match[str]") -> str:
+        return token.group(0).split("=", 1)[0].lower()
+
     for token in tokens:
+        if any(hint in key_of(token) for hint in gui_hints):
+            return token
+    for token in tokens:
+        if any(hint in key_of(token) for hint in terminal_hints):
+            continue
         window = combined[max(0, token.start() - 80) : token.start()].lower()
         if any(hint in window for hint in gui_hints):
             return token
     for token in tokens:
-        key = token.group(0).split("=", 1)[0].lower()
-        if any(hint in key for hint in gui_hints):
+        if not any(hint in key_of(token) for hint in terminal_hints):
             return token
-    return _EDIT_PAYLOAD.search(objective) or tokens[0]
+    return tokens[0]
 
 
 def derive_document_edit_steps(
