@@ -55,6 +55,72 @@ def test_undefined_name_is_reported():
     assert "reference_to_nothing" in problems[0].render()
 
 
+def test_except_as_binding_is_not_undefined():
+    """``except X as e`` binds ``e``; reading it in the handler is valid."""
+    problems = validate_generated_python(
+        "stats_utils.py",
+        "def safe_div(a, b):\n"
+        "    try:\n"
+        "        return a / b\n"
+        "    except ZeroDivisionError as e:\n"
+        "        return str(e)\n",
+    )
+    assert problems == []
+
+
+def test_pytest_raises_as_binding_is_not_undefined():
+    problems = validate_generated_python(
+        "test_x.py",
+        "import pytest\n\n\n"
+        "def test_a():\n"
+        "    with pytest.raises(TypeError) as e:\n"
+        "        int(None)\n"
+        "    assert 'NoneType' in str(e.value)\n",
+    )
+    assert problems == []
+
+
+def test_lambda_parameters_are_bound():
+    problems = validate_generated_python(
+        "stats_utils.py",
+        "def order(xs):\n    return sorted(xs, key=lambda v: v + 1)\n",
+    )
+    assert problems == []
+
+
+def test_global_and_nonlocal_bindings_are_recognized():
+    problems = validate_generated_python(
+        "stats_utils.py",
+        "counter = 0\n\n\n"
+        "def bump():\n"
+        "    global counter\n"
+        "    counter += 1\n"
+        "    return counter\n",
+    )
+    assert problems == []
+
+
+def test_match_capture_patterns_are_bound():
+    problems = validate_generated_python(
+        "stats_utils.py",
+        "def split(x):\n"
+        "    match x:\n"
+        "        case [head, *tail]:\n"
+        "            return head, tail\n"
+        "    return None, None\n",
+    )
+    assert problems == []
+
+
+def test_genuinely_undefined_name_still_reported():
+    """The fix must not weaken the check for real free names."""
+    problems = validate_generated_python(
+        "stats_utils.py", "def f():\n    return totally_missing_name\n"
+    )
+    assert _kinds(problems) == ["undefined_name"]
+    assert "totally_missing_name" in problems[0].render()
+
+
 def test_invalid_pytest_api_is_reported():
     problems = validate_generated_python(
         "test_x.py", "import pytest\n\n\ndef test_a():\n    pytest.SubRequest('x')\n"

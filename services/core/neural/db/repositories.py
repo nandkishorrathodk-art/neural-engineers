@@ -25,6 +25,7 @@ from neural.constants import (
     ExecutionCapability,
     MeetingStatus,
     MemoryCategory,
+    ProjectStatus,
     ProposalStatus,
     ProposalType,
     SkillLevel,
@@ -171,6 +172,48 @@ class ProjectRepository:
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()
+
+    async def reconcile_statuses(self) -> list[dict[str, str]]:
+        """Advance project lifecycle status to match the state of its tasks.
+
+        A project is created in PLANNING and, until now, nothing ever moved it
+        on: a project whose every task had COMPLETED stayed in PLANNING forever.
+        This derives the status from the tasks each pass:
+
+        * any task COMPLETED          -> at least ACTIVE (real work happened)
+        * all tasks COMPLETED         -> COMPLETED
+        * any task FAILED/CANCELLED   -> FAILED (when no work can still progress)
+
+        Terminal projects are left untouched.
+        """
+        transitions: list[dict[str, str]] = []
+        terminal = {ProjectStatus.COMPLETED, ProjectStatus.FAILED, ProjectStatus.CANCELLED}
+        for project in await self.list_all():
+            current = ProjectStatus(getattr(project.status, "value", project.status))
+            if current in terminal:
+                continue
+            statuses = [
+                TaskStatus(getattr(task.status, "value", task.status)) for task in project.tasks
+            ]
+            if not statuses:
+                continue
+            target: ProjectStatus | None = None
+            if all(status == TaskStatus.COMPLETED for status in statuses):
+                target = ProjectStatus.COMPLETED
+            elif any(status in (TaskStatus.FAILED, TaskStatus.CANCELLED) for status in statuses):
+                target = ProjectStatus.FAILED
+            elif any(status == TaskStatus.COMPLETED for status in statuses):
+                target = ProjectStatus.ACTIVE
+            if target is None or target == current:
+                continue
+            await self.session.execute(
+                update(Project).where(Project.id == project.id).values(status=target)
+            )
+            await self.session.commit()
+            transitions.append(
+                {"project_id": project.id, "from": current.value, "to": target.value}
+            )
+        return transitions
 
 
 class BudgetRepository:
@@ -2732,6 +2775,15 @@ class ResourceLeaseRepository:
             )
             await self.session.commit()
         return result.rowcount or 0
+
+    async def list_active(self) -> Sequence[dict[str, Any]]:
+        """Returns currently active leases for reconciliation workers."""
+        result = await self.session.execute(
+            select(ResourceLease)
+            .where(ResourceLease.status == "active")
+            .order_by(ResourceLease.granted_at.asc())
+        )
+        return [self._as_dict(lease) for lease in result.scalars().all()]
 
     async def list_expired(self) -> Sequence[dict[str, Any]]:
         """Returns quarantined leases for a cleanup worker to inspect."""

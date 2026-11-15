@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 from neural.db.engine import AsyncSessionLocal
-from neural.db.repositories import TaskRepository
+from neural.db.repositories import ProjectRepository, TaskRepository
 from neural.logger import get_logger
 
 logger = get_logger("ancos.tasks.stale_recovery")
@@ -22,15 +22,23 @@ def stale_recovery_interval_seconds() -> int:
     return interval
 
 
-async def run_stale_recovery_cycle(repo: TaskRepository) -> tuple[list[dict[str, Any]], list[str]]:
-    """Run one recovery pass: requeue stranded tasks, then re-dispatch PENDING ones.
+async def run_stale_recovery_cycle(
+    repo: TaskRepository, project_repo: ProjectRepository | None = None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Run one recovery pass: requeue stranded tasks, re-dispatch PENDING ones.
 
     Re-dispatching in the same pass is what prevents a recovered task from
     starving: recovery moves it to PENDING with no owner, and the dispatcher
     immediately re-assigns it to a qualified employee whose desktop is running.
+
+    When a ``ProjectRepository`` is supplied, project lifecycle status is also
+    reconciled so a project whose tasks have all completed reaches COMPLETED
+    instead of lingering in PLANNING.
     """
     recovered = await repo.recover_stale_assignments()
     redispatched = await repo.redispatch_pending_tasks()
+    if project_repo is not None:
+        await project_repo.reconcile_statuses()
     return recovered, redispatched
 
 
@@ -47,7 +55,9 @@ async def stale_assignment_recovery_loop(interval_seconds: int | None = None) ->
     while True:
         try:
             async with AsyncSessionLocal() as session:
-                recovered, redispatched = await run_stale_recovery_cycle(TaskRepository(session))
+                recovered, redispatched = await run_stale_recovery_cycle(
+                    TaskRepository(session), ProjectRepository(session)
+                )
             if recovered:
                 logger.warning(
                     "Recovered stale task assignments",

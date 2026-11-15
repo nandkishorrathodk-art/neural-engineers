@@ -48,6 +48,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     outbox_worker = None
     resource_lease_reaper_task: asyncio.Task[None] | None = None
     stale_recovery_task: asyncio.Task[None] | None = None
+    workstation_provisioning_task: asyncio.Task[None] | None = None
+    idle_desktop_reaper_task: asyncio.Task[None] | None = None
     try:
         await init_db()
         from neural.db.engine import AsyncSessionLocal
@@ -85,6 +87,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             stale_assignment_recovery_loop(),
             name="ancos-stale-assignment-recovery",
         )
+        # Autonomy hand-off: raise workstation-provisioning approvals for assigned
+        # tasks whose employee has no desktop, and provision once a human approves.
+        # The approval gate itself is never bypassed here.
+        if settings.DOCKER_BROKER_URL:
+            from neural.api.deps import get_container_manager
+            from neural.tasks.workstation_provisioning import (
+                workstation_provisioning_loop,
+            )
+
+            workstation_provisioning_task = asyncio.create_task(
+                workstation_provisioning_loop(get_container_manager()),
+                name="ancos-workstation-provisioning",
+            )
+            # With one desktop slot, an idle desktop would otherwise hold it for
+            # the full lease TTL and starve the next employee. Reap idle desktops
+            # only while a PENDING backlog needs the capacity.
+            from neural.tasks.idle_desktop_reaper import idle_desktop_reaper_loop
+
+            idle_desktop_reaper_task = asyncio.create_task(
+                idle_desktop_reaper_loop(),
+                name="ancos-idle-desktop-reaper",
+            )
         logger.info("Database and workspace directories initialized successfully.")
         yield
     finally:
@@ -100,6 +124,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             resource_lease_reaper_task.cancel()
             try:
                 await resource_lease_reaper_task
+            except asyncio.CancelledError:
+                pass
+        if workstation_provisioning_task is not None:
+            workstation_provisioning_task.cancel()
+            try:
+                await workstation_provisioning_task
+            except asyncio.CancelledError:
+                pass
+        if idle_desktop_reaper_task is not None:
+            idle_desktop_reaper_task.cancel()
+            try:
+                await idle_desktop_reaper_task
             except asyncio.CancelledError:
                 pass
         if message_bus is not None:

@@ -160,6 +160,42 @@ class _ScopeCollector(ast.NodeVisitor):
         for child in node.body:
             self.visit(child)
 
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        # ``except X as e:`` binds ``e`` via a raw string, not a Name node, so
+        # the generic visit never sees it. Reading ``e`` in the handler body is
+        # valid and must not be reported as an undefined name.
+        if node.name:
+            self._bind(node.name)
+        self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        # A lambda's parameters are bound by its signature; without this the
+        # body's reads would look free.
+        self._bind_function_signature(node.args)
+        self.generic_visit(node)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        for name in node.names:
+            self._bind(name)
+        self.generic_visit(node)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        for name in node.names:
+            self._bind(name)
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        self._bind(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        self._bind(node.name)
+        self.generic_visit(node)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        self._bind(node.rest)
+        self.generic_visit(node)
+
     def _bind_function_signature(self, args: ast.arguments) -> None:
         for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
             self._bind(arg.arg)
