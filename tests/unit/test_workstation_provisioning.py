@@ -509,3 +509,221 @@ async def test_reaper_noop_without_backlog(async_session):
     )
     assert reaped == []
     assert mgr.terminated == []
+
+
+async def _seed_dag_employee(session, employee_id, docker_id, skill, container_status=ContainerStatus.RUNNING):
+    employee = await EmployeeRepository(session).create(
+        employee_id=employee_id,
+        name="DAG Worker",
+        title="Software Engineer",
+        system_prompt="Test employee",
+        status=EmployeeStatus.IDLE,
+        execution_capabilities=["terminal"],
+    )
+    container = await ContainerRepository(session).create(
+        docker_id=docker_id,
+        image="employee-base",
+        status=container_status,
+        workspace_path=f"/home/employee/{employee_id}",
+    )
+    employee.container_id = container.id
+    await EmployeeRepository(session).add_skill(employee_id, skill, level="expert", verified=True)
+    await session.commit()
+    return employee
+
+
+async def _seed_chain(session, skill):
+    """A -> B -> C chain where only A is COMPLETED with a passing receipt."""
+
+    project = await ProjectRepository(session).create(name="Chain", objective="o")
+    repo = TaskRepository(session)
+    tasks = {}
+    for name in ("A", "B", "C"):
+        tasks[name] = await repo.create(
+            task_id=f"TASK-CHAIN-{name}",
+            project_id=project.id,
+            title=f"task {name}",
+            objective="o",
+            scope="s",
+            acceptance_criteria="a",
+            execution_mode=ExecutionMode.TERMINAL,
+            required_capabilities=[skill],
+            status=TaskStatus.PENDING,
+        )
+    await repo.add_dependency("TASK-CHAIN-B", "TASK-CHAIN-A")
+    await repo.add_dependency("TASK-CHAIN-C", "TASK-CHAIN-B")
+    await repo.complete_with_receipt("TASK-CHAIN-A", {"passed": True, "notes": "ok"})
+    return project, tasks
+
+
+@pytest.mark.asyncio
+async def test_dispatch_assigns_only_dependency_ready_task(async_session):
+    emp = await _seed_dag_employee(
+        async_session, "ANC-EMP-DAG-01", "ancos-desktop-anc-emp-dag-01", "Python"
+    )
+    await _seed_chain(async_session, "Python")
+
+    assigned = await TaskRepository(async_session)._dispatch_pending_tasks()
+    assert assigned == ["TASK-CHAIN-B"], "only the dependency-ready successor may be assigned"
+    b = await TaskRepository(async_session).get_by_task_id("TASK-CHAIN-B")
+    assert b.status == TaskStatus.ASSIGNED
+    assert b.assigned_to == emp.id
+    c = await TaskRepository(async_session).get_by_task_id("TASK-CHAIN-C")
+    assert c.status == TaskStatus.PENDING, "the grandchild must stay blocked"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_skips_task_when_a_desktop_is_busy(async_session):
+    # A running desktop exists (held by a busy employee); a task must not be
+    # handed to a desktop-less employee, or an extra workstation would be
+    # provisioned needlessly instead of reusing the running one.
+    busy = await _seed_dag_employee(
+        async_session, "ANC-EMP-DAG-02", "ancos-desktop-anc-emp-dag-02", "Python"
+    )
+    busy.status = EmployeeStatus.WORKING
+    await _seed_dag_employee(
+        async_session,
+        "ANC-EMP-DAG-02B",
+        "ancos-desktop-anc-emp-dag-02b",
+        "Python",
+        ContainerStatus.PROVISIONING,
+    )
+    await async_session.commit()
+    await _seed_chain(async_session, "Python")
+
+    assigned = await TaskRepository(async_session)._dispatch_pending_tasks()
+    assert assigned == [], "a busy running desktop must be reused, not duplicated"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_falls_back_to_desktop_less_employee_when_none_running(async_session):
+    # No desktop is running anywhere: assigning the dependency-ready task is the
+    # only way its provisioning approval can ever be raised, so the dispatcher
+    # must fall back to an idle, capable employee rather than deadlocking.
+    await _seed_dag_employee(
+        async_session,
+        "ANC-EMP-DAG-02C",
+        "ancos-desktop-anc-emp-dag-02c",
+        "Python",
+        ContainerStatus.PROVISIONING,
+    )
+    await _seed_chain(async_session, "Python")
+
+    assigned = await TaskRepository(async_session)._dispatch_pending_tasks()
+    assert assigned == ["TASK-CHAIN-B"], "the chain must not deadlock with zero desktops"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_requires_passing_dependency_receipt(async_session):
+    await _seed_dag_employee(
+        async_session, "ANC-EMP-DAG-03", "ancos-desktop-anc-emp-dag-03", "Python"
+    )
+    project = await ProjectRepository(async_session).create(name="Chain2", objective="o")
+    repo = TaskRepository(async_session)
+    await repo.create(
+        task_id="TASK-NORECEIPT-A",
+        project_id=project.id,
+        title="a",
+        objective="o",
+        scope="s",
+        acceptance_criteria="a",
+        execution_mode=ExecutionMode.TERMINAL,
+        required_capabilities=["Python"],
+        status=TaskStatus.COMPLETED,  # completed but no verification receipt
+    )
+    await repo.create(
+        task_id="TASK-NORECEIPT-B",
+        project_id=project.id,
+        title="b",
+        objective="o",
+        scope="s",
+        acceptance_criteria="a",
+        execution_mode=ExecutionMode.TERMINAL,
+        required_capabilities=["Python"],
+        status=TaskStatus.PENDING,
+    )
+    await repo.add_dependency("TASK-NORECEIPT-B", "TASK-NORECEIPT-A")
+
+    assigned = await TaskRepository(async_session)._dispatch_pending_tasks()
+    assert assigned == []
+    b = await repo.get_by_task_id("TASK-NORECEIPT-B")
+    assert b.status == TaskStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_dispatch_one_task_per_idle_employee(async_session):
+    await _seed_dag_employee(
+        async_session, "ANC-EMP-DAG-04", "ancos-desktop-anc-emp-dag-04", "Python"
+    )
+    await _seed_dag_employee(
+        async_session, "ANC-EMP-DAG-05", "ancos-desktop-anc-emp-dag-05", "Python"
+    )
+    project = await ProjectRepository(async_session).create(name="Parallel", objective="o")
+    repo = TaskRepository(async_session)
+    for name in ("P1", "P2"):
+        await repo.create(
+            task_id=f"TASK-PAR-{name}",
+            project_id=project.id,
+            title=name,
+            objective="o",
+            scope="s",
+            acceptance_criteria="a",
+            execution_mode=ExecutionMode.TERMINAL,
+            required_capabilities=["Python"],
+            status=TaskStatus.PENDING,
+        )
+
+    assigned = await TaskRepository(async_session)._dispatch_pending_tasks()
+    assert len(assigned) == 2, "two idle employees with running desktops take two ready tasks"
+    owners = {(await repo.get_by_task_id(tid)).assigned_to for tid in assigned}
+    assert len(owners) == 2, "each employee takes at most one task"
+
+
+@pytest.mark.asyncio
+async def test_claim_recovers_task_pinned_by_stale_submitted_attempt(async_session):
+    """A leftover 'submitted' attempt from a dead generation must not pin a task.
+
+    The task's fencing token was superseded (as happens when the stale-recovery
+    loop requeues and re-dispatches a task), so its old submitted attempt can
+    never receive a verification receipt. The task must become claimable again
+    instead of waiting forever for a receipt that will never come.
+    """
+    from datetime import timedelta
+
+    from neural.db.models import TaskAttempt
+    from neural.db.repositories import utc_now
+
+    emp = await _seed_dag_employee(
+        async_session, "ANC-EMP-PIN-01", "ancos-desktop-anc-emp-pin-01", "Python"
+    )
+    project = await ProjectRepository(async_session).create(name="Pinned", objective="o")
+    repo = TaskRepository(async_session)
+    task = await repo.create(
+        task_id="TASK-PINNED",
+        project_id=project.id,
+        title="t",
+        objective="o",
+        scope="s",
+        acceptance_criteria="a",
+        execution_mode=ExecutionMode.TERMINAL,
+        required_capabilities=["Python"],
+        status=TaskStatus.ASSIGNED,
+    )
+    task.assigned_to = emp.id
+    task.fencing_token = 178
+    async_session.add(
+        TaskAttempt(
+            task_id=task.id,
+            attempt_number=1,
+            worker_id="terminal-worker",
+            fencing_token=4,  # superseded: cannot match task.fencing_token
+            status="submitted",
+            lease_expires_at=utc_now() - timedelta(hours=1),
+        )
+    )
+    await async_session.commit()
+
+    claimed = await TaskRepository(async_session).claim_next_task("terminal-worker")
+    assert claimed is not None, "a stale submitted attempt must not pin the task"
+    assert claimed["task_id"] == "TASK-PINNED"
+    assert claimed["employee_id"] == emp.employee_id

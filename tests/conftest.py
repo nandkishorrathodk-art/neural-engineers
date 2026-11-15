@@ -24,6 +24,12 @@ def disable_cloud_provider_credentials_in_tests(monkeypatch):
     # trips production-only guards inside unit tests. Pin the environment so the
     # suite is hermetic; tests that need production opt in explicitly.
     monkeypatch.setenv("APP_ENV", "development")
+    # A developer .env can leak deployment knobs into the process before tests
+    # run: litellm calls load_dotenv() at import time during collection, which
+    # injects ANCOS_MAX_ACTIVE_DESKTOPS from .env into os.environ and would
+    # otherwise cap desktop slots below the hardware-profile ceiling. Clear it
+    # so profile ceilings apply unless a test opts into a deployment cap.
+    monkeypatch.delenv("ANCOS_MAX_ACTIVE_DESKTOPS", raising=False)
     from neural.config import get_settings
 
     get_settings.cache_clear()

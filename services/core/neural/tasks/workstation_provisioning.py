@@ -27,7 +27,7 @@ import asyncio
 import os
 from typing import Any, Optional
 
-from neural.constants import ApprovalStatus, EmployeeStatus, TaskStatus
+from neural.constants import ApprovalStatus, EmployeeStatus
 from neural.containers.manager import ContainerError, ContainerManager, DockerBrokerRequestError
 from neural.db.engine import AsyncSessionLocal
 from neural.db.repositories import (
@@ -106,29 +106,22 @@ async def request_pending_workstation_approvals(
     """Raise a pending PROVISION_WORKSTATION approval for each unprovisioned assignee."""
     requested: list[str] = []
     open_ids = _open_provision_employee_ids(list(await approval_repo.list_all()))
-    assigned = await task_repo.list_by_status(TaskStatus.ASSIGNED)
+    unprovisioned = await task_repo.list_assigned_unprovisioned_assignees()
 
     seen: set[str] = set()
-    for task in assigned:
-        # Snapshot the ORM values we need up front: the calls below may commit,
-        # and lease operations can roll the shared session back (expiring ORM
-        # objects), so attribute access afterwards would raise MissingGreenlet.
-        assignee_id = task.assigned_to
-        if not assignee_id:
-            continue
-        employee = await employee_repo.get_by_employee_id(assignee_id)
-        if not employee:
-            continue
-        employee_id = employee.employee_id
-        employee_status = employee.status
-        internal_id = employee.id
-        task_title = task.title
-        task_id = task.task_id
+    for entry in unprovisioned:
+        # Primitives only: the calls below may commit, and lease operations can
+        # roll the shared session back (expiring ORM objects).
+        employee_id = entry["employee_id"]
+        employee_status = entry["employee_status"]
+        internal_id = entry["employee_internal_id"]
+        task_title = entry["title"]
+        task_id = entry["task_id"]
         if employee_id in seen:
             continue
         seen.add(employee_id)
 
-        if employee_status in (EmployeeStatus.SUSPENDED, EmployeeStatus.TERMINATED):
+        if employee_status in (EmployeeStatus.SUSPENDED.value, EmployeeStatus.TERMINATED.value):
             continue
 
         # An active lease means the workstation is live or provisioning is already
