@@ -10,8 +10,8 @@ one-hour lock.
 
 This coordinator frees capacity on demand, and only on demand:
 
-* it acts only when some PENDING task cannot be dispatched because capacity is
-  exhausted (there is a real backlog), and
+* it acts only when every desktop slot is already leased AND some PENDING task
+  cannot be dispatched (a real backlog), and
 * it terminates only desktops whose employee holds no live claim (no ASSIGNED or
   RUNNING task and not in the WORKING state), preferring the least recently
   started so an in-use desktop is never preferred over an idle one.
@@ -37,7 +37,11 @@ from neural.db.repositories import (
     TaskRepository,
 )
 from neural.logger import get_logger
-from neural.resource_scheduler.workstation_lease import release_workstation_lease
+from neural.resource_scheduler.identity import resolve_resource_pool_id
+from neural.resource_scheduler.workstation_lease import (
+    release_workstation_lease,
+    workstation_slot_limit,
+)
 
 logger = get_logger("ancos.tasks.idle_desktop_reaper")
 
@@ -55,6 +59,28 @@ def idle_desktop_reap_interval_seconds() -> int:
 
 async def _has_pending_backlog(task_repo: TaskRepository) -> bool:
     return bool(await task_repo.list_by_status(TaskStatus.PENDING))
+
+
+async def _desktop_slots_exhausted(lease_repo: ResourceLeaseRepository) -> bool:
+    """True only when every desktop slot is already leased.
+
+    Reaping frees a slot for a waiting task. Without this guard the reaper
+    tears down an idle desktop even while free slots remain, killing a
+    workstation that nobody is competing for -- and revoking the VNC token an
+    operator is watching. Capacity is exhausted when the count of active
+    desktop leases for this pool reaches the configured slot limit.
+    """
+    limit = workstation_slot_limit()
+    if limit <= 0:
+        return False
+    pool_prefix = f"desktop:{resolve_resource_pool_id()}:"
+    active = await lease_repo.list_active()
+    leased_slots = {
+        lease.get("resource_key")
+        for lease in active
+        if str(lease.get("resource_key", "")).startswith(pool_prefix)
+    }
+    return len(leased_slots) >= limit
 
 
 async def _employee_is_idle(employee_id: str, task_repo: TaskRepository) -> bool:
@@ -75,6 +101,8 @@ async def reap_idle_desktops(
 ) -> list[str]:
     """Terminate idle desktops, but only while a PENDING backlog needs the slot."""
     if not await _has_pending_backlog(task_repo):
+        return []
+    if not await _desktop_slots_exhausted(lease_repo):
         return []
 
     candidates: list[dict[str, str]] = []

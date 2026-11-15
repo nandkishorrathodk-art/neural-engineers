@@ -401,9 +401,14 @@ async def _seed_idle_desktop(session, employee_id, docker_id, status=TaskStatus.
 
 
 @pytest.mark.asyncio
-async def test_reaper_terminates_idle_desktop_when_backlog_exists(async_session):
+async def test_reaper_terminates_idle_desktop_when_backlog_exists(async_session, monkeypatch):
     from neural.db.models import Container, Task
     from neural.tasks.idle_desktop_reaper import reap_idle_desktops
+
+    # Reaping only happens under real slot pressure: a single desktop slot with
+    # a waiting PENDING task, so the idle holder is the only thing blocking it.
+    monkeypatch.setenv("ANCOS_MAX_ACTIVE_DESKTOPS", "1")
+    monkeypatch.setenv("ANCOS_RESOURCE_POOL_ID", "local")
 
     # Idle employee holds the running desktop (its only task is COMPLETED)...
     idle_emp, idle_container = await _seed_idle_desktop(

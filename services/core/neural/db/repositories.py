@@ -712,8 +712,15 @@ class TaskRepository:
                 latest_attempt
                 and latest_attempt.status in {"failed", "rejected", "expired", "waiting"}
             )
+            # A fresh assignment reserves the employee (status WORKING) for exactly
+            # this task, and the worker that acknowledges that reservation must be
+            # allowed to claim it. Without this, an assignment with no prior attempt
+            # is never claimable: the gate only accepted WORKING for a *retry*, so
+            # the first claim of any reserved task was refused forever.
+            first_claim_of_reservation = latest_attempt is None
             if employee.status != EmployeeStatus.IDLE and not (
-                employee.status == EmployeeStatus.WORKING and retrying_same_assignment
+                employee.status == EmployeeStatus.WORKING
+                and (retrying_same_assignment or first_claim_of_reservation)
             ):
                 continue
             other_active_attempt = await self.session.scalar(

@@ -210,6 +210,51 @@ async def test_claim_refused_when_workstation_not_running(tmp_path):
         assert claim is None
 
 
+@pytest.mark.asyncio
+async def test_freshly_assigned_reserved_employee_can_claim_task(tmp_path):
+    """A first assignment reserves the employee (status WORKING) and must be claimable.
+
+    The assign route persists the reservation and sets the employee to WORKING
+    before any worker acknowledges it, so the very first claim of a task has no
+    prior attempt. The claim gate must accept that reserved state; otherwise every
+    freshly assigned task is unclaimable and the workforce silently never runs.
+    """
+    session_factory = await _build_session(tmp_path, "fresh-claim.db")
+
+    async with session_factory() as setup:
+        container = Container(
+            docker_id="ancos-desktop-anc-emp-fresh",
+            image="ancos-desktop:latest",
+            workspace_path="/home/employee/workspace",
+            status=ContainerStatus.RUNNING,
+            vnc_port=5905,
+            novnc_port=6085,
+        )
+        setup.add(container)
+        await setup.flush()
+        employee = Employee(
+            employee_id="ANC-EMP-FRESH",
+            name="Freshly Assigned",
+            title="Software Engineer",
+            system_prompt="Test employee.",
+            status=EmployeeStatus.WORKING,
+            container_id=container.id,
+            execution_capabilities=["terminal"],
+        )
+        setup.add(employee)
+        await setup.flush()
+        setup.add(EmployeeSkill(employee_id=employee.id, skill_name="Python", verified=True))
+        setup.add(_task("TASK-FRESH-1", employee_id=employee.id))
+        await setup.commit()
+
+    async with session_factory() as session:
+        repo = TaskRepository(session)
+        claim = await repo.claim_next_task("worker-fresh", execution_modes=["terminal"])
+        assert claim is not None, "A freshly assigned task must be claimable by its worker"
+        assert claim["task_id"] == "TASK-FRESH-1"
+        assert claim["employee_id"] == "ANC-EMP-FRESH"
+
+
 def test_required_capabilities_mapping():
     assert required_execution_capabilities(ExecutionMode.TERMINAL) == frozenset({"terminal"})
     assert required_execution_capabilities(ExecutionMode.GUI_ONLY) == frozenset({"gui"})
