@@ -190,7 +190,7 @@ class GuiWorkerEngine:
                 employee_id,
                 step,
                 grounder=loop.grounder,
-                fallback_coordinates=last_coordinates,
+                fallback_coordinates=self._text_entry_fallback(driver, step, last_coordinates),
                 region_hint=hint,
             )
             # Fresh-frame capture + OCR target search is a real per-step cost that
@@ -277,6 +277,31 @@ class GuiWorkerEngine:
         if status == "failed":
             logger.error("GUI task failed", employee_id=employee_id, error=error)
         return result
+
+    def _text_entry_fallback(
+        self,
+        driver: ContainerDesktopDriver,
+        step: GuiStepPlan,
+        last_coordinates: Optional[tuple[int, int]],
+    ) -> Optional[tuple[int, int]]:
+        """Pick the click point that precedes a text-entry step.
+
+        Text entry must follow a click that gives the target input surface
+        keyboard focus. Reusing the previous step's coordinate is wrong right
+        after an application is launched from a menu: that coordinate is the menu
+        item, which sits outside the new window, so clicking it steals focus away
+        from the window and the keystrokes land nowhere. When the active window is
+        a real application, aim at its content area instead; only fall back to the
+        stale coordinate when no usable window holds focus.
+        """
+        if step.action_type != "KEY_TYPE" or step.target:
+            return last_coordinates
+        box = driver.focused_window_box()
+        if box is None:
+            return last_coordinates
+        x, y, width, height = box
+        # The title bar occupies the top of the window; type into the body.
+        return (x + width // 2, y + max(24, height // 2))
 
     def _to_request_with_fresh_frame(
         self,

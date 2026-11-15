@@ -715,6 +715,67 @@ def test_driver_window_titles_reads_visible_titles():
     assert "xdotool search" in shell and "getwindowname" in shell
 
 
+def test_driver_focused_window_box_reads_active_window_geometry():
+    manager = _RecordingManager(
+        stdout="WINDOW=31457283\nX=10\nY=85\nWIDTH=816\nHEIGHT=483\nSCREEN=0\n"
+    )
+    driver = ContainerDesktopDriver(manager, "ancos-desktop-anc-emp-test", display=":1")
+    assert driver.focused_window_box() == (10, 85, 816, 483)
+    shell = manager.commands[-1][-1]
+    assert "getwindowfocus" in shell and "getwindowgeometry" in shell
+
+
+def test_driver_focused_window_box_ignores_root_desktop():
+    """A bare desktop/panel has no meaningful input surface; report None so the
+    caller falls back instead of clicking a point that types into nothing."""
+    manager = _RecordingManager(stdout="WINDOW=10485800\nX=0\nY=0\nWIDTH=1\nHEIGHT=1\n")
+    driver = ContainerDesktopDriver(manager, "ancos-desktop-anc-emp-test", display=":1")
+    assert driver.focused_window_box() is None
+
+
+def test_text_entry_fallback_targets_active_window_body_not_stale_menu_point():
+    """After launching an app from a menu, the menu item coordinate sits outside
+    the new window. Reusing it as the text-entry click steals focus from the
+    window, so the keystrokes land nowhere. The fallback must aim inside the
+    focused window's content area instead."""
+    from neural.gui_intelligence.worker import GuiStepPlan, GuiWorkerEngine
+
+    class _Driver:
+        def focused_window_box(self):
+            return (10, 85, 816, 483)
+
+    engine = GuiWorkerEngine(container_manager=object(), display=":1", require_real_desktop=False)
+    step = GuiStepPlan(action_type="KEY_TYPE", text="hello-ancos", confidence=0.95)
+    point = engine._text_entry_fallback(_Driver(), step, last_coordinates=(86, 69))
+    # Inside the window body, not the stale menu coordinate outside it.
+    assert point == (10 + 816 // 2, 85 + 483 // 2)
+    assert point != (86, 69)
+
+
+def test_text_entry_fallback_keeps_stale_point_when_no_window_focused():
+    from neural.gui_intelligence.worker import GuiStepPlan, GuiWorkerEngine
+
+    class _Driver:
+        def focused_window_box(self):
+            return None
+
+    engine = GuiWorkerEngine(container_manager=object(), display=":1", require_real_desktop=False)
+    step = GuiStepPlan(action_type="KEY_TYPE", text="hello-ancos", confidence=0.95)
+    assert engine._text_entry_fallback(_Driver(), step, (86, 69)) == (86, 69)
+
+
+def test_text_entry_fallback_is_a_noop_for_click_steps():
+    from neural.gui_intelligence.worker import GuiStepPlan, GuiWorkerEngine
+
+    class _Driver:
+        def focused_window_box(self):
+            raise AssertionError("must not probe focus for a non-typing step")
+
+    engine = GuiWorkerEngine(container_manager=object(), display=":1", require_real_desktop=False)
+    step = GuiStepPlan(action_type="MOUSE_CLICK", target="Applications", confidence=0.95)
+    assert engine._text_entry_fallback(_Driver(), step, (64, 13)) == (64, 13)
+
+
 class _ScreenshotManager:
     """Serves real PNGs for scrot captures and success for every motor command.
 

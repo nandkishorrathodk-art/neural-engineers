@@ -23,7 +23,7 @@ import base64
 import hashlib
 import shlex
 import time
-from typing import Any
+from typing import Any, Optional
 
 from neural.gui_intelligence.models import ScreenFrame
 from neural.gui_intelligence.runtime.errors import DesktopRuntimeUnavailable
@@ -216,6 +216,35 @@ class ContainerDesktopDriver:
             "getwindowname %@ 2>/dev/null || true"
         )
         return [line.strip() for line in str(result.get("stdout", "")).splitlines() if line.strip()]
+
+    def focused_window_box(self) -> Optional[tuple[int, int, int, int]]:
+        """Return ``(x, y, width, height)`` of the window holding keyboard focus.
+
+        Used to place a text-entry click *inside* the active window's content area
+        instead of reusing a stale click coordinate. After an application is
+        launched from a menu, the menu item's coordinate is no longer part of any
+        input surface; clicking it again steals focus from the window it just
+        opened, so the keystrokes land nowhere. Returns ``None`` when no usable
+        application window holds focus (the root desktop or a panel), so the
+        caller can fall back rather than click a meaningless point.
+        """
+        result = self._shell(
+            f"DISPLAY={shlex.quote(self.display)} "
+            "win=$(xdotool getwindowfocus 2>/dev/null) && "
+            "xdotool getwindowgeometry --shell \"$win\" 2>/dev/null || true"
+        )
+        values: dict[str, int] = {}
+        for line in str(result.get("stdout", "")).splitlines():
+            key, _, value = line.partition("=")
+            try:
+                values[key.strip()] = int(value.strip())
+            except ValueError:
+                continue
+        width = values.get("WIDTH")
+        height = values.get("HEIGHT")
+        if not width or not height or width <= 1 or height <= 1:
+            return None
+        return values.get("X", 0), values.get("Y", 0), width, height
 
 
 __all__ = ["ContainerDesktopDriver", "MAX_CAPTURE_BYTES", "PNG_MAGIC"]
