@@ -63,7 +63,8 @@ _TYPED_SEGMENT = re.compile(
     re.IGNORECASE,
 )
 _TYPED_FILLER_LEAD = re.compile(
-    r"^(?:(?:exact|literal|precise|specified|following)\s+)?"
+    r"^(?:(?:the|a|an)\s+)?"
+    r"(?:(?:exact|literal|precise|specified|following)\s+)?"
     r"(?:line|text|marker|string|value|word|following|this|these|message|content|phrase)\s+",
     re.IGNORECASE,
 )

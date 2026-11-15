@@ -204,18 +204,48 @@ class TesseractOCREngine:
             results.append(OCRResult(text=text, bounding_box=box, confidence=word_conf))
             grouped[(cols[b_i], cols[p_i], cols[l_i])].append((*box, word_conf, text))
         # Line-level aggregate: lets a multi-word label match as one phrase.
+        # Tesseract groups by baseline row, so two unrelated on-screen items that
+        # share a row (a window's menu bar and a launcher menu label, say) land in
+        # one "line". Aggregating them into a single box spans the empty space
+        # between them, and its center clicks nothing. Split each row at wide
+        # horizontal gaps first so a phrase only ever covers words that are
+        # actually adjacent on screen.
         for words in grouped.values():
             words.sort(key=lambda w: w[0])
-            text = " ".join(w[5] for w in words)
-            xmin = min(w[0] for w in words)
-            ymin = min(w[1] for w in words)
-            xmax = max(w[2] for w in words)
-            ymax = max(w[3] for w in words)
-            conf = sum(w[4] for w in words) / len(words)
-            results.append(
-                OCRResult(text=text, bounding_box=(xmin, ymin, xmax, ymax), confidence=conf)
-            )
+            for cluster in TesseractOCREngine._split_at_gaps(words):
+                text = " ".join(w[5] for w in cluster)
+                xmin = min(w[0] for w in cluster)
+                ymin = min(w[1] for w in cluster)
+                xmax = max(w[2] for w in cluster)
+                ymax = max(w[3] for w in cluster)
+                conf = sum(w[4] for w in cluster) / len(cluster)
+                results.append(
+                    OCRResult(text=text, bounding_box=(xmin, ymin, xmax, ymax), confidence=conf)
+                )
         return results
+
+    @staticmethod
+    def _split_at_gaps(
+        words: list[tuple[int, int, int, int, float, str]],
+    ) -> list[list[tuple[int, int, int, int, float, str]]]:
+        """Split one Tesseract row into clusters of horizontally adjacent words.
+
+        A gap wider than a few average character widths separates two distinct
+        on-screen items, so a phrase match must not span it.
+        """
+        if len(words) <= 1:
+            return [words]
+        widths = [max(1, w[2] - w[0]) for w in words]
+        heights = [max(1, w[3] - w[1]) for w in words]
+        char_width = max(4, sum(widths) // max(1, sum(len(w[5]) for w in words)))
+        gap_limit = max(char_width * 3, int(0.75 * sum(heights) / len(heights)))
+        clusters: list[list[tuple[int, int, int, int, float, str]]] = [[words[0]]]
+        for prev, word in zip(words, words[1:]):
+            if word[0] - prev[2] > gap_limit:
+                clusters.append([word])
+            else:
+                clusters[-1].append(word)
+        return clusters
 
     def extract_text_regions(self, frame: ScreenFrame) -> list[OCRResult]:
         """Read text by running tesseract at every configured scale and unioning.
