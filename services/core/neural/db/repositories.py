@@ -668,8 +668,17 @@ class TaskRepository:
                 await self.session.commit()
                 continue
             if latest_attempt and latest_attempt.status == "submitted":
-                # A submitted attempt waits for independent verification.
-                continue
+                # A *current* submitted attempt waits for independent verification.
+                # But an attempt left behind by an earlier assignment (its fencing
+                # token was superseded) belongs to a dead generation: treating it
+                # as "awaiting verification" pins the task forever, because its
+                # receipt can never arrive and no worker may claim it. Let a stale
+                # submitted attempt fall through so the task can be claimed again.
+                if (
+                    latest_attempt.fencing_token == task.fencing_token
+                    and task.status == TaskStatus.RUNNING
+                ):
+                    continue
             if (
                 latest_attempt
                 and latest_attempt.status in {"failed", "rejected"}
@@ -806,11 +815,14 @@ class TaskRepository:
     ) -> list[str]:
         """Assign PENDING, unowned tasks to eligible employees.
 
-        Only employees whose execution desktop is *already running* are eligible:
-        this path never provisions a workstation and never crosses the approval
-        boundary. It is the shared engine behind the worker claim route, the
-        stale-recovery loop, and the workstation-readiness trigger, so a PENDING
-        task cannot remain stranded once a qualified running desktop exists.
+        The preferred assignees are employees whose execution desktop is *already
+        running*; this path never provisions a workstation itself and never
+        crosses the approval boundary. When no employee has a live desktop, it
+        falls back to an idle, capable employee without one: assigning the task is
+        what lets the provisioning coordinator raise the (human-owned) approval
+        for a new desktop, which it only does for ASSIGNED tasks. Without that
+        fallback the second and later tasks of a multi-task project deadlock --
+        nothing assigns them, so nothing ever requests the desktop they need.
         Returns the task_ids that were assigned.
         """
         now = utc_now()
@@ -864,11 +876,40 @@ class TaskRepository:
             .scalars()
             .all()
         )
+        if not eligible_employees:
+            # No idle employee has a live desktop. Only fall back to a desktop-less
+            # employee when *no* desktop is running anywhere: that is the genuine
+            # deadlock where nothing can ever claim the task. If a running desktop
+            # merely belongs to a busy employee, the task stays PENDING so it is
+            # reused instead of spinning up a needless extra workstation.
+            any_running = await self.session.scalar(
+                select(Container.id).where(Container.status == ContainerStatus.RUNNING).limit(1)
+            )
+            if any_running is None:
+                eligible_employees = (
+                    (
+                        await self.session.execute(
+                            select(Employee)
+                            .options(selectinload(Employee.skills))
+                            .where(Employee.status == EmployeeStatus.IDLE)
+                            .order_by(Employee.hired_at.asc())
+                            .execution_options(populate_existing=True)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
         from neural.boss.delegator import TaskDelegator
 
         delegator = TaskDelegator()
         assigned_ids: list[str] = []
+        # Track employees already given a task this pass so one employee is not
+        # handed several tasks while others sit idle; that is what lets two
+        # provisioned employees run two independent tasks in parallel.
+        available_employees = list(eligible_employees)
         for ready_task in ready_tasks:
+            if not available_employees:
+                break
             dependency_evidence = (
                 await self.session.execute(
                     select(Task.status, Task.verification_result)
@@ -883,7 +924,7 @@ class TaskRepository:
                 for status, receipt in dependency_evidence
             ):
                 continue
-            assignee = delegator.select_best_assignee(ready_task, eligible_employees)
+            assignee = delegator.select_best_assignee(ready_task, available_employees)
             if not assignee:
                 continue
             if not _employee_has_execution_capabilities(assignee, ready_task.execution_mode):
@@ -907,6 +948,9 @@ class TaskRepository:
             if assigned.rowcount == 1:
                 await self.session.commit()
                 assigned_ids.append(ready_task.task_id)
+                available_employees = [
+                    employee for employee in available_employees if employee.id != assignee.id
+                ]
             else:
                 await self.session.rollback()
         return assigned_ids
@@ -922,6 +966,44 @@ class TaskRepository:
         or bypassing the workstation approval gate.
         """
         return await self._dispatch_pending_tasks(execution_modes)
+
+    async def list_assigned_unprovisioned_assignees(self) -> list[dict[str, str]]:
+        """ASSIGNED tasks whose assignee has no running desktop.
+
+        One entry per (task, assignee). Provisioning is the caller's job; this
+        only reports who needs a workstation so a coordinator can raise the
+        approval. An assignee holding *any* running desktop is excluded, so a
+        re-used employee is not asked for a second one.
+        """
+        rows = (
+            await self.session.execute(
+                select(Task, Employee)
+                .join(Employee, Employee.id == Task.assigned_to)
+                .where(Task.status == TaskStatus.ASSIGNED)
+                .order_by(Task.assigned_at.asc())
+            )
+        ).all()
+        unprovisioned: list[dict[str, str]] = []
+        for task, employee in rows:
+            running = await self.session.scalar(
+                select(Container.id)
+                .join(Employee, Employee.container_id == Container.id)
+                .where(
+                    Employee.id == employee.id,
+                    Container.status == ContainerStatus.RUNNING,
+                )
+            )
+            if running is None:
+                unprovisioned.append(
+                    {
+                        "task_id": task.task_id,
+                        "title": task.title,
+                        "employee_internal_id": employee.id,
+                        "employee_id": employee.employee_id,
+                        "employee_status": getattr(employee.status, "value", employee.status),
+                    }
+                )
+        return unprovisioned
 
     async def _desktop_provisioning_in_flight(
         self, task: Task, employee: Employee, now: datetime
