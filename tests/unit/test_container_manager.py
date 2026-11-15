@@ -2,7 +2,10 @@ import os
 
 import pytest
 from neural.constants import ContainerStatus
-from neural.containers.manager import ContainerManager
+from neural.containers.manager import (
+    ContainerManager,
+    DockerBrokerRequestError,
+)
 
 
 @pytest.mark.asyncio
@@ -93,3 +96,54 @@ async def test_container_manager_provision_spec_and_isolation(tmp_path, monkeypa
 
     assert broker_calls[-1][0:2] == ("POST", f"/v1/containers/{spec['docker_id']}/terminate")
 
+
+
+@pytest.mark.asyncio
+async def test_reaped_workstation_refresh_does_not_repeat_warning(monkeypatch):
+    """A reaped desktop is a known terminal state, not a repeated fault.
+
+    Polling the roster refreshes every historical desktop, so a gone container
+    must stop emitting a fresh warning once it is already recorded as failed.
+    """
+    import neural.containers.manager as manager_module
+
+    manager = ContainerManager()
+
+    async def missing_broker_request(method, path, **kwargs):
+        raise DockerBrokerRequestError(
+            "Restricted Docker broker rejected operation: Workstation not found.", 404
+        )
+
+    monkeypatch.setattr(manager, "_broker_request", missing_broker_request)
+
+    warnings: list[dict] = []
+    infos: list[dict] = []
+
+    class _Recorder:
+        def warning(self, event, **kw):
+            warnings.append({"event": event, **kw})
+
+        def debug(self, event, **kw):
+            infos.append({"event": event, **kw})
+
+        def info(self, event, **kw):
+            infos.append({"event": event, **kw})
+
+        def error(self, event, **kw):
+            warnings.append({"event": event, **kw})
+
+    monkeypatch.setattr(manager_module, "logger", _Recorder())
+
+    spec = {"docker_id": "ancos-desktop-anc-emp-gone", "status": ContainerStatus.RUNNING.value}
+
+    refreshed = await manager._refresh_remote_status(spec)
+    first_warnings = list(warnings)
+    warnings.clear()
+
+    refreshed_again = await manager._refresh_remote_status(refreshed)
+    repeat_warnings = list(warnings)
+
+    assert refreshed["status"] == ContainerStatus.FAILED.value
+    assert len(first_warnings) == 1, "first detection of a gone workstation should warn once"
+    assert repeat_warnings == [], "already-terminal workstation must not re-warn on every refresh"
+    assert refreshed_again["status"] == ContainerStatus.FAILED.value

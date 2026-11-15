@@ -24,6 +24,16 @@ except ImportError:
 
 logger = get_logger("ancos.containers")
 
+# A desktop whose container no longer exists will never come back on its own.
+# Treat these as terminal so refresh passes do not re-report a known-gone
+# workstation as a fresh operational fault.
+_TERMINAL_DESKTOP_STATUSES = frozenset(
+    {
+        ContainerStatus.FAILED.value,
+        ContainerStatus.TERMINATED.value,
+    }
+)
+
 
 class DockerBrokerRequestError(ContainerError):
     def __init__(self, message: str, status_code: int):
@@ -104,6 +114,10 @@ class ContainerManager:
     ) -> dict[str, Any]:
         if self._get_client() is not None:
             return spec
+        previous_status = spec.get("status")
+        previous_status_value = (
+            previous_status.value if hasattr(previous_status, "value") else previous_status
+        )
         try:
             live = await self._broker_request("GET", f"/v1/containers/{spec['docker_id']}")
         except ContainerError as exc:
@@ -115,7 +129,15 @@ class ContainerManager:
                     await container_repo.update_status(spec["docker_id"], ContainerStatus.FAILED)
                 except Exception as persist_error:
                     logger.warning("Failed to persist missing workstation status", error=str(persist_error))
-            logger.warning("Workstation status could not be refreshed", docker_id=spec["docker_id"], error=str(exc))
+            # A reaped or already-failed workstation is a known terminal state, not
+            # an operational fault. Re-logging it on every list/refresh pass floods
+            # the logs for every historical desktop, so only escalate when the
+            # broker's view newly disagrees with what we already recorded.
+            already_terminal = previous_status_value in _TERMINAL_DESKTOP_STATUSES
+            if missing_container and already_terminal:
+                logger.debug("Reaped workstation already marked terminal", docker_id=spec["docker_id"])
+            else:
+                logger.warning("Workstation status could not be refreshed", docker_id=spec["docker_id"], error=str(exc))
             return spec
 
         runtime_status = live.get("status")
@@ -125,7 +147,6 @@ class ContainerManager:
             target_status = ContainerStatus.STOPPED
         else:
             target_status = ContainerStatus.FAILED
-        previous_status = spec.get("status")
         spec.update({key: value for key, value in live.items() if value is not None})
         spec["status"] = target_status.value
         spec["runtime_available"] = True
