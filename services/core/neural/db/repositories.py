@@ -657,6 +657,7 @@ class TaskRepository:
                     employee = await self.session.get(Employee, task.assigned_to)
                     if employee:
                         employee.status = EmployeeStatus.IDLE
+                    await self.block_dependents_of_failed_task(task.id)
                     await self.session.commit()
                     continue
 
@@ -1424,6 +1425,81 @@ class TaskRepository:
 
         return TaskDelegator().select_best_assignee(task, employees)
 
+    async def block_dependents_of_failed_task(self, task_pk: str) -> list[str]:
+        """Mark every transitive dependent of a failed task as BLOCKED.
+
+        A task that reaches a terminal failure outside the in-process DAG runner
+        (worker-reported failure, failed independent verification, expired lease)
+        never gets its downstream dependents resolved. Those dependents stay
+        PENDING forever because their dependency can never become COMPLETED, so
+        the project silently stalls instead of failing loudly. Blocking them here
+        keeps the persisted project state honest.
+
+        Returns the public task_ids that were newly blocked.
+        """
+        blocked: list[str] = []
+        frontier = [task_pk]
+        seen = {task_pk}
+        while frontier:
+            current = frontier.pop()
+            rows = (
+                await self.session.execute(
+                    select(Task.id, Task.task_id, Task.status)
+                    .join(TaskDependency, TaskDependency.task_id == Task.id)
+                    .where(TaskDependency.depends_on_task_id == current)
+                )
+            ).all()
+            for dep_pk, dep_public_id, dep_status in rows:
+                if dep_pk in seen:
+                    continue
+                seen.add(dep_pk)
+                if TaskStatus(getattr(dep_status, "value", dep_status)) in {
+                    TaskStatus.COMPLETED,
+                    TaskStatus.FAILED,
+                    TaskStatus.CANCELLED,
+                    TaskStatus.BLOCKED,
+                }:
+                    continue
+                await self.session.execute(
+                    update(Task)
+                    .where(Task.id == dep_pk)
+                    .values(
+                        status=TaskStatus.BLOCKED,
+                        fencing_token=Task.fencing_token + 1,
+                    )
+                )
+                blocked.append(dep_public_id)
+                frontier.append(dep_pk)
+        return blocked
+
+    async def heal_orphaned_dependents(self) -> list[str]:
+        """Block dependents left PENDING by a prerequisite that already failed.
+
+        Heals projects that stalled before the failure cascade existed: for every
+        terminal FAILED/CANCELLED task, any dependent still waiting on it is
+        marked BLOCKED so the project reports a truthful terminal state instead
+        of hanging in a state no worker can ever advance.
+
+        Idempotent: already-BLOCKED dependents are skipped.
+        """
+        failed = (
+            (
+                await self.session.execute(
+                    select(Task.id).where(
+                        Task.status.in_([TaskStatus.FAILED, TaskStatus.CANCELLED])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        healed: list[str] = []
+        for task_pk in failed:
+            healed.extend(await self.block_dependents_of_failed_task(task_pk))
+        if healed:
+            await self.session.commit()
+        return healed
+
     async def fail_task_attempt(
         self,
         task_id: str,
@@ -1501,6 +1577,8 @@ class TaskRepository:
             if task_update.rowcount != 1:
                 await self.session.rollback()
                 return None
+            if not should_retry:
+                await self.block_dependents_of_failed_task(task.id)
             if (not should_retry or alternate_assignee) and previous_assignee_id:
                 assignee_filter = (
                     Task.assigned_to.in_([previous_assignee.id, previous_assignee.employee_id])
@@ -1806,6 +1884,8 @@ class TaskRepository:
                 task.status = TaskStatus.ASSIGNED if retrying else TaskStatus.FAILED
                 task.completed_at = None if retrying else now
                 task.fencing_token += 1
+                if not retrying:
+                    await self.block_dependents_of_failed_task(task.id)
             if (passed or not retrying) and task.assigned_to:
                 target_emp_id = employee.id if employee else task.assigned_to
                 await self.session.execute(

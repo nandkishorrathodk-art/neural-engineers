@@ -31,10 +31,14 @@ async def run_stale_recovery_cycle(
     starving: recovery moves it to PENDING with no owner, and the dispatcher
     immediately re-assigns it to a qualified employee whose desktop is running.
 
+    Dependents orphaned by an already-failed prerequisite are blocked first, so
+    the dispatcher never wastes a slot on a task that can never become runnable.
+
     When a ``ProjectRepository`` is supplied, project lifecycle status is also
     reconciled so a project whose tasks have all completed reaches COMPLETED
     instead of lingering in PLANNING.
     """
+    await repo.heal_orphaned_dependents()
     recovered = await repo.recover_stale_assignments()
     redispatched = await repo.redispatch_pending_tasks()
     if project_repo is not None:
