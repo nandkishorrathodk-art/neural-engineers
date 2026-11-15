@@ -54,7 +54,8 @@ async def list_tasks(
                 priority=t.priority.value if hasattr(t.priority, "value") else str(t.priority),
                 scheduled_at=t.scheduled_at,
                 started_at=t.started_at,
-                completed_at=t.completed_at
+                completed_at=t.completed_at,
+                verification_result=t.verification_result,
             )
         )
     return filtered
@@ -80,7 +81,8 @@ async def get_task(
         priority=task.priority.value if hasattr(task.priority, "value") else str(task.priority),
         scheduled_at=task.scheduled_at,
         started_at=task.started_at,
-        completed_at=task.completed_at
+        completed_at=task.completed_at,
+        verification_result=task.verification_result,
     )
 
 

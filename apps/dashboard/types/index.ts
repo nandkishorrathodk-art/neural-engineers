@@ -47,6 +47,13 @@ export interface Task {
   scheduled_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  verification_result?: {
+    passed?: boolean;
+    notes?: string;
+    checks?: Array<{ name: string; passed: boolean; evidence?: unknown }>;
+    test_summary?: unknown;
+    [key: string]: unknown;
+  } | null;
 }
 
 export interface ActionItem {

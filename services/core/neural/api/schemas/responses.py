@@ -98,6 +98,7 @@ class TaskResponse(BaseModel):
     scheduled_at: Optional[datetime] = None
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    verification_result: Optional[dict[str, Any]] = None
 
 
 class EmployeeResponse(BaseModel):

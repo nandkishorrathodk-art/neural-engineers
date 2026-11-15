@@ -1,3 +1,4 @@
+import re
 from enum import Enum
 
 
@@ -144,27 +145,53 @@ _GUI_MODES: frozenset[ExecutionMode] = frozenset(
 )
 
 
+_SKILL_STOPWORDS = frozenset({"programming", "development", "engineering", "skills", "skill"})
+
+
+def _skill_tokens(value: object) -> frozenset[str]:
+    """Tokenize a skill label into comparable words.
+
+    Task requirements and employee skills are written independently ("Python
+    programming" vs. "Python"), so an exact-string comparison silently rejects a
+    perfectly qualified employee. Splitting on non-alphanumerics and dropping
+    generic role words yields a stable vocabulary that matches those variants
+    without conflating genuinely different technologies.
+    """
+    words = re.findall(r"[a-z0-9+#.]+", str(value).strip().lower())
+    return frozenset(word for word in words if word and word not in _SKILL_STOPWORDS)
+
+
 def required_skills_satisfied(employee: object, required_capabilities: object) -> bool:
-    """True when the employee's skills intersect the task's required skills.
+    """True when the employee's skills cover the task's required skills.
 
     A task with no ``required_capabilities`` imposes no skill gate. When
     requirements exist, the worker claim route refuses the task unless at least
     one of the assignee's declared skills matches. Every assignment path must
     apply the identical rule, or it can pin a task to an employee that can never
     claim it.
+
+    Matching is token-aware rather than exact-string so that spelling variants of
+    the same skill ("Python programming" vs. "Python") still satisfy the gate,
+    while distinct technologies ("Python" vs. "JavaScript") do not. Two labels
+    match when they share a meaningful token, or when one token sequence contains
+    the other ("React" covers "React Native").
     """
-    req_set = {
-        str(skill).strip().lower()
-        for skill in (required_capabilities or [])
-        if str(skill).strip()
-    }
-    if not req_set:
+    req_tokens = [_skill_tokens(skill) for skill in (required_capabilities or [])]
+    req_tokens = [tokens for tokens in req_tokens if tokens]
+    if not req_tokens:
         return True
-    emp_skills = {
-        str(skill.skill_name).strip().lower()
+    emp_tokens = [
+        _skill_tokens(skill.skill_name)
         for skill in (getattr(employee, "skills", None) or [])
-    }
-    return bool(req_set.intersection(emp_skills))
+    ]
+    emp_tokens = [tokens for tokens in emp_tokens if tokens]
+    for required in req_tokens:
+        for declared in emp_tokens:
+            if required & declared:
+                return True
+            if required <= declared or declared <= required:
+                return True
+    return False
 
 
 def worker_declared_modes(
