@@ -57,8 +57,17 @@ from neural.exceptions import (
     SecurityViolationError,
 )
 from neural.execution.contracts import CapabilityPolicyEnforcer
+from neural.gui_intelligence.runtime.authoring import (
+    author_desktop_content,
+    build_authoring_steps,
+    is_authoring_objective,
+)
 from neural.gui_intelligence.runtime.errors import DesktopRuntimeUnavailable
-from neural.gui_intelligence.runtime.planner import derive_gui_steps, expected_onscreen_text
+from neural.gui_intelligence.runtime.planner import (
+    app_launch_prefix,
+    derive_gui_steps,
+    expected_onscreen_text,
+)
 from neural.gui_intelligence.worker import (
     GuiStepPlan,
     GuiWorkerExecutionError,
@@ -722,11 +731,21 @@ async def plan_gui_task(
     request: WorkerLeaseRequest,
     worker_id: str = Depends(require_worker_token),
     task_repo: TaskRepository = Depends(get_task_repo),
+    gateway: LLMGateway = Depends(get_llm_gateway),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """Generate concrete GUI steps for a task from its objective.
 
     Steps reference on-screen text so the live-desktop OCR grounder can locate
     them. This is planning only; nothing is dispatched to the screen.
+
+    A task that asks for *written content* ("draft a short note about ANCOS")
+    names a deliverable the deterministic planner cannot invent. When no literal
+    payload resolves, the reasoning model authors the exact text and a short
+    OCR-readable marker, and a deterministic typing choreography is returned. The
+    content is derived from the task's own contract at run time; nothing is
+    hardcoded. If authoring is unavailable the deterministic plan is returned
+    unchanged, so the worker fails closed rather than reporting a false success.
     """
     get_kill_switch().guard_active()
     task = await task_repo.get_by_task_id(task_id)
@@ -744,12 +763,80 @@ async def plan_gui_task(
         task.scope or "",
         task.acceptance_criteria or "",
     )
+    expected_text = expected_onscreen_text(steps)
+    authored: dict[str, Any] | None = None
+    if expected_text is None:
+        authored = await _author_gui_content(task, gateway, session)
+        if authored is not None:
+            steps = authored["steps"]
+            expected_text = authored["expected_text"]
     return {
         "task_id": task_id,
         "fencing_token": request.fencing_token,
         "steps": steps,
-        "expected_text": expected_onscreen_text(steps),
+        "expected_text": expected_text,
     }
+
+
+async def _author_gui_content(
+    task: Any,
+    gateway: LLMGateway,
+    session: AsyncSession,
+) -> dict[str, Any] | None:
+    """Author on-screen content for a GUI task, or return ``None`` to fail closed."""
+    contract = " ".join(
+        part for part in (task.objective, task.scope, task.title) if part
+    ).strip()
+    if not is_authoring_objective(contract):
+        return None
+    resource_budget = task.resource_budget or {}
+    raw_max_tokens = resource_budget.get("max_tokens", 2000)
+    if isinstance(raw_max_tokens, bool) or not isinstance(raw_max_tokens, int) or raw_max_tokens < 1:
+        max_tokens = 2000
+    else:
+        max_tokens = min(2000, raw_max_tokens)
+    project = await session.get(Project, task.project_id)
+    budget_scope_caps = None
+    if project is not None:
+        budget_scope_caps = await load_budget_scope_caps(
+            session,
+            gateway.cost_tracker,
+            project_id=project.id,
+            task_id=task.task_id,
+        )
+    content = await author_desktop_content(
+        gateway,
+        title=task.title or "",
+        objective=task.objective or "",
+        scope=task.scope or "",
+        acceptance_criteria=task.acceptance_criteria or "",
+        employee_id=task.assigned_to,
+        task_id=task.task_id,
+        project_id=task.project_id,
+        max_tokens=max_tokens,
+        db_session=session,
+        budget_scope_caps=budget_scope_caps,
+    )
+    if content is None:
+        return None
+    blob = " ".join(part for part in (task.title, task.objective, task.scope) if part).strip()
+    instruction_lowered = " ".join(
+        part for part in (task.objective, task.scope) if part
+    ).strip().lower()
+    launch_steps, _app_label = app_launch_prefix(
+        instruction_lowered,
+        blob.lower(),
+        blob,
+        require_launch_verb=False,
+        allow_web_only=True,
+    )
+    if not launch_steps:
+        # The objective asks for content but names no application or destination to
+        # put it in. Typing into whatever window happens to hold focus is not the
+        # deliverable, so fail closed on the deterministic plan instead.
+        return None
+    steps = build_authoring_steps(content, launch_steps)
+    return {"steps": steps, "expected_text": content.marker}
 
 
 @router.post("/tasks/{task_id}/gui/execute")

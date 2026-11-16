@@ -222,6 +222,16 @@ def _web_destination(text: str) -> str | None:
     has_url = "http://" in lowered or "https://" in lowered
     if not any(verb in lowered for verb in _WEB_VERBS) and not has_url:
         return None
+    return _named_web_destination(text)
+
+
+def _named_web_destination(text: str) -> str | None:
+    """Return the URL a recognised site name in ``text`` maps to, or ``None``.
+
+    Unlike :func:`_web_destination` this does not require a navigation verb. It is
+    used when a caller has already decided the objective is a web destination.
+    """
+    lowered = text.lower()
     for match in _URL.finditer(text):
         candidate = match.group(1).rstrip(".")
         if _FILE_EXTENSION.search(candidate):
@@ -425,6 +435,70 @@ def derive_document_edit_steps(
     return steps
 
 
+def app_launch_prefix(
+    instruction_lowered: str,
+    lowered: str,
+    blob: str,
+    *,
+    require_launch_verb: bool = True,
+    allow_web_only: bool = False,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Return the click sequence that opens the application an objective names.
+
+    Returns ``(steps, app_label)``; ``steps`` is empty when no application is named.
+    The concept name ("text editor", "Google Docs") is not a pixel label, so this
+    routes through the launcher to the concrete menu label the desktop renders,
+    opening the category submenu first when the entry lives inside one. A web
+    destination additionally drives the browser's omnibox (Ctrl+L) to load the page.
+
+    ``require_launch_verb`` gates on an explicit open/launch/start/run/load verb.
+    Authoring objectives ("draft a note in the text editor") name the target
+    application without such a verb, so their caller passes ``False``.
+
+    ``allow_web_only`` additionally routes a bare web destination ("draft a note
+    in Google Docs") through the browser when no desktop application alias matches.
+    """
+    if require_launch_verb and not _looks_like_app_launch(instruction_lowered):
+        # A web objective can also be phrased as navigation ("navigate to
+        # https://example.com") without an open/launch verb; that still has to
+        # open the browser and load the page.
+        if not _web_destination(blob):
+            return [], None
+    destination = _web_destination(blob)
+    app_match = _match_application(instruction_lowered)
+    if app_match is None:
+        if destination is None and allow_web_only:
+            destination = _named_web_destination(blob)
+        if destination is None:
+            return [], None
+        app_match = (None, "Web Browser")
+    category, app_label = app_match
+    steps: list[dict[str, Any]] = [
+        {"action_type": "MOUSE_CLICK", "target": _MENU_LABEL, "confidence": 0.95}
+    ]
+    if category and category.lower() not in lowered:
+        steps.append({"action_type": "MOUSE_CLICK", "target": category, "confidence": 0.95})
+    steps.append({"action_type": "MOUSE_CLICK", "target": app_label, "confidence": 0.95})
+    if app_label == "Web Browser":
+        if destination is None:
+            destination = _named_web_destination(blob)
+        if destination:
+            steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 4000})
+            steps.append({"action_type": "KEY_HOTKEY", "key_code": "ctrl+l", "confidence": 0.95})
+            steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 600})
+            steps.append(
+                {
+                    "action_type": "KEY_TYPE",
+                    "text": destination,
+                    "confidence": 0.95,
+                    "type_into_active_focus": True,
+                }
+            )
+            steps.append({"action_type": "KEY_HOTKEY", "key_code": "Return", "confidence": 0.95})
+            steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 5000})
+    return steps, app_label
+
+
 def derive_gui_steps(
     title: str, objective: str, scope: str = "", acceptance_criteria: str = ""
 ) -> list[dict[str, Any]]:
@@ -450,41 +524,11 @@ def derive_gui_steps(
     if click_label is None:
         click_label = _label_after_verb(blob, _CLICK_VERBS)
     menu_label = _application_menu_label(blob)
-    app_match = (
-        _match_application(instruction_lowered)
-        if _looks_like_app_launch(instruction_lowered)
-        else None
-    )
-    if app_match is not None:
-        # The concept name ("text editor") is not a pixel label; route through the
-        # launcher to the concrete menu label ("Mousepad") the desktop renders,
-        # opening the category submenu first when the entry lives inside one.
-        category, app_label = app_match
+    launch_steps, app_label = app_launch_prefix(instruction_lowered, lowered, blob)
+    if app_label is not None:
         click_label = None
-        steps.append({"action_type": "MOUSE_CLICK", "target": _MENU_LABEL, "confidence": 0.95})
-        if category and category.lower() not in lowered:
-            steps.append({"action_type": "MOUSE_CLICK", "target": category, "confidence": 0.95})
-        steps.append({"action_type": "MOUSE_CLICK", "target": app_label, "confidence": 0.95})
+        steps.extend(launch_steps)
         menu_label = None
-        # A browser launch is only the first half of a web objective; the page the
-        # objective names still has to be loaded. Drive the omnibox (Ctrl+L) so the
-        # destination is typed as a real URL rather than landing in the page body.
-        if app_label == "Web Browser":
-            destination = _web_destination(blob)
-            if destination:
-                steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 4000})
-                steps.append({"action_type": "KEY_HOTKEY", "key_code": "ctrl+l", "confidence": 0.95})
-                steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 600})
-                steps.append(
-                    {
-                        "action_type": "KEY_TYPE",
-                        "text": destination,
-                        "confidence": 0.95,
-                        "type_into_active_focus": True,
-                    }
-                )
-                steps.append({"action_type": "KEY_HOTKEY", "key_code": "Return", "confidence": 0.95})
-                steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 5000})
     if menu_label and (click_label is None or menu_label.lower() != click_label.lower()):
         # Opening the application menu is the first real step when the objective
         # routes through it; the launcher must be open before its entries can be
