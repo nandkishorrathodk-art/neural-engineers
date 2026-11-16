@@ -7,6 +7,255 @@ marked.
 
 ---
 
+## 0. Master Diagram (All-in-One)
+
+One end-to-end view: every layer, subsystem, worker, store, and control gate.
+Colour groups the layers — yellow = human, blue = API, purple = Boss brain,
+green = cognition, orange = execution, cyan = GUI, red = security,
+grey = infrastructure.
+
+```mermaid
+flowchart TB
+    classDef h fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#111;
+    classDef api fill:#dbeafe,stroke:#1d4ed8,color:#111;
+    classDef brain fill:#ede9fe,stroke:#6d28d9,color:#111;
+    classDef cog fill:#dcfce7,stroke:#15803d,color:#111;
+    classDef exec fill:#ffedd5,stroke:#c2410c,color:#111;
+    classDef gui fill:#cffafe,stroke:#0e7490,color:#111;
+    classDef sec fill:#fee2e2,stroke:#b91c1c,color:#111;
+    classDef infra fill:#f1f5f9,stroke:#334155,color:#111;
+    classDef store fill:#fce7f3,stroke:#be185d,color:#111;
+
+    subgraph L0["👤 Human Sovereignty Layer"]
+        direction LR
+        Owner["Human Owner / Board"]:::h
+        Boardroom["Digital Boardroom"]:::h
+        VNCView["noVNC Desktop Viewer"]:::h
+        Approver["Sovereign Approver<br/>APPROVER_API_TOKEN"]:::h
+    end
+
+    subgraph L1["🔌 API Gateway — FastAPI :12000"]
+        direction LR
+        Ingress["nginx Ingress :12001"]:::api
+        Dashboard["Next.js Control Room<br/>apps/dashboard"]:::api
+        CLIRepl["ancos CLI REPL<br/>ANC-EMP-CODER"]:::api
+        Rest["REST routes"]:::api
+        WsStreams["WebSocket streams"]:::api
+        WorkerProto["Worker protocol<br/>/internal/worker"]:::api
+        VerifierProto["Verifier protocol<br/>/internal/verifier"]:::api
+        AuthMW["JWT + worker/verifier tokens<br/>rate limit + audit"]:::api
+    end
+
+    subgraph L2["🧠 Boss Intelligence"]
+        direction TB
+        BossBrain["BossBrain<br/>boss/brain.py"]:::brain
+        BossState["Boss run state<br/>pause flag + runtime service state"]:::brain
+        Planner["TaskPlanner (DAG)<br/>boss/planner.py"]:::brain
+        Delegator["TaskDelegator<br/>boss/delegator.py"]:::brain
+        Monitor["Progress monitor<br/>brain.py: execute_project_dag"]:::brain
+        Recovery["Recovery<br/>boss/recovery.py"]:::brain
+        Chat["Boss chat /<br/>objective intake"]:::brain
+        Meetings["Meeting &amp; Boardroom Engine<br/>meetings/"]:::brain
+        Governance["Boardroom Governance<br/>governance/engine.py"]:::brain
+        Evolution["Self-Evolution Engine<br/>evolution/lifecycle.py"]:::brain
+    end
+
+    subgraph L3["👷 Dynamic Workforce"]
+        direction LR
+        Factory["EmployeeFactory<br/>ANC-EMP-XXXX"]:::brain
+        SkillReg["Skill registry<br/>skills/registry.py"]:::brain
+        Certify["Skill certification<br/>skills/certification.py"]:::brain
+        SkillGaps["Verified-skill gap<br/>analysis"]:::brain
+    end
+
+    subgraph L4["⚙️ Cognition &amp; Coordination"]
+        direction LR
+        LLMGateway["LLM Gateway<br/>reasoning / coding / fast"]:::cog
+        CostTracker["CostTracker<br/>budget + ceilings"]:::cog
+        Laya["Laya System-1<br/>predict_choice / score / noul"]:::cog
+        DecisionRouter["DecisionRouter<br/>complexity → candidate"]:::cog
+        SharedInf["Shared inference<br/>model pool + batching"]:::cog
+        MemoryStore["Organizational Memory<br/>memory/store.py"]:::cog
+        CommsBus["Message Bus<br/>comms/bus.py"]:::cog
+    end
+
+    subgraph L5["📋 Execution &amp; Scheduling"]
+        direction LR
+        TaskDAG["Dependency DAG<br/>topological sort"]:::exec
+        TaskScheduler["TaskScheduler<br/>concurrency + priority"]:::exec
+        TaskRepo["TaskRepository<br/>claim / fencing tokens"]:::exec
+        Artifacts["Artifact &amp; workspace<br/>manifest"]:::exec
+        ResScheduler["DesktopResourceScheduler<br/>slots + leases"]:::exec
+        DesktopPool["Desktop pool<br/>hardware profile"]:::exec
+        Outbox["Durable outbox<br/>events/outbox.py"]:::exec
+    end
+
+    subgraph L6["🖥️ Workers"]
+        direction LR
+        TerminalWorker["terminal-worker<br/>workers/terminal.py"]:::exec
+        GuiWorker["gui-worker<br/>workers/gui.py"]:::gui
+        VerifierWorker["terminal-verifier<br/>workers/verifier.py"]:::exec
+        HybridCoord["HybridExecutionCoordinator<br/>workers/hybrid.py"]:::exec
+    end
+
+    subgraph L7["👁️ GUI Intelligence (visual-first)"]
+        direction TB
+        GuiEngine["GuiWorkerEngine<br/>require_real_desktop"]:::gui
+        GUIPlanner["GUI planner<br/>runtime/planner.py"]:::gui
+        Authoring["Model-driven authoring<br/>runtime/authoring.py"]:::gui
+        Perception["Perception<br/>scrot capture + OCR + detection"]:::gui
+        Grounder["Visual grounding<br/>OCR target locate"]:::gui
+        ExecLoop["GUIExecutionLoop<br/>observe-ground-act-verify"]:::gui
+        Motor["Motor controllers<br/>cosine-eased mouse / keys"]:::gui
+        WorldModel["World model<br/>belief / transition / window"]:::gui
+        GUISafety["GUI risk guard +<br/>action policy"]:::gui
+        VisVerifier["Independent visual verifier<br/>expected_text in real pixels"]:::gui
+    end
+
+    subgraph L8["🔐 Security &amp; Sovereignty"]
+        direction LR
+        PolicyEngine["Policy engine"]:::sec
+        ApprovalGates["Approval gates<br/>no self-approval / no replay"]:::sec
+        KillSwitch["Global emergency<br/>kill switch"]:::sec
+        Secrets["Encrypted secret store"]:::sec
+        SecurityProfiles["Container hardening<br/>cap_drop=ALL<br/>no-new-privileges"]:::sec
+        NetworkACL["Network ACLs<br/>internal control net"]:::sec
+        AuditTrail["Audit log<br/>hash-chained"]:::sec
+    end
+
+    subgraph L9["🏗️ Infrastructure"]
+        direction LR
+        Broker["RestrictedDockerBroker<br/>containers/broker_api.py :12002"]:::infra
+        Desktops["Employee desktops<br/>ancos-desktop-anc-emp-*<br/>Xvfb + xdotool + VNC"]:::infra
+        WSGateway["Workstation gateway<br/>:12003 → 6080"]:::infra
+        Redis["Redis<br/>pub/sub + queues"]:::infra
+        DB[("SQLite / PostgreSQL<br/>30+ tables")]:::store
+        Observability["Observability<br/>metrics / traces / audit"]:::infra
+        BackupDR["Backup &amp; Disaster Recovery<br/>SHA-256 manifests"]:::infra
+    end
+
+    %% Human → Edge
+    Owner --> Ingress
+    Boardroom --> Ingress
+    VNCView --> Ingress
+    Approver --> ApprovalGates
+    Owner --> KillSwitch
+
+    %% Edge → API
+    Ingress --> Dashboard
+    Ingress --> WSGateway
+    Dashboard --> Rest
+    Dashboard --> WsStreams
+    CLIRepl --> Rest
+    Rest --> AuthMW
+    WsStreams --> AuthMW
+    WorkerProto --> AuthMW
+    VerifierProto --> AuthMW
+    AuthMW --> BossBrain
+
+    %% Boss brain
+    BossBrain --> BossState
+    BossBrain --> Planner
+    BossBrain --> Chat
+    BossBrain --> Meetings
+    BossBrain --> Governance
+    BossBrain --> Evolution
+    BossBrain --> Monitor
+    Planner --> TaskDAG
+    Planner --> SkillGaps
+    BossBrain --> Delegator
+    Delegator --> Factory
+    Factory --> SkillReg
+    SkillReg --> Certify
+    Monitor --> Recovery
+    Recovery --> TaskScheduler
+
+    %% Cognition
+    BossBrain --> LLMGateway
+    BossBrain --> MemoryStore
+    BossBrain --> CommsBus
+    Chat --> LLMGateway
+    Meetings --> CommsBus
+    Meetings --> LLMGateway
+    Governance --> LLMGateway
+    Governance --> AuditTrail
+    Evolution --> MemoryStore
+    Evolution --> LLMGateway
+    LLMGateway --> CostTracker
+    LLMGateway --> Laya
+    SharedInf --> LLMGateway
+    DecisionRouter --> Laya
+    Laya --> GUIPlanner
+
+    %% Execution
+    Delegator --> TaskScheduler
+    TaskDAG --> TaskScheduler
+    TaskScheduler --> TaskRepo
+    TaskScheduler --> Outbox
+    TaskScheduler --> ResScheduler
+    ResScheduler --> DesktopPool
+    DesktopPool --> Broker
+    TaskRepo --> DB
+    Artifacts --> DB
+    MemoryStore --> DB
+    AuditTrail --> DB
+    Outbox --> CommsBus
+    CommsBus --> Redis
+    Redis --> TerminalWorker
+    Redis --> GuiWorker
+    Redis --> VerifierWorker
+
+    %% Worker protocol
+    WorkerProto --> TerminalWorker
+    WorkerProto --> GuiWorker
+    VerifierProto --> VerifierWorker
+    TerminalWorker --> TaskRepo
+    GuiWorker --> GuiEngine
+    GuiWorker --> HybridCoord
+    HybridCoord --> TerminalWorker
+    HybridCoord --> GuiEngine
+
+    %% GUI loop
+    GuiEngine --> GUIPlanner
+    GuiEngine --> Perception
+    GUIPlanner --> Authoring
+    Authoring --> ExecLoop
+    Perception --> Grounder
+    Grounder --> ExecLoop
+    ExecLoop --> Motor
+    ExecLoop --> GUISafety
+    ExecLoop --> WorldModel
+    ExecLoop --> VisVerifier
+    Motor --> Broker
+    Broker --> Desktops
+    WSGateway --> Desktops
+    Desktops --> Perception
+
+    %% Security gates
+    GUISafety --> PolicyEngine
+    PolicyEngine --> ApprovalGates
+    PolicyEngine --> AuditTrail
+    Secrets --> Factory
+    SecurityProfiles --> Broker
+    NetworkACL --> Desktops
+    KillSwitch --> BossBrain
+    KillSwitch --> ResScheduler
+    KillSwitch --> Broker
+
+    %% Verification
+    TerminalWorker --> VerifierWorker
+    VisVerifier --> VerifierWorker
+    VerifierWorker --> TaskRepo
+    TaskRepo --> Artifacts
+
+    %% Infra / observability
+    Observability --> Dashboard
+    BackupDR --> DB
+    DB --> Observability
+```
+
+---
+
 ## 1. System Context
 
 ```mermaid
