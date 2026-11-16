@@ -798,6 +798,43 @@ def test_unverified_text_still_fails_despite_delta_floor_bypass():
     assert not res.passed
 
 
+def test_failure_dialog_on_final_screen_fails_verification():
+    """A launch-failure dialog is not a deliverable.
+
+    A browser that never opened still pops an error box, and those pixels register
+    as a screen change — enough to satisfy a bare delta check and mark the task a
+    success. The verifier must fail closed when the final frame shows a failure
+    dialog, even though the screen visibly changed.
+    """
+    verifier = IndependentVisualVerifier()
+    engine = ScreenCaptureEngine()
+    frame1 = engine.render_synthetic_desktop()
+    frame2 = engine.render_synthetic_desktop()
+    verifier.ocr_engine.register_mock_text(
+        "Failed to execute default Web Browser", (200, 300, 640, 330), confidence=0.97
+    )
+    verifier.ocr_engine.register_mock_text("Input/output error", (200, 340, 500, 370), confidence=0.97)
+
+    res = verifier.verify_postcondition(frame1, frame2, min_delta_magnitude=0.0)
+    assert not res.passed
+    assert "Failure dialog text" in res.details
+
+
+def test_failure_dialog_rejects_even_with_expected_text_present():
+    """A visible deliverable must not mask a failure dialog sharing the screen."""
+    verifier = IndependentVisualVerifier()
+    engine = ScreenCaptureEngine()
+    frame1 = engine.render_synthetic_desktop()
+    frame2 = engine.render_synthetic_desktop()
+    verifier.ocr_engine.register_mock_text("docs.google.com", (100, 100, 300, 130), confidence=0.98)
+    verifier.ocr_engine.register_mock_text(
+        "Failed to execute default Web Browser", (200, 300, 640, 330), confidence=0.97
+    )
+
+    res = verifier.verify_postcondition(frame1, frame2, expected_text="docs.google.com")
+    assert not res.passed
+
+
 def test_task_completion_certificate_tamper_evident():
     """Validates cryptographic certificate generator and verification."""
     gen = TaskCompletionCertificateGenerator()

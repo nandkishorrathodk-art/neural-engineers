@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY=:1 \
@@ -6,7 +6,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NOVNC_PORT=6081 \
     HOME=/home/employee
 
-# Install Xfce, TigerVNC, noVNC, and development prerequisites
+# Debian bookworm ships a real, distro-packaged Chromium. Ubuntu 22.04's
+# `chromium-browser` is only a snap transitional stub that fails inside a
+# container with "Failed to execute default Web Browser. Input/output error.",
+# so a GUI task that "launches the browser" never actually opens one.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xfce4 \
     xfce4-terminal \
@@ -27,10 +30,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdotool \
     scrot \
     tesseract-ocr \
-    chromium-browser \
+    chromium \
+    chromium-sandbox \
+    x11-utils \
+    x11-xserver-utils \
+    dbus \
+    dbus-x11 \
+    exo-utils \
+    fonts-liberation \
+    fonts-dejavu-core \
     supervisor \
     coreutils \
     && rm -rf /var/lib/apt/lists/*
+
+# Chromium's own setuid/namespace sandbox cannot be set up inside a nested
+# unprivileged container ("Failed to move to new namespace: Operation not
+# permitted"), so every launch must pass --no-sandbox. The Debian launcher
+# sources /etc/chromium.d/*, so flags placed here apply to every entry point,
+# including the Xfce "Web Browser" menu item that shells out to exo-open.
+RUN printf '%s\n' \
+    'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox"' \
+    'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu"' \
+    'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-dev-shm-usage"' \
+    'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-first-run"' \
+    'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --password-store=basic"' \
+    > /etc/chromium.d/ancos-container-flags
 
 RUN test -x /usr/bin/timeout
 
@@ -40,7 +64,13 @@ RUN useradd -m -s /bin/bash -u 1000 employee
 WORKDIR /home/employee
 USER employee
 
-RUN mkdir -p /home/employee/.vnc /home/employee/workspace
+RUN mkdir -p /home/employee/.vnc /home/employee/workspace \
+    && mkdir -p /home/employee/.config/xfce4
+
+# Pin the Xfce default web browser to Chromium. Without this the "Web Browser"
+# menu entry falls back to exo-open's auto-detection, which can resolve to a
+# non-existent browser and pop the very error dialog that broke GUI tasks.
+RUN printf 'WebBrowser=chromium\n' > /home/employee/.config/xfce4/helpers.rc
 
 COPY --chown=employee:employee docker/configs/vnc-xstartup /home/employee/.vnc/xstartup
 USER root
@@ -56,4 +86,3 @@ USER employee
 EXPOSE 5901 6081
 
 ENTRYPOINT ["/entrypoint.sh"]
-

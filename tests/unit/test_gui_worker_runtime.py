@@ -179,6 +179,45 @@ def test_planner_targets_leftmost_app_and_skips_negated_exclusion():
     ]
 
 
+def test_planner_navigates_browser_to_named_site():
+    """Launching the browser is only half of a web objective: the page must load.
+
+    A browser task that stops at the launch click never reaches the site the user
+    asked for, so the plan must drive the omnibox (Ctrl+L) with the destination URL.
+    """
+    steps = derive_gui_steps(
+        "Launch Chromium and navigate to Google Docs",
+        "Open the web browser and navigate to Google Docs.",
+    )
+    assert steps[0] == {"action_type": "MOUSE_CLICK", "target": "Applications", "confidence": 0.95}
+    assert steps[1] == {"action_type": "MOUSE_CLICK", "target": "Web Browser", "confidence": 0.95}
+    typed = [s for s in steps if s["action_type"] == "KEY_TYPE"]
+    assert any(s["text"] == "docs.google.com" and s.get("type_into_active_focus") for s in typed)
+    assert {"action_type": "KEY_HOTKEY", "key_code": "ctrl+l", "confidence": 0.95} in steps
+
+
+def test_planner_uses_explicit_url_verbatim():
+    steps = derive_gui_steps(
+        "Open browser to a URL",
+        "Open the web browser and navigate to https://example.com/docs",
+    )
+    typed = [s for s in steps if s["action_type"] == "KEY_TYPE"]
+    assert any(s["text"] == "https://example.com/docs" for s in typed)
+
+
+def test_planner_does_not_navigate_without_web_verb():
+    """A bare browser launch names no destination, so no URL is typed."""
+    steps = derive_gui_steps("Open browser", "Open the web browser application.")
+    assert not [s for s in steps if s["action_type"] == "KEY_TYPE"]
+
+
+def test_planner_never_reads_document_filename_as_web_host():
+    """A file-edit objective must not be misread as a navigation to a host."""
+    from neural.gui_intelligence.runtime.planner import _web_destination
+
+    assert _web_destination("open handoff.txt in the text editor and save") is None
+
+
 def test_engine_reuses_last_click_for_coordinateless_key_type():
     from neural.gui_intelligence.worker import GuiStepPlan, GuiWorkerEngine
 

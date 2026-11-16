@@ -88,6 +88,31 @@ _EDIT_PAYLOAD = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./-]+\b")
 # names that application as an exclusion ("without a terminal"), not a target.
 _NEGATION = re.compile(r"\b(?:no|not|without|non|avoid|skip|except|other than)\b", re.IGNORECASE)
 
+# A web objective names where the browser must go. The desktop exposes only
+# pixels, so the destination has to be typed into the omnibox as a literal URL.
+# An explicit URL is preferred; a well-known site *name* ("Google Docs") maps to
+# the host the user actually means.
+_URL = re.compile(
+    r"\b((?:https?://)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+"
+    r"(?:com|org|net|io|dev|edu|gov|co|in|ai|app|xyz)(?:/[^\s,;]*)?)",
+    re.IGNORECASE,
+)
+# A bare filename ("handoff.txt") must never be read as a web host.
+_FILE_EXTENSION = re.compile(
+    r"\.(?:txt|md|markdown|rst|py|json|csv|log|cfg|ini|conf|sh|yaml|yml|toml|xml|html?)$",
+    re.IGNORECASE,
+)
+_SITE_ALIASES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("google docs", "google document", "google doc", "docs.google"), "docs.google.com"),
+    (("google drive", "drive.google"), "drive.google.com"),
+    (("gmail", "gmail.com"), "mail.google.com"),
+    (("youtube",), "www.youtube.com"),
+    (("wikipedia",), "www.wikipedia.org"),
+    (("github",), "github.com"),
+    (("google",), "www.google.com"),
+)
+_WEB_VERBS = ("navigate", "go to", "visit", "browse", "open the url", "load the page")
+
 
 def _first_quoted(text: str) -> str | None:
     match = _QUOTED.search(text)
@@ -145,6 +170,29 @@ def _application_menu_label(text: str) -> str | None:
 def _looks_like_app_launch(lowered: str) -> bool:
     """True when the objective is launching an application by concept name."""
     return any(re.search(rf"\b{verb}\b", lowered) for verb in _APP_LAUNCH_VERBS)
+
+
+def _web_destination(text: str) -> str | None:
+    """Return the URL a web objective must load, or ``None``.
+
+    An explicit URL wins; a recognised site name ("Google Docs") maps to its host.
+    A bare document filename is never treated as a host, so a file-edit objective
+    cannot be misread as a navigation.
+    """
+    lowered = text.lower()
+    has_url = "http://" in lowered or "https://" in lowered
+    if not any(verb in lowered for verb in _WEB_VERBS) and not has_url:
+        return None
+    for match in _URL.finditer(text):
+        candidate = match.group(1).rstrip(".")
+        if _FILE_EXTENSION.search(candidate):
+            continue
+        return candidate
+    for aliases, host in _SITE_ALIASES:
+        for alias in aliases:
+            if re.search(rf"(?<![\w-]){re.escape(alias)}\b", lowered):
+                return host
+    return None
 
 
 def _match_application(lowered: str) -> tuple[str | None, str] | None:
@@ -375,6 +423,25 @@ def derive_gui_steps(
             steps.append({"action_type": "MOUSE_CLICK", "target": category, "confidence": 0.95})
         steps.append({"action_type": "MOUSE_CLICK", "target": app_label, "confidence": 0.95})
         menu_label = None
+        # A browser launch is only the first half of a web objective; the page the
+        # objective names still has to be loaded. Drive the omnibox (Ctrl+L) so the
+        # destination is typed as a real URL rather than landing in the page body.
+        if app_label == "Web Browser":
+            destination = _web_destination(blob)
+            if destination:
+                steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 4000})
+                steps.append({"action_type": "KEY_HOTKEY", "key_code": "ctrl+l", "confidence": 0.95})
+                steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 600})
+                steps.append(
+                    {
+                        "action_type": "KEY_TYPE",
+                        "text": destination,
+                        "confidence": 0.95,
+                        "type_into_active_focus": True,
+                    }
+                )
+                steps.append({"action_type": "KEY_HOTKEY", "key_code": "Return", "confidence": 0.95})
+                steps.append({"action_type": "WAIT_SETTLE", "confidence": 0.99, "settle_ms": 5000})
     if menu_label and (click_label is None or menu_label.lower() != click_label.lower()):
         # Opening the application menu is the first real step when the objective
         # routes through it; the launcher must be open before its entries can be

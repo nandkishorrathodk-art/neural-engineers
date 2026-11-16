@@ -599,6 +599,66 @@ async def test_dispatch_skips_task_when_a_desktop_is_busy(async_session):
     assigned = await TaskRepository(async_session)._dispatch_pending_tasks()
     assert assigned == [], "a busy running desktop must be reused, not duplicated"
 
+@pytest.mark.asyncio
+async def test_dispatch_falls_back_when_only_running_desktop_is_skill_incompatible(async_session):
+    """A running desktop that cannot take the task must not stall provisioning.
+
+    The dispatcher only skips the desktop-less fallback when an *idle, capable*
+    desktop is running. If the single running desktop belongs to an employee who
+    cannot run the task (skill mismatch) or is busy, that desktop can never take
+    it, so falling back to an idle desktop-less employee is the only way the
+    task's provisioning approval is ever raised. Without the fallback the task is
+    stranded in PENDING forever -- the exact defect this test locks out.
+    """
+    # Running desktop, but the owner lacks the required skill.
+    await _seed_dag_employee(
+        async_session, "ANC-EMP-DAG-02D", "ancos-desktop-anc-emp-dag-02d", "Rust"
+    )
+    # Idle, capable employee with no desktop: the only one that can do the work.
+    capable = await _seed_dag_employee(
+        async_session,
+        "ANC-EMP-DAG-02E",
+        "ancos-desktop-anc-emp-dag-02e",
+        "Python",
+        ContainerStatus.PROVISIONING,
+    )
+    await _seed_chain(async_session, "Python")
+
+    assigned = await TaskRepository(async_session)._dispatch_pending_tasks()
+    assert assigned == ["TASK-CHAIN-B"], (
+        "an incompatible running desktop must not block the desktop-less fallback"
+    )
+    b = await TaskRepository(async_session).get_by_task_id("TASK-CHAIN-B")
+    assert b.assigned_to == capable.id
+
+
+@pytest.mark.asyncio
+async def test_dispatch_falls_back_when_only_running_desktop_is_busy_but_skill_capable(async_session):
+    """A busy *incompatible* running desktop must not stall a capable idle peer.
+
+    A busy running desktop owned by a skill-incompatible employee can never take
+    the task; a capable desktop-less employee must still be assigned so its
+    provisioning approval can be raised.
+    """
+    busy = await _seed_dag_employee(
+        async_session, "ANC-EMP-DAG-02F", "ancos-desktop-anc-emp-dag-02f", "Rust"
+    )
+    busy.status = EmployeeStatus.WORKING
+    capable = await _seed_dag_employee(
+        async_session,
+        "ANC-EMP-DAG-02G",
+        "ancos-desktop-anc-emp-dag-02g",
+        "Python",
+        ContainerStatus.PROVISIONING,
+    )
+    await async_session.commit()
+    await _seed_chain(async_session, "Python")
+
+    assigned = await TaskRepository(async_session)._dispatch_pending_tasks()
+    assert assigned == ["TASK-CHAIN-B"]
+    b = await TaskRepository(async_session).get_by_task_id("TASK-CHAIN-B")
+    assert b.assigned_to == capable.id
+
 
 @pytest.mark.asyncio
 async def test_dispatch_falls_back_to_desktop_less_employee_when_none_running(async_session):

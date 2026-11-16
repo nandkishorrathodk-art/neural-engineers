@@ -823,15 +823,19 @@ class TaskRepository:
     ) -> list[str]:
         """Assign PENDING, unowned tasks to eligible employees.
 
-        The preferred assignees are employees whose execution desktop is *already
-        running*; this path never provisions a workstation itself and never
-        crosses the approval boundary. When no employee has a live desktop, it
+        Preferred assignees are idle employees whose execution desktop is already
+        running; this path never provisions a workstation itself and never
+        crosses the approval boundary. When no such desktop can take the task it
         falls back to an idle, capable employee without one: assigning the task is
         what lets the provisioning coordinator raise the (human-owned) approval
-        for a new desktop, which it only does for ASSIGNED tasks. Without that
-        fallback the second and later tasks of a multi-task project deadlock --
-        nothing assigns them, so nothing ever requests the desktop they need.
-        Returns the task_ids that were assigned.
+        for a new desktop, which it only does for ASSIGNED tasks.
+
+        The fallback is withheld only while a live desktop could *still* take the
+        task once its owner is free -- reusing a running desktop beats
+        provisioning a needless extra one. A running desktop whose owner lacks the
+        task's capability or skill can never take it, so it does not hold the task
+        back; otherwise the task would sit in PENDING forever and its provisioning
+        approval would never be raised. Returns the task_ids that were assigned.
         """
         now = utc_now()
         ready_query = select(Task).where(
@@ -867,7 +871,8 @@ class TaskRepository:
         if not ready_tasks:
             return []
 
-        eligible_employees = (
+        # Reuse-first pool: idle employees whose desktop is already live.
+        running_idle_employees = (
             (
                 await self.session.execute(
                     select(Employee)
@@ -884,39 +889,63 @@ class TaskRepository:
             .scalars()
             .all()
         )
-        if not eligible_employees:
-            # No idle employee has a live desktop. Only fall back to a desktop-less
-            # employee when *no* desktop is running anywhere: that is the genuine
-            # deadlock where nothing can ever claim the task. If a running desktop
-            # merely belongs to a busy employee, the task stays PENDING so it is
-            # reused instead of spinning up a needless extra workstation.
-            any_running = await self.session.scalar(
-                select(Container.id).where(Container.status == ContainerStatus.RUNNING).limit(1)
-            )
-            if any_running is None:
-                eligible_employees = (
-                    (
-                        await self.session.execute(
-                            select(Employee)
-                            .options(selectinload(Employee.skills))
-                            .where(Employee.status == EmployeeStatus.IDLE)
-                            .order_by(Employee.hired_at.asc())
-                            .execution_options(populate_existing=True)
-                        )
+        # Every employee with a live desktop, idle or busy. A *busy* desktop that
+        # can take the task is still worth waiting for, because it will be reused
+        # once its owner is free instead of provisioning a needless extra one.
+        running_employees = (
+            (
+                await self.session.execute(
+                    select(Employee)
+                    .join(Container, Employee.container_id == Container.id)
+                    .options(selectinload(Employee.skills), selectinload(Employee.container))
+                    .where(
+                        Employee.status.in_([EmployeeStatus.IDLE, EmployeeStatus.WORKING]),
+                        Container.status == ContainerStatus.RUNNING,
                     )
-                    .scalars()
-                    .all()
+                    .order_by(Employee.hired_at.asc())
+                    .execution_options(populate_existing=True)
                 )
+            )
+            .scalars()
+            .all()
+        )
+        # Provisioning fallback pool: idle employees with no live desktop. Used
+        # only when no running desktop can ever take the task, so a needless
+        # extra workstation is never spun up just to satisfy a backlog.
+        desktopless_employees = (
+            (
+                await self.session.execute(
+                    select(Employee)
+                    .options(selectinload(Employee.skills))
+                    .outerjoin(Container, Employee.container_id == Container.id)
+                    .where(
+                        Employee.status == EmployeeStatus.IDLE,
+                        or_(Container.id.is_(None), Container.status != ContainerStatus.RUNNING),
+                    )
+                    .order_by(Employee.hired_at.asc())
+                    .execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
         from neural.boss.delegator import TaskDelegator
 
         delegator = TaskDelegator()
+
+        def _can_take(employee: Employee, task: Task) -> bool:
+            return _employee_has_execution_capabilities(
+                employee, task.execution_mode
+            ) and required_skills_satisfied(employee, task.required_capabilities)
+
         assigned_ids: list[str] = []
         # Track employees already given a task this pass so one employee is not
         # handed several tasks while others sit idle; that is what lets two
         # provisioned employees run two independent tasks in parallel.
-        available_employees = list(eligible_employees)
+        available_running = list(running_idle_employees)
+        available_desktopless = list(desktopless_employees)
         for ready_task in ready_tasks:
-            if not available_employees:
+            if not available_running and not available_desktopless:
                 break
             dependency_evidence = (
                 await self.session.execute(
@@ -932,12 +961,23 @@ class TaskRepository:
                 for status, receipt in dependency_evidence
             ):
                 continue
-            assignee = delegator.select_best_assignee(ready_task, available_employees)
+
+            assignee = delegator.select_best_assignee(
+                ready_task, [e for e in available_running if _can_take(e, ready_task)]
+            )
             if not assignee:
-                continue
-            if not _employee_has_execution_capabilities(assignee, ready_task.execution_mode):
-                continue
-            if not required_skills_satisfied(assignee, ready_task.required_capabilities):
+                # No idle running desktop can take it. Wait only if a live desktop
+                # could still take it once free -- reusing a running desktop beats
+                # provisioning another. A running desktop whose owner lacks the
+                # capability or skill can never take it, so it must not hold the
+                # task back: that is the deadlock where nothing assigns the task,
+                # so its provisioning approval is never raised.
+                if any(_can_take(e, ready_task) for e in running_employees):
+                    continue
+                assignee = delegator.select_best_assignee(
+                    ready_task, [e for e in available_desktopless if _can_take(e, ready_task)]
+                )
+            if not assignee:
                 continue
             assigned = await self.session.execute(
                 update(Task)
@@ -956,8 +996,11 @@ class TaskRepository:
             if assigned.rowcount == 1:
                 await self.session.commit()
                 assigned_ids.append(ready_task.task_id)
-                available_employees = [
-                    employee for employee in available_employees if employee.id != assignee.id
+                available_running = [
+                    employee for employee in available_running if employee.id != assignee.id
+                ]
+                available_desktopless = [
+                    employee for employee in available_desktopless if employee.id != assignee.id
                 ]
             else:
                 await self.session.rollback()

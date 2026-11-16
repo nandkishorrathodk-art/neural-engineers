@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
 from neural.gui_intelligence.models import ScreenFrame
 from neural.gui_intelligence.perception.pixel_ocr import PixelOCREngine
@@ -10,6 +10,21 @@ from neural.gui_intelligence.perception.screen_change import ScreenChangeDetecto
 from neural.logger import get_logger
 
 logger = get_logger("ancos.gui_intelligence.verification.visual_verifier")
+
+
+# Screen text that proves the desktop is in a failed state rather than showing a
+# task deliverable. A launch failure leaves a modal error dialog whose pixels
+# still register as a "screen change", so the postcondition must reject it.
+DEFAULT_FORBIDDEN_SCREEN_PHRASES: tuple[str, ...] = (
+    "failed to execute default web browser",
+    "failed to execute default browser",
+    "input/output error",
+    "could not launch",
+    "unable to launch",
+    "no application installed",
+    "command not found",
+    "failed to launch",
+)
 
 
 @dataclass
@@ -48,6 +63,7 @@ class IndependentVisualVerifier:
         min_delta_magnitude: float = 0.0001,
         forbidden_text: Optional[str] = None,
         expected_postcondition: Optional[str] = None,
+        forbidden_phrases: Optional[Sequence[str]] = None,
     ) -> VisualVerificationResult:
         """
         Verifies final task deliverable against visual evidence.
@@ -83,6 +99,24 @@ class IndependentVisualVerifier:
                 text_passed = False
                 details_list.append(
                     f"Forbidden error text '{forbidden_text}' detected in screenshot"
+                )
+
+        # A GUI task that "succeeds" while the desktop shows a launch-failure or
+        # error dialog is a false positive: the app never opened, yet the pixel
+        # delta from the popup is enough to satisfy a bare screen-change check.
+        # Any of these phrases on the final frame fails the postcondition.
+        phrases = list(forbidden_phrases or ())
+        phrases.extend(DEFAULT_FORBIDDEN_SCREEN_PHRASES)
+        for phrase in phrases:
+            if not phrase:
+                continue
+            matches = self.ocr_engine.find_text(
+                frame_final, phrase, fuzzy=True, min_confidence=0.7
+            )
+            if matches:
+                text_passed = False
+                details_list.append(
+                    f"Failure dialog text '{phrase}' detected in final screenshot"
                 )
 
         # 3. Semantic understanding of natural-language postcondition
