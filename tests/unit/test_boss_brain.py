@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from neural.boss.brain import BossBrain
 
@@ -591,3 +593,145 @@ def test_unique_task_ids_do_not_collide_across_objectives():
     assert all(tid.startswith("TASK-01-01-") for tid in ids)
     # A widened suffix must remain well inside the String(64) task_id column.
     assert max(len(tid) for tid in ids) <= 64
+
+
+def _plan_with_tasks(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "code_name": "ModeCoercion",
+        "complexity": "low",
+        "requirements": ["Exercise mode coercion"],
+        "technical_risks": [],
+        "mitigation_strategies": [],
+        "phases": [{"title": "Do the work", "tasks": tasks}],
+    }
+
+
+def _task(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "task_id": "t1",
+        "title": "Do the thing",
+        "objective": "Do the thing.",
+        "scope": "A single step",
+        "role_required": "software-engineer",
+        "skills_required": ["Python"],
+        "execution_mode": "terminal",
+        "dependencies": [],
+        "acceptance_criteria": "tests pass",
+        "subtasks": [],
+        "estimated_hours": 1,
+        "max_tokens": 4000,
+    }
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_planner_coerces_browser_navigation_task_to_gui(monkeypatch):
+    """A headless terminal container has no display, so a task whose prose launches
+    and navigates a browser can never complete in `terminal` mode. Left as-is it
+    exhausts its retries and blocks every dependent task behind it."""
+    import json
+
+    from neural.boss.planner import TaskPlanner
+    from neural.llm.gateway import LLMGateway
+
+    async def invoke(**_kwargs):
+        return {
+            "content": json.dumps(
+                _plan_with_tasks(
+                    [
+                        _task(
+                            title="Open browser and navigate to Google Docs",
+                            objective=(
+                                "Launch a web browser instance and navigate to the Google Docs login page."
+                            ),
+                            scope="Open the web browser and navigate to Google Docs.",
+                            skills_required=["browser automation", "web navigation"],
+                        )
+                    ]
+                )
+            ),
+            "input_tokens": 20,
+            "output_tokens": 100,
+            "provider": "test",
+        }
+
+    gateway = LLMGateway(provider_invoker=invoke)
+    monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    plan = await TaskPlanner(llm_gateway=gateway).decompose_objective("Navigate to Google Docs")
+
+    task = plan["phases"][0]["tasks"][0]
+    assert task["execution_mode"] == "gui"
+    # A GUI task must not receive the terminal test-instruction suffix.
+    assert "automated test" not in task["objective"].lower()
+
+
+@pytest.mark.asyncio
+async def test_planner_coerces_desktop_task_with_terminal_step_to_hybrid(monkeypatch):
+    """Prose that names both a visible desktop action and a command-line step needs
+    both environments, so the mode is raised to hybrid rather than gui."""
+    import json
+
+    from neural.boss.planner import TaskPlanner
+    from neural.llm.gateway import LLMGateway
+
+    async def invoke(**_kwargs):
+        return {
+            "content": json.dumps(
+                _plan_with_tasks(
+                    [
+                        _task(
+                            title="Edit the note on the desktop and hash it in the terminal",
+                            objective=(
+                                "Open the text editor on the desktop, append the line, save it, "
+                                "then print its SHA-256 hash from the command line."
+                            ),
+                            scope="Graphical edit plus a terminal verification step.",
+                        )
+                    ]
+                )
+            ),
+            "input_tokens": 20,
+            "output_tokens": 100,
+            "provider": "test",
+        }
+
+    gateway = LLMGateway(provider_invoker=invoke)
+    monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    plan = await TaskPlanner(llm_gateway=gateway).decompose_objective("Edit and verify")
+
+    assert plan["phases"][0]["tasks"][0]["execution_mode"] == "hybrid"
+
+
+@pytest.mark.asyncio
+async def test_planner_keeps_genuine_terminal_task_terminal(monkeypatch):
+    """Coercion must never promote a task that names no desktop interaction."""
+    import json
+
+    from neural.boss.planner import TaskPlanner
+    from neural.llm.gateway import LLMGateway
+
+    async def invoke(**_kwargs):
+        return {
+            "content": json.dumps(
+                _plan_with_tasks(
+                    [
+                        _task(
+                            title="Implement median(numbers)",
+                            objective="Write the median function and a pytest module that verifies it.",
+                            scope="Pure Python module",
+                        )
+                    ]
+                )
+            ),
+            "input_tokens": 20,
+            "output_tokens": 100,
+            "provider": "test",
+        }
+
+    gateway = LLMGateway(provider_invoker=invoke)
+    monkeypatch.setattr(gateway.settings, "BOSS_LLM_PLANNING_ENABLED", True)
+    plan = await TaskPlanner(llm_gateway=gateway).decompose_objective("Implement median")
+
+    assert plan["phases"][0]["tasks"][0]["execution_mode"] == "terminal"
+

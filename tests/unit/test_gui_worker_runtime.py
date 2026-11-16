@@ -20,7 +20,11 @@ from neural.gui_intelligence.action.keyboard_controller import canonicalize_hotk
 from neural.gui_intelligence.models import GUIActionRequest
 from neural.gui_intelligence.perception.ocr_runtime import TesseractOCREngine
 from neural.gui_intelligence.runtime.desktop_driver import ContainerDesktopDriver
-from neural.gui_intelligence.runtime.planner import derive_gui_steps, expected_onscreen_text
+from neural.gui_intelligence.runtime.planner import (
+    _typed_value,
+    derive_gui_steps,
+    expected_onscreen_text,
+)
 
 
 class _RecordingManager:
@@ -156,9 +160,70 @@ def test_expected_onscreen_text_returns_typed_marker():
     assert expected_onscreen_text(steps) == "GUI-OK"
 
 
+def test_planner_does_not_type_narrative_prose_as_payload():
+    """A prose objective must not be sent to the keyboard verbatim.
+
+    The live "Access Google Docs and Draft ANCOS Note" task says to "write a short
+    documentation note about ANCOS"; the planner treated the description itself as
+    the payload and typed "short documentation note about ANCOS. The task covers
+    opening the browser, navigating" onto the desktop. Nothing on screen can match
+    that sentence, so the worker failed its own postcondition and the verifier's
+    on-screen contract was corrupted with the same nonsense.
+    """
+    steps = derive_gui_steps(
+        "Access Google Docs and Draft ANCOS Note",
+        "Open a web browser, navigate to Google Docs, and write a short documentation "
+        "note about ANCOS.",
+        "The task covers opening the browser, navigating to Google Docs, and creating "
+        "the initial draft content within the document.",
+        "A Google Doc containing a short, accurate documentation note about ANCOS must "
+        "be created and persisted to the workspace.",
+    )
+    # The browser must still be pointed at Google Docs; only the prose must be gone.
+    typed = [s["text"] for s in steps if s["action_type"] == "KEY_TYPE"]
+    assert typed == ["docs.google.com"]
+    assert expected_onscreen_text(steps) == "docs.google.com"
+
+
+def test_typed_value_rejects_prose_but_keeps_literal_markers():
+    """Prose is rejected; literal markers, URLs and paths are still extracted."""
+    assert (
+        _typed_value(
+            "write a short documentation note about ANCOS. The task covers opening the browser."
+        )
+        is None
+    )
+    assert _typed_value("type the marker GUI_LIFECYCLE_42 into the document.") == "GUI_LIFECYCLE_42"
+    assert _typed_value("input the exact string GUI-OK into a new document.") == "GUI-OK"
+    assert _typed_value("type the text hello-ancos, then capture the screen.") == "hello-ancos"
+
+
 def test_expected_onscreen_text_none_without_text_entry():
     steps = derive_gui_steps("Open the editor", "Click the 'Applications' menu to open it")
     assert expected_onscreen_text(steps) is None
+
+
+def test_typed_value_rejects_second_imperative_prose_scope():
+    """A scope clause that describes the work is prose, not a payload.
+
+    The live "Write ANCOS documentation note" task carries the scope "Type and save
+    a brief description of ANCOS in a new Google Doc". The leading verb ("Type")
+    made the whole clause look like a type-verb instruction, so the planner sent
+    the sentence itself to the keyboard. The deliverable is prose about ANCOS, not
+    that sentence, so the planner must type nothing rather than the description.
+    """
+    assert (
+        _typed_value("Type and save a brief description of ANCOS in a new Google Doc")
+        is None
+    )
+    # A descriptive noun phrase followed by an action verb is still prose.
+    assert _typed_value("write a short documentation note about ANCOS") is None
+
+
+def test_typed_value_keeps_short_literal_payloads():
+    """Hardening must not reject genuine short literals a test asserts on screen."""
+    assert _typed_value("type hello world into the document") == "hello world"
+    assert _typed_value("enter the value ready into the field") == "ready"
 
 
 def test_planner_does_not_treat_menu_click_title_as_app_launch():

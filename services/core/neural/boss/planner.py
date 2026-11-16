@@ -48,6 +48,47 @@ def _terminal_task_objective(objective: str, execution_mode: ExecutionMode) -> s
     return f"{objective.rstrip()}{_TEST_INSTRUCTION}"
 
 
+# A task whose own prose demands a visible desktop (launching a browser or a GUI
+# app, navigating a site, clicking on screen, editing in an editor) can never be
+# completed by a headless terminal command. The planner LLM sometimes still tags
+# such a task `terminal`; that strands the task in a container with no display,
+# it exhausts its retries, and every dependent task is blocked behind it. The
+# declared mode is coerced to the environment the work genuinely needs.
+_GUI_INTENT = re.compile(
+    r"(?i)\b(?:web browser|browser|chromium|firefox|google docs|docs\.google\.com"
+    r"|desktop|graphical|on[- ]screen|click|double[- ]click|text editor|gui)\b"
+)
+_TERMINAL_STRONG_SIGNAL = re.compile(
+    r"(?i)\b(?:command[- ]line|terminal|cli|shell|headless|http request|curl|api call|http status)\b"
+)
+
+
+def _coerce_execution_mode(task: "PlannedTask", supported: set[ExecutionMode]) -> ExecutionMode:
+    """Return the execution mode the task's own prose actually requires.
+
+    Only ever *raises* the requirement (terminal -> gui/hybrid); a task that
+    already declares a GUI-bearing mode is returned unchanged. A plan whose
+    GUI worker is not deployed keeps the model's declaration, because
+    ``unsupported_modes`` validation already rejects the plan loudly in that case
+    rather than silently downgrading graphical work to a headless container.
+    """
+    declared = task.execution_mode
+    gui_deployed = (
+        ExecutionMode.GUI in supported
+        or ExecutionMode.GUI_ONLY in supported
+        or ExecutionMode.HYBRID in supported
+    )
+    if not gui_deployed or not ExecutionMode.is_terminal(declared):
+        return declared
+    prose = " ".join(part for part in (task.title, task.objective, task.scope) if part)
+    if not _GUI_INTENT.search(prose):
+        return declared
+    if _TERMINAL_STRONG_SIGNAL.search(prose):
+        # Genuinely hybrid: the work names both a desktop and a command-line step.
+        return ExecutionMode.HYBRID
+    return ExecutionMode.GUI
+
+
 
 class PlannedTask(BaseModel):
     task_id: str = Field(min_length=1, max_length=64)
@@ -323,18 +364,19 @@ class TaskPlanner:
         for phase_index, phase in enumerate(plan.phases, start=1):
             tasks = []
             for task_index, task in enumerate(phase.tasks, start=1):
+                effective_mode = _coerce_execution_mode(task, active_supported)
                 tasks.append({
                     "task_id": _unique_task_id(phase_index, task_index),
                     "source_task_id": task.task_id,
                     "title": task.title,
-                    "objective": _terminal_task_objective(task.objective or task.title, task.execution_mode),
+                    "objective": _terminal_task_objective(task.objective or task.title, effective_mode),
                     "scope": task.scope,
                     "role_required": task.role_required,
                     "skills_required": task.skills_required,
-                    "execution_mode": task.execution_mode,
+                    "execution_mode": effective_mode,
                     "dependencies": task.dependencies,
                     "acceptance_criteria": _terminal_acceptance_contract(
-                        task.acceptance_criteria, task.execution_mode
+                        task.acceptance_criteria, effective_mode
                     ),
                     "subtasks": task.subtasks,
                     "resource_budget": {

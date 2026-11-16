@@ -70,6 +70,45 @@ _TYPED_FILLER_LEAD = re.compile(
 )
 _TYPED_VERB = re.compile(r"\b(?:type|enter|fill|write|input|append|add|insert)\b", re.IGNORECASE)
 
+# A keyboard payload is a literal token (a marker, a URL, a path, KEY=value, or a
+# short quoted phrase). Narrative prose that merely *describes* what to author
+# ("write a short documentation note about ANCOS") is not a payload: typing the
+# sentence verbatim on the desktop is nonsense and no deliverable contains it.
+# These signals separate the two so a description is never sent to the keyboard.
+_PROSE_SENTENCE_BREAK = re.compile(r"[.!?;]\s+\S")
+_PROSE_AUTHORING_PHRASE = re.compile(
+    r"\b(?:note|notes|document|documentation|paragraph|essay|summary|description|report|content)\b"
+    r"\s+(?:about|on|of|describing|covering|regarding|that|which)\b",
+    re.IGNORECASE,
+)
+# Prose often continues the sentence with a conjunction or a second imperative
+# ("Type and save a brief description of ANCOS ..."), which is a description of
+# the work, never a literal to type.
+_PROSE_LEAD_CONJUNCTION = re.compile(r"^(?:and|then|also|plus|as well as)\b", re.IGNORECASE)
+_PROSE_ACTION_VERB = re.compile(
+    r"\b(?:save|open|navigate|click|create|write|type|edit|delete|append|insert"
+    r"|launch|draft|persist|verify|ensure)\b",
+    re.IGNORECASE,
+)
+_MAX_LITERAL_PAYLOAD_WORDS = 8
+
+
+def _looks_like_prose(value: str) -> bool:
+    """True when a candidate typed value is descriptive prose, not a literal payload."""
+    words = value.split()
+    if _PROSE_SENTENCE_BREAK.search(value):
+        return True
+    if _PROSE_AUTHORING_PHRASE.search(value):
+        return True
+    if _PROSE_LEAD_CONJUNCTION.search(value):
+        return True
+    # A short payload ("save", "hello world") is a literal; an action verb only
+    # signals a work description once the phrase is long enough to be a clause.
+    if len(words) >= 3 and _PROSE_ACTION_VERB.search(value):
+        return True
+    return len(words) > _MAX_LITERAL_PAYLOAD_WORDS
+
+
 # A document file named in an edit objective ("open handoff.txt ... and save").
 _DOCUMENT_FILE = re.compile(
     r"\b([A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:txt|md|markdown|rst|py|json|csv|log|cfg|ini|conf|sh))\b"
@@ -235,13 +274,17 @@ def _typed_value(text: str) -> str | None:
     segment = _TYPED_SEGMENT.search(text)
     if segment:
         value = _TYPED_FILLER_LEAD.sub("", segment.group("value").strip()).strip()
-        return value[:200] if value else None
+        if value and not _looks_like_prose(value):
+            return value[:200]
+        return None
     # No explicit destination ("type GUI_OK"): take the remainder after the verb.
     verb = _TYPED_VERB.search(text)
     if verb:
         value = _TYPED_FILLER_LEAD.sub("", text[verb.end() :].strip()).strip()
         value = re.split(r"[.,;:!?()\n]", value, maxsplit=1)[0].strip()
-        return value[:200] if value else None
+        if value and not _looks_like_prose(value):
+            return value[:200]
+        return None
     return None
 
 
